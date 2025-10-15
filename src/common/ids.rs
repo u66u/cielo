@@ -53,3 +53,17 @@ macro_rules! define_id {
         }
     };
 }
+
+define_id!(SourceId);
+define_id!(SymbolId);
+define_id!(TypeId);
+define_id!(EffectLabelId);
+define_id!(VarId);
+define_id!(ExprId);
+define_id!(StmtId);
+define_id!(FuncId);
+define_id!(StructId);
+define_id!(EnumId);
+define_id!(HandlerId);
+define_id!(ConstId);
+define_id!(DiagnosticId);
