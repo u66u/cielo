@@ -1,0 +1,233 @@
+-- Types
+
+enum Option[T] {
+    Some(T),
+    None,
+}
+
+enum Result[T, E] {
+    Ok(T),
+    Err(E),
+}
+
+enum Expr {
+    Lit(i32),
+    Add(Expr, Expr),
+}
+
+-- Structs
+struct Point {
+    x: f64,
+    y: f64,
+}
+
+struct Pair[A, B] {
+    left: A,
+    right: B,
+}
+
+-- Newtypes (zero-cost wrapper)
+newtype UserId = i32
+newtype Email = String
+
+-- Traits
+
+trait Show {
+    fn show(self) -> String
+}
+
+impl Show for i32 {
+    fn show(self) -> String {
+        int_to_string(self)
+    }
+}
+
+trait Add[T] {
+    fn add(self, other: T) -> T
+}
+
+-- Effects
+
+effect State[S] {
+    fn get() -> S
+    fn set(s: S) -> ()
+}
+
+effect Console {
+    fn print(s: String) -> ()
+    fn read_line() -> String
+}
+
+-- Functions
+
+fn identity[T](x: T) -> T {
+    x
+}
+
+fn map[T, U](list: List[T], f: T -> U) -> List[U] {
+    match list {
+        | Nil => Nil
+        | Cons(head, tail) => Cons(f(head), map(tail, f))
+    }
+}
+
+-- Effect annotations on functions
+fn greet(name: String) -> () with Console {
+    Console.print("Hello, " ++ name)
+}
+
+fn safe_div(x: i32, y: i32) -> i32 with Throw[String] {
+    if y == 0 {
+        Throw.throw("division by zero")
+    }
+    x / y
+}
+
+fn stateful_counter() -> i32 with State[i32] {
+    let current = State.get()
+    State.set(current + 1)
+    current
+}
+
+-- Pattern Matching
+
+fn describe(x: i32) -> String {
+    match x {
+        | 0 => "zero"
+        | 1 || 2 => "one or two"
+        | n if n > 100 => "big: " ++ show(n)
+        | _ => "something else"
+    }
+}
+
+fn unwrap_or[T](opt: Option[T], default: T) -> T {
+    match opt {
+        | Some(v) => v
+        | None => default
+    }
+}
+
+fn double_check(x: i32, y: i32) -> () with Console {
+    match (x, y) {
+        | (6, 7) => Console.print("hmm")
+        | (_, 7) => Console.print("not quite")
+        | _ => Console.print("\n")
+      }
+  }
+
+-- Nested patterns
+fn first_or_zero(list: List[i32]) -> i32 {
+    match list {
+        | Cons(x, _) => x
+        | Nil => 0
+    }
+}
+
+-- Effect Handlers
+
+fn main() -> () {
+    -- Handle State effect
+    let result = handle stateful_counter() with State[i32] {
+        | get(resume) => resume(0)
+        | set(s, resume) => resume(())
+    }
+
+    -- Handle Throw effect
+    let safe = handle safe_div(10, 0) with Throw[String] {
+        | throw(msg, resume) => {
+            print("Error: " ++ msg)
+            -1
+        }
+    }
+
+    -- Handle Console effect (for testing/mocking)
+    let output = handle greet("world") with Console {
+        | print(s, resume) => {
+            log_to_buffer(s)
+            resume(())
+        }
+        | read_line(resume) => resume("mocked input")
+    }
+}
+
+-- Closures
+
+fn apply[T, U](f: T -> U, x: T) -> U {
+    f(x)
+}
+
+fn make_adder(n: i32) -> Fn(i32) -> i32 {
+    |x| x + n
+}
+
+-- Multi-line closure
+fn transform(list: List[i32]) -> List[String] {
+    map(list, |x| {
+        let doubled = x * 2
+        show(doubled)
+    })
+}
+
+-- Control Flow
+
+fn example() -> () {
+    -- Let bindings (no semicolons, newline-separated)
+    let x = 5
+    let y = 10.5
+
+    -- If expression (returns a value)
+    let max = if x > 4 { x } else { 0 }
+
+    -- While
+    let i = 0
+    while i < 10 {
+        i = i + 1
+    }
+
+    -- For (desugars to while + iterator)
+    for item in some_list {
+        process(item)
+    }
+
+    -- Ranges
+    for i in 0..10 {
+        print(show(i))
+    }
+
+    -- Block expression
+    let result = {
+        let a = compute()
+        let b = transform(a)
+        a + b  -- trailing expression is the value
+    }
+}
+
+-- Error Handling (Result + ?)
+
+fn parse_config(path: String) -> Result[Config, ParseError] {
+    let contents = read_file(path)?
+    let tokens = tokenize(contents)?
+    parse_tokens(tokens)
+}
+
+-- Struct Construction
+
+fn struct_examples() -> () {
+    -- Positional (when unambiguous)
+    let p1 = Point(1.0, 2.0)
+
+    -- Named fields
+    let p2 = Point(x: 3.0, y: 4.0)
+
+    -- Generic with inference
+    let pair1 = Pair(5, "hello")
+
+    -- Generic with explicit types
+    let pair2 = Pair[i32, String](5, "hello")
+
+    -- Field access
+    let x_val = p1.x
+
+    -- Field mutation
+    p1.x = 10.0
+}
