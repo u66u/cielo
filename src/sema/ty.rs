@@ -102,3 +102,39 @@ impl TypeStore {
         match kind {
             TypeKind::Primitive(_) => Persistability::Trivial,
             TypeKind::TypeParam(_) => Persistability::Serializable,
+            TypeKind::Error => Persistability::NonPersistable,
+            TypeKind::Function(_) => Persistability::NonPersistable,
+            TypeKind::Struct { fields, .. } => {
+                fold_persistability(fields.iter().map(|field| field.ty), |ty| {
+                    self.persistability_with_depth(ty, depth + 1)
+                })
+            }
+            TypeKind::Enum { variants, .. } => fold_persistability(
+                variants
+                    .iter()
+                    .flat_map(|variant| variant.fields.iter().copied()),
+                |ty| self.persistability_with_depth(ty, depth + 1),
+            ),
+        }
+    }
+}
+
+fn fold_persistability<I, F>(iter: I, mut classify: F) -> Persistability
+where
+    I: IntoIterator<Item = TypeId>,
+    F: FnMut(TypeId) -> Persistability,
+{
+    let mut any_serializable = false;
+    for ty in iter {
+        match classify(ty) {
+            Persistability::Trivial => {}
+            Persistability::Serializable => any_serializable = true,
+            Persistability::NonPersistable => return Persistability::NonPersistable,
+        }
+    }
+    if any_serializable {
+        Persistability::Serializable
+    } else {
+        Persistability::Trivial
+    }
+}

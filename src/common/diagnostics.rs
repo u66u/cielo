@@ -70,3 +70,45 @@ impl DiagnosticBag {
         code: &'static str,
         message: impl Into<String>,
         span: Span,
+    ) -> DiagnosticId {
+        self.push(Severity::Warning, code, message, span)
+    }
+
+    pub fn note(
+        &mut self,
+        code: &'static str,
+        message: impl Into<String>,
+        span: Span,
+    ) -> DiagnosticId {
+        self.push(Severity::Note, code, message, span)
+    }
+
+    pub fn error_node(
+        &mut self,
+        code: &'static str,
+        message: impl Into<String>,
+        span: Span,
+    ) -> ErrorNode {
+        let message = message.into();
+        let id = self.error(code, message.clone(), span);
+        ErrorNode {
+            span,
+            message,
+            diagnostic: id,
+        }
+    }
+
+    pub fn has_errors(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.severity == Severity::Error)
+    }
+
+    pub fn extend(&mut self, other: DiagnosticBag) {
+        let offset = self.entries.len();
+        for mut entry in other.entries {
+            entry.id = DiagnosticId::new(entry.id.index() + offset);
+            self.entries.push(entry);
+        }
+    }
+}

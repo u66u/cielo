@@ -28,3 +28,11 @@ impl Interner {
         let id = SymbolId::new(self.symbols.len());
         let owned = text.to_owned();
         self.symbols.push(owned.clone());
+        self.lookup.insert(owned, id);
+        id
+    }
+
+    pub fn resolve(&self, id: SymbolId) -> Option<&str> {
+        self.symbols.get(id.index()).map(String::as_str)
+    }
+}

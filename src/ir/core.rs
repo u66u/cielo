@@ -130,3 +130,117 @@ pub enum StmtKind {
 #[derive(Clone, Debug)]
 pub struct MatchArm {
     pub tag: SymbolId,
+    pub binders: Vec<VarId>,
+    pub body: StmtId,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct HandlerClause {
+    pub operation: SymbolId,
+    pub params: Vec<VarId>,
+    pub resume_param: Option<VarId>,
+    pub body: StmtId,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct HandlerDef {
+    pub effect: EffectLabelId,
+    pub return_param: VarId,
+    pub return_body: StmtId,
+    pub clauses: Vec<HandlerClause>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct FunctionDecl {
+    pub name: SymbolId,
+    pub params: Vec<VarId>,
+    pub param_types: Vec<TypeId>,
+    pub return_type: TypeId,
+    pub declared_effects: SortedEffectRow,
+    pub body: StmtId,
+    pub ct_only: bool,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CoreProgram {
+    exprs: Vec<ExprNode>,
+    stmts: Vec<StmtNode>,
+    handlers: Vec<HandlerDef>,
+    functions: Vec<FunctionDecl>,
+    entrypoints: Vec<FuncId>,
+}
+
+impl CoreProgram {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push_expr(&mut self, node: ExprNode) -> ExprId {
+        let id = ExprId::new(self.exprs.len());
+        self.exprs.push(node);
+        id
+    }
+
+    pub fn push_stmt(&mut self, node: StmtNode) -> StmtId {
+        let id = StmtId::new(self.stmts.len());
+        self.stmts.push(node);
+        id
+    }
+
+    pub fn add_handler(&mut self, handler: HandlerDef) -> HandlerId {
+        let id = HandlerId::new(self.handlers.len());
+        self.handlers.push(handler);
+        id
+    }
+
+    pub fn add_function(&mut self, function: FunctionDecl) -> FuncId {
+        let id = FuncId::new(self.functions.len());
+        self.functions.push(function);
+        id
+    }
+
+    pub fn set_entrypoints(&mut self, entrypoints: impl IntoIterator<Item = FuncId>) {
+        self.entrypoints.clear();
+        self.entrypoints.extend(entrypoints);
+    }
+
+    pub fn exprs(&self) -> &[ExprNode] {
+        &self.exprs
+    }
+
+    pub fn stmts(&self) -> &[StmtNode] {
+        &self.stmts
+    }
+
+    pub fn handlers(&self) -> &[HandlerDef] {
+        &self.handlers
+    }
+
+    pub fn functions(&self) -> &[FunctionDecl] {
+        &self.functions
+    }
+
+    pub fn entrypoints(&self) -> &[FuncId] {
+        &self.entrypoints
+    }
+
+    pub fn expr(&self, id: ExprId) -> Option<&ExprNode> {
+        self.exprs.get(id.index())
+    }
+
+    pub fn stmt(&self, id: StmtId) -> Option<&StmtNode> {
+        self.stmts.get(id.index())
+    }
+
+    pub fn function(&self, id: FuncId) -> Option<&FunctionDecl> {
+        self.functions.get(id.index())
+    }
+
+    pub fn function_mut(&mut self, id: FuncId) -> Option<&mut FunctionDecl> {
+        self.functions.get_mut(id.index())
+    }
+}

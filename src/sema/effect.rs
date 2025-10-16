@@ -116,3 +116,39 @@ impl SortedEffectRow {
     }
 
     pub fn union(&self, other: &Self) -> Self {
+        let mut merged = self.0.clone();
+        for effect in &other.0 {
+            if let Err(pos) = merged.binary_search(effect) {
+                merged.insert(pos, *effect);
+            }
+        }
+        Self(merged)
+    }
+
+    pub fn subtract(&self, other: &Self) -> Self {
+        Self(
+            self.0
+                .iter()
+                .copied()
+                .filter(|effect| other.0.binary_search(effect).is_err())
+                .collect(),
+        )
+    }
+}
+
+impl Deref for SortedEffectRow {
+    type Target = [EffectLabelId];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl IntoIterator for SortedEffectRow {
+    type Item = EffectLabelId;
+    type IntoIter = std::vec::IntoIter<EffectLabelId>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
