@@ -86,3 +86,54 @@ impl Compiler {
         interner: &mut Interner,
     ) -> CoreBuilt {
         let parsed = self.parse(source, source_id, interner);
+        self.lower_parsed_to_core(parsed)
+    }
+
+    pub fn compile_source_v0(
+        &self,
+        source: &str,
+        source_id: SourceId,
+        interner: &mut Interner,
+    ) -> Residualized {
+        let core = self.parse_and_lower_to_core(source, source_id, interner);
+        self.run_v0_core_pipeline(core)
+    }
+
+    pub fn run_v0_core_pipeline(&self, built: CoreBuilt) -> Residualized {
+        let typed = self.typecheck(built);
+        let mono = self.monomorphize(typed);
+        let ct = self.ct_propagate(mono);
+        let bta = self.classify_staging(ct);
+        self.residualize(bta)
+    }
+
+    fn typecheck(&self, built: CoreBuilt) -> Typed {
+        let mut diagnostics = built.diagnostics;
+        let sema = typecheck_core(&built.program, &mut diagnostics);
+        Typed {
+            program: built.program,
+            diagnostics,
+            sema,
+        }
+    }
+
+    fn monomorphize(&self, typed: Typed) -> Monomorphized {
+        let _ = self.config.target;
+        typed.into_monomorphized(MonomorphizationSummary::default())
+    }
+
+    fn ct_propagate(&self, mono: Monomorphized) -> CtPropagated {
+        let _ = self.config.target;
+        mono.into_ct_propagated(CtPropagationTables::default())
+    }
+
+    fn classify_staging(&self, ct: CtPropagated) -> BtaClassified {
+        let _ = self.config.target;
+        ct.into_bta_classified(BtaTables::default())
+    }
+
+    fn residualize(&self, bta: BtaClassified) -> Residualized {
+        let _ = self.config.target;
+        bta.into_residualized(ResidualTables::default())
+    }
+}

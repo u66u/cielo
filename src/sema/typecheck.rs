@@ -84,3 +84,68 @@ fn infer_expr_type(
         ExprKind::Var(_) => None,
         ExprKind::PureCall { .. } => None,
         ExprKind::MakeStruct { ty, .. } => Some(*ty),
+        ExprKind::MakeEnum { ty, .. } => Some(*ty),
+        ExprKind::Error(_) => None,
+    }
+}
+
+fn infer_binary_type(
+    op: BinaryOp,
+    left: Option<crate::common::ids::TypeId>,
+    right: Option<crate::common::ids::TypeId>,
+    prim: PrimitiveTypeIds,
+) -> Option<crate::common::ids::TypeId> {
+    let (left, right) = (left?, right?);
+    match op {
+        BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
+            if left == right && (left == prim.int || left == prim.float) {
+                Some(left)
+            } else {
+                None
+            }
+        }
+        BinaryOp::Eq | BinaryOp::Ne => {
+            if left == right {
+                Some(prim.bool_)
+            } else {
+                None
+            }
+        }
+        BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
+            if left == right && (left == prim.int || left == prim.float) {
+                Some(prim.bool_)
+            } else {
+                None
+            }
+        }
+        BinaryOp::And | BinaryOp::Or => {
+            if left == prim.bool_ && right == prim.bool_ {
+                Some(prim.bool_)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn type_for_literal(lit: &Literal, prim: PrimitiveTypeIds) -> crate::common::ids::TypeId {
+    match lit {
+        Literal::Unit => prim.unit,
+        Literal::Bool(_) => prim.bool_,
+        Literal::Int(_) => prim.int,
+        Literal::Float(_) => prim.float,
+        Literal::Char(_) => prim.char_,
+        Literal::String(_) => prim.string,
+    }
+}
+
+fn intern_primitives(store: &mut TypeStore) -> PrimitiveTypeIds {
+    PrimitiveTypeIds {
+        unit: store.intern(TypeKind::Primitive(PrimitiveType::Unit)),
+        bool_: store.intern(TypeKind::Primitive(PrimitiveType::Bool)),
+        int: store.intern(TypeKind::Primitive(PrimitiveType::Int)),
+        float: store.intern(TypeKind::Primitive(PrimitiveType::Float)),
+        char_: store.intern(TypeKind::Primitive(PrimitiveType::Char)),
+        string: store.intern(TypeKind::Primitive(PrimitiveType::String)),
+    }
+}

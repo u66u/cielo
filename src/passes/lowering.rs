@@ -130,3 +130,145 @@ impl Lowerer {
                     lowered_seq.push((error.span, temp, expr_id));
                 }
             }
+        }
+
+        let tail_expr = if let Some(tail) = &block.tail {
+            self.lower_expr(tail, &locals)
+        } else {
+            self.push_expr(ExprKind::Literal(Literal::Unit), block.span)
+        };
+        let mut next = self.push_stmt(StmtKind::Return(tail_expr), block.span);
+
+        for (span, binding, value) in lowered_seq.into_iter().rev() {
+            next = self.push_stmt(
+                StmtKind::Let {
+                    binding,
+                    value,
+                    next,
+                },
+                span,
+            );
+        }
+        next
+    }
+
+    fn lower_expr(
+        &mut self,
+        expr: &ast::Expr,
+        locals: &HashMap<SymbolId, VarId>,
+    ) -> crate::common::ids::ExprId {
+        let kind = match &expr.kind {
+            AstExprKind::Int(value) => ExprKind::Literal(Literal::Int(*value)),
+            AstExprKind::Bool(value) => ExprKind::Literal(Literal::Bool(*value)),
+            AstExprKind::String(value) => ExprKind::Literal(Literal::String(value.clone())),
+            AstExprKind::Var(name) => {
+                if let Some(var_id) = locals.get(name) {
+                    ExprKind::Var(*var_id)
+                } else {
+                    let error = self.diagnostics.error_node(
+                        "LOWER_UNKNOWN_VAR",
+                        "Unknown variable during AST->Core lowering",
+                        expr.span,
+                    );
+                    ExprKind::Error(error)
+                }
+            }
+            AstExprKind::Unary { op, expr: inner } => ExprKind::Unary {
+                op: map_unary_op(*op),
+                expr: self.lower_expr(inner, locals),
+            },
+            AstExprKind::Binary { op, lhs, rhs } => ExprKind::Binary {
+                op: map_binary_op(*op),
+                lhs: self.lower_expr(lhs, locals),
+                rhs: self.lower_expr(rhs, locals),
+            },
+            AstExprKind::Call { callee, args } => {
+                if let AstExprKind::Var(symbol) = callee.kind {
+                    if let Some(func_id) = self.functions_by_name.get(&symbol) {
+                        ExprKind::PureCall {
+                            callee: *func_id,
+                            args: args
+                                .iter()
+                                .map(|arg| self.lower_expr(arg, locals))
+                                .collect(),
+                        }
+                    } else {
+                        let error = self.diagnostics.error_node(
+                            "LOWER_UNKNOWN_FUNC",
+                            "Unknown function call target during AST->Core lowering",
+                            expr.span,
+                        );
+                        ExprKind::Error(error)
+                    }
+                } else {
+                    let error = self.diagnostics.error_node(
+                        "LOWER_COMPLEX_CALLEE",
+                        "Only direct calls by function name are supported in v0 lowering",
+                        expr.span,
+                    );
+                    ExprKind::Error(error)
+                }
+            }
+            AstExprKind::If { .. } | AstExprKind::Block(_) | AstExprKind::StageBlock { .. } => {
+                let error = self.diagnostics.error_node(
+                    "LOWER_EXPR_UNSUPPORTED",
+                    "This expression form is parsed but not lowered yet in v0",
+                    expr.span,
+                );
+                ExprKind::Error(error)
+            }
+            AstExprKind::Error(error) => ExprKind::Error(error.clone()),
+        };
+        self.push_expr(kind, expr.span)
+    }
+
+    fn make_dummy_body(&mut self, span: Span) -> crate::common::ids::StmtId {
+        let unit = self.push_expr(ExprKind::Literal(Literal::Unit), span);
+        self.push_stmt(StmtKind::Return(unit), span)
+    }
+
+    fn push_expr(&mut self, kind: ExprKind, span: Span) -> crate::common::ids::ExprId {
+        self.program.push_expr(ExprNode { span, kind })
+    }
+
+    fn push_stmt(&mut self, kind: StmtKind, span: Span) -> crate::common::ids::StmtId {
+        self.program.push_stmt(StmtNode { span, kind })
+    }
+
+    fn fresh_var(&mut self) -> VarId {
+        let id = VarId::from_u32(self.next_var);
+        self.next_var += 1;
+        id
+    }
+
+    fn symbol_is_named(&self, _symbol: SymbolId, _expected: &str) -> bool {
+        // We intentionally keep lowering independent from the interner in this layer.
+        // Entry point wiring will move to typed/name-resolved passes.
+        false
+    }
+}
+
+fn map_unary_op(op: ast::UnaryOp) -> UnaryOp {
+    match op {
+        ast::UnaryOp::Neg => UnaryOp::Neg,
+        ast::UnaryOp::Not => UnaryOp::Not,
+    }
+}
+
+fn map_binary_op(op: ast::BinOp) -> BinaryOp {
+    match op {
+        ast::BinOp::Add => BinaryOp::Add,
+        ast::BinOp::Sub => BinaryOp::Sub,
+        ast::BinOp::Mul => BinaryOp::Mul,
+        ast::BinOp::Div => BinaryOp::Div,
+        ast::BinOp::Mod => BinaryOp::Mod,
+        ast::BinOp::Eq => BinaryOp::Eq,
+        ast::BinOp::Ne => BinaryOp::Ne,
+        ast::BinOp::Lt => BinaryOp::Lt,
+        ast::BinOp::Le => BinaryOp::Le,
+        ast::BinOp::Gt => BinaryOp::Gt,
+        ast::BinOp::Ge => BinaryOp::Ge,
+        ast::BinOp::And => BinaryOp::And,
+        ast::BinOp::Or => BinaryOp::Or,
+    }
+}
