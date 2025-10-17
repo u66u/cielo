@@ -120,3 +120,192 @@ impl<'a> Lexer<'a> {
                 b'=' => {
                     if self.peek_n(1) == Some(b'=') {
                         self.double(TokenKind::EqEq)
+                    } else {
+                        self.single(TokenKind::Eq)
+                    }
+                }
+                b'!' => {
+                    if self.peek_n(1) == Some(b'=') {
+                        self.double(TokenKind::BangEq)
+                    } else {
+                        self.single(TokenKind::Bang)
+                    }
+                }
+                b'<' => {
+                    if self.peek_n(1) == Some(b'=') {
+                        self.double(TokenKind::Le)
+                    } else {
+                        self.single(TokenKind::Lt)
+                    }
+                }
+                b'>' => {
+                    if self.peek_n(1) == Some(b'=') {
+                        self.double(TokenKind::Ge)
+                    } else {
+                        self.single(TokenKind::Gt)
+                    }
+                }
+                b'&' if self.peek_n(1) == Some(b'&') => self.double(TokenKind::AndAnd),
+                b'|' if self.peek_n(1) == Some(b'|') => self.double(TokenKind::OrOr),
+                b'-' if self.peek_n(1) == Some(b'>') => self.double(TokenKind::Arrow),
+                b'-' => self.single(TokenKind::Minus),
+                b'/' => self.single(TokenKind::Slash),
+                b'"' => self.lex_string(),
+                b'0'..=b'9' => self.lex_integer(),
+                b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.lex_identifier_or_keyword(),
+                _ => {
+                    let span = self.span(self.offset, self.offset + 1);
+                    self.diagnostics.error(
+                        "LEX_UNEXPECTED_CHAR",
+                        format!("Unexpected character '{}'", byte as char),
+                        span,
+                    );
+                    self.offset += 1;
+                }
+            }
+        }
+
+        let eof_span = self.span(self.offset, self.offset);
+        self.tokens.push(Token {
+            kind: TokenKind::Eof,
+            span: eof_span,
+        });
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.bytes.get(self.offset).copied()
+    }
+
+    fn peek_n(&self, n: usize) -> Option<u8> {
+        self.bytes.get(self.offset + n).copied()
+    }
+
+    fn single(&mut self, kind: TokenKind) {
+        let start = self.offset;
+        self.offset += 1;
+        self.tokens.push(Token {
+            kind,
+            span: self.span(start, self.offset),
+        });
+    }
+
+    fn double(&mut self, kind: TokenKind) {
+        let start = self.offset;
+        self.offset += 2;
+        self.tokens.push(Token {
+            kind,
+            span: self.span(start, self.offset),
+        });
+    }
+
+    fn lex_string(&mut self) {
+        let start = self.offset;
+        self.offset += 1;
+        let mut escaped = false;
+
+        while let Some(byte) = self.peek() {
+            self.offset += 1;
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match byte {
+                b'\\' => escaped = true,
+                b'"' => {
+                    let raw = &self.bytes[start + 1..self.offset - 1];
+                    let text = String::from_utf8_lossy(raw).into_owned();
+                    self.tokens.push(Token {
+                        kind: TokenKind::String(text),
+                        span: self.span(start, self.offset),
+                    });
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        self.diagnostics.error(
+            "LEX_UNTERMINATED_STRING",
+            "Unterminated string literal",
+            self.span(start, self.offset),
+        );
+    }
+
+    fn lex_integer(&mut self) {
+        let start = self.offset;
+        while matches!(self.peek(), Some(b'0'..=b'9')) {
+            self.offset += 1;
+        }
+        let bytes = &self.bytes[start..self.offset];
+        let text = String::from_utf8_lossy(bytes);
+        match text.parse::<i64>() {
+            Ok(value) => self.tokens.push(Token {
+                kind: TokenKind::Integer(value),
+                span: self.span(start, self.offset),
+            }),
+            Err(_) => {
+                self.diagnostics.error(
+                    "LEX_BAD_INT",
+                    format!("Invalid integer literal '{text}'"),
+                    self.span(start, self.offset),
+                );
+            }
+        }
+    }
+
+    fn lex_identifier_or_keyword(&mut self) {
+        let start = self.offset;
+        while matches!(
+            self.peek(),
+            Some(b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')
+        ) {
+            self.offset += 1;
+        }
+
+        let text = String::from_utf8_lossy(&self.bytes[start..self.offset]);
+        if let Some(keyword) = keyword_from_text(&text) {
+            self.tokens.push(Token {
+                kind: TokenKind::Keyword(keyword),
+                span: self.span(start, self.offset),
+            });
+            return;
+        }
+
+        let id = self.interner.intern(&text);
+        self.tokens.push(Token {
+            kind: TokenKind::Identifier(id),
+            span: self.span(start, self.offset),
+        });
+    }
+
+    fn skip_line_comment(&mut self) {
+        while let Some(byte) = self.peek() {
+            self.offset += 1;
+            if byte == b'\n' {
+                break;
+            }
+        }
+    }
+
+    fn span(&self, start: usize, end: usize) -> Span {
+        Span::new(self.source_id, start as u32, end as u32)
+    }
+}
+
+fn keyword_from_text(text: &str) -> Option<Keyword> {
+    match text {
+        "fn" => Some(Keyword::Fn),
+        "struct" => Some(Keyword::Struct),
+        "enum" => Some(Keyword::Enum),
+        "effect" => Some(Keyword::Effect),
+        "let" => Some(Keyword::Let),
+        "if" => Some(Keyword::If),
+        "else" => Some(Keyword::Else),
+        "true" => Some(Keyword::True),
+        "false" => Some(Keyword::False),
+        "with" => Some(Keyword::With),
+        "comptime" => Some(Keyword::Comptime),
+        "runtime" => Some(Keyword::Runtime),
+        _ => None,
+    }
+}

@@ -110,3 +110,83 @@ pub enum Stmt {
     },
     Error(ErrorNode),
 }
+
+#[derive(Clone, Debug)]
+pub struct Expr {
+    pub kind: ExprKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub enum ExprKind {
+    Int(i64),
+    Bool(bool),
+    String(String),
+    Var(SymbolId),
+    Call {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+    },
+    Binary {
+        op: BinOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
+    Unary {
+        op: UnaryOp,
+        expr: Box<Expr>,
+    },
+    If {
+        cond: Box<Expr>,
+        then_branch: BlockExpr,
+        else_branch: Option<BlockExpr>,
+    },
+    Block(BlockExpr),
+    StageBlock {
+        stage: StageMarker,
+        block: BlockExpr,
+    },
+    Error(ErrorNode),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StageMarker {
+    Comptime,
+    Runtime,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum UnaryOp {
+    Neg,
+    Not,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    And,
+    Or,
+}
+
+impl BinOp {
+    pub const fn precedence(self) -> u8 {
+        match self {
+            Self::Or => 1,
+            Self::And => 2,
+            Self::Eq | Self::Ne => 3,
+            Self::Lt | Self::Le | Self::Gt | Self::Ge => 4,
+            Self::Add | Self::Sub => 5,
+            Self::Mul | Self::Div | Self::Mod => 6,
+        }
+    }
+}
