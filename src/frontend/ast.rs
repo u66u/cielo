@@ -104,6 +104,12 @@ pub enum Stmt {
         value: Expr,
         span: Span,
     },
+    Perform {
+        effect: SymbolId,
+        operation: SymbolId,
+        args: Vec<Expr>,
+        span: Span,
+    },
     Expr {
         value: Expr,
         span: Span,

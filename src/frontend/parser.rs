@@ -293,6 +293,11 @@ impl Parser {
                 self.consume_kind(TokenKind::Semi);
                 continue;
             }
+            if self.check_keyword(Keyword::Do) {
+                statements.push(self.parse_perform_stmt());
+                self.consume_kind(TokenKind::Semi);
+                continue;
+            }
 
             let expr = self.parse_expr(0);
             if self.consume_kind(TokenKind::Semi).is_some() {
@@ -353,6 +358,30 @@ impl Parser {
             ty,
             value,
             span,
+        }
+    }
+
+    fn parse_perform_stmt(&mut self) -> Stmt {
+        let start = self.expect_keyword(Keyword::Do).span;
+        let effect = self.expect_identifier("Expected effect name after `do`");
+        self.expect_kind(TokenKind::Dot, "Expected `.` after effect name in `do` statement");
+        let operation = self.expect_identifier("Expected operation name after effect in `do` statement");
+        self.expect_kind(TokenKind::LParen, "Expected `(` after effect operation name");
+        let mut args = Vec::new();
+        if !self.check_kind(TokenKind::RParen) {
+            loop {
+                args.push(self.parse_expr(0));
+                if self.consume_kind(TokenKind::Comma).is_none() {
+                    break;
+                }
+            }
+        }
+        let end = self.expect_kind(TokenKind::RParen, "Expected `)` after effect operation arguments");
+        Stmt::Perform {
+            effect,
+            operation,
+            args,
+            span: span_join(start, end.span),
         }
     }
 
