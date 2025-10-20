@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::common::diagnostics::DiagnosticBag;
-use crate::common::ids::{FuncId, SymbolId, TypeId, VarId};
+use crate::common::ids::{EffectLabelId, FuncId, SymbolId, TypeId, VarId};
 use crate::common::span::Span;
 use crate::frontend::ast::{self, ExprKind as AstExprKind, Item, Stmt as AstStmt};
 use crate::ir::core::{
@@ -29,6 +29,7 @@ struct Lowerer {
     diagnostics: DiagnosticBag,
     next_var: u32,
     functions_by_name: HashMap<SymbolId, FuncId>,
+    effect_labels: HashMap<SymbolId, EffectLabelId>,
 }
 
 impl Lowerer {
@@ -38,11 +39,18 @@ impl Lowerer {
             diagnostics: DiagnosticBag::default(),
             next_var: 0,
             functions_by_name: HashMap::new(),
+            effect_labels: HashMap::new(),
         }
     }
 
     fn lower(&mut self, ast: &ast::Program) {
         let mut function_work = Vec::new();
+        for item in &ast.items {
+            if let Item::Effect(effect) = item {
+                let effect_id = EffectLabelId::new(self.effect_labels.len());
+                self.effect_labels.insert(effect.name, effect_id);
+            }
+        }
 
         for item in &ast.items {
             if let Item::Function(function) = item {
@@ -51,12 +59,19 @@ impl Lowerer {
                     param_vars.push(self.fresh_var());
                 }
                 let dummy = self.make_dummy_body(function.span);
+                let declared_effects = SortedEffectRow::new(
+                    function
+                        .effects
+                        .iter()
+                        .filter_map(|name| self.effect_labels.get(name).copied())
+                        .collect(),
+                );
                 let func_id = self.program.add_function(FunctionDecl {
                     name: function.name,
                     params: param_vars.clone(),
                     param_types: vec![TypeId::INVALID; param_vars.len()],
                     return_type: TypeId::INVALID,
-                    declared_effects: SortedEffectRow::empty(),
+                    declared_effects,
                     body: dummy,
                     ct_only: false,
                     span: function.span,
@@ -106,8 +121,22 @@ impl Lowerer {
         block: &ast::BlockExpr,
         outer_locals: &mut HashMap<SymbolId, VarId>,
     ) -> crate::common::ids::StmtId {
+        enum Action {
+            Let {
+                span: Span,
+                binding: VarId,
+                value: crate::common::ids::ExprId,
+            },
+            Perform {
+                span: Span,
+                effect: EffectLabelId,
+                operation: SymbolId,
+                args: Vec<crate::common::ids::ExprId>,
+            },
+        }
+
         let mut locals = outer_locals.clone();
-        let mut lowered_seq: Vec<(Span, VarId, crate::common::ids::ExprId)> = Vec::new();
+        let mut actions: Vec<Action> = Vec::new();
 
         for stmt in &block.statements {
             match stmt {
@@ -117,17 +146,51 @@ impl Lowerer {
                     let binding = self.fresh_var();
                     let value_id = self.lower_expr(value, &locals);
                     locals.insert(*name, binding);
-                    lowered_seq.push((*span, binding, value_id));
+                    actions.push(Action::Let {
+                        span: *span,
+                        binding,
+                        value: value_id,
+                    });
                 }
                 AstStmt::Expr { value, span } => {
                     let temp = self.fresh_var();
                     let value_id = self.lower_expr(value, &locals);
-                    lowered_seq.push((*span, temp, value_id));
+                    actions.push(Action::Let {
+                        span: *span,
+                        binding: temp,
+                        value: value_id,
+                    });
+                }
+                AstStmt::Perform {
+                    effect,
+                    operation,
+                    args,
+                    span,
+                } => {
+                    let effect_label = self.effect_labels.get(effect).copied().unwrap_or_else(|| {
+                        self.diagnostics.error(
+                            "LOWER_UNKNOWN_EFFECT",
+                            "Unknown effect in `do` statement during AST->Core lowering",
+                            *span,
+                        );
+                        EffectLabelId::INVALID
+                    });
+                    let lowered_args = args.iter().map(|arg| self.lower_expr(arg, &locals)).collect();
+                    actions.push(Action::Perform {
+                        span: *span,
+                        effect: effect_label,
+                        operation: *operation,
+                        args: lowered_args,
+                    });
                 }
                 AstStmt::Error(error) => {
                     let expr_id = self.push_expr(ExprKind::Error(error.clone()), error.span);
                     let temp = self.fresh_var();
-                    lowered_seq.push((error.span, temp, expr_id));
+                    actions.push(Action::Let {
+                        span: error.span,
+                        binding: temp,
+                        value: expr_id,
+                    });
                 }
             }
         }
@@ -139,15 +202,36 @@ impl Lowerer {
         };
         let mut next = self.push_stmt(StmtKind::Return(tail_expr), block.span);
 
-        for (span, binding, value) in lowered_seq.into_iter().rev() {
-            next = self.push_stmt(
-                StmtKind::Let {
+        for action in actions.into_iter().rev() {
+            next = match action {
+                Action::Let {
+                    span,
                     binding,
                     value,
-                    next,
-                },
-                span,
-            );
+                } => self.push_stmt(
+                    StmtKind::Let {
+                        binding,
+                        value,
+                        next,
+                    },
+                    span,
+                ),
+                Action::Perform {
+                    span,
+                    effect,
+                    operation,
+                    args,
+                } => self.push_stmt(
+                    StmtKind::Perform {
+                        result: None,
+                        effect,
+                        operation,
+                        args,
+                        next,
+                    },
+                    span,
+                ),
+            };
         }
         next
     }

@@ -18,7 +18,7 @@ pub fn typecheck_core(program: &CoreProgram, diagnostics: &mut DiagnosticBag) ->
     let mut store = TypeStore::new();
     let primitives = intern_primitives(&mut store);
 
-    let mut sema = SemanticTables::with_expr_count(program.exprs().len());
+    let mut sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
     sema.effects_of_expr = vec![SortedEffectRow::empty(); program.exprs().len()];
 
     let mut changed = true;
@@ -58,7 +58,71 @@ pub fn typecheck_core(program: &CoreProgram, diagnostics: &mut DiagnosticBag) ->
         .enumerate()
         .map(|(idx, _)| store.persistability(crate::common::ids::TypeId::new(idx)))
         .collect();
+
+    infer_stmt_effects(program, &mut sema.effects_of_stmt);
     sema
+}
+
+fn infer_stmt_effects(program: &CoreProgram, out: &mut [SortedEffectRow]) {
+    let mut memo: Vec<Option<SortedEffectRow>> = vec![None; out.len()];
+    for idx in 0..program.stmts().len() {
+        let stmt_id = crate::common::ids::StmtId::new(idx);
+        let row = infer_stmt_effect(program, stmt_id, &mut memo);
+        out[idx] = row;
+    }
+}
+
+fn infer_stmt_effect(
+    program: &CoreProgram,
+    stmt_id: crate::common::ids::StmtId,
+    memo: &mut [Option<SortedEffectRow>],
+) -> SortedEffectRow {
+    if let Some(row) = memo.get(stmt_id.index()).and_then(Clone::clone) {
+        return row;
+    }
+
+    let row = match program.stmt(stmt_id).map(|node| &node.kind) {
+        Some(crate::ir::core::StmtKind::Return(_)) => SortedEffectRow::empty(),
+        Some(crate::ir::core::StmtKind::Let { next, .. }) => infer_stmt_effect(program, *next, memo),
+        Some(crate::ir::core::StmtKind::Val { value, next, .. }) => infer_stmt_effect(program, *value, memo)
+            .union(&infer_stmt_effect(program, *next, memo)),
+        Some(crate::ir::core::StmtKind::Call { effects, next, .. }) => {
+            effects.union(&infer_stmt_effect(program, *next, memo))
+        }
+        Some(crate::ir::core::StmtKind::Perform { effect, next, .. }) => {
+            SortedEffectRow::singleton(*effect).union(&infer_stmt_effect(program, *next, memo))
+        }
+        Some(crate::ir::core::StmtKind::If {
+            then_branch,
+            else_branch,
+            ..
+        }) => infer_stmt_effect(program, *then_branch, memo)
+            .union(&infer_stmt_effect(program, *else_branch, memo)),
+        Some(crate::ir::core::StmtKind::Match { arms, default, .. }) => {
+            let mut row = SortedEffectRow::empty();
+            for arm in arms {
+                row = row.union(&infer_stmt_effect(program, arm.body, memo));
+            }
+            if let Some(default_stmt) = default {
+                row = row.union(&infer_stmt_effect(program, *default_stmt, memo));
+            }
+            row
+        }
+        Some(crate::ir::core::StmtKind::Handle { body, next, .. }) => {
+            let mut row = infer_stmt_effect(program, *body, memo);
+            if let Some(next_stmt) = next {
+                row = row.union(&infer_stmt_effect(program, *next_stmt, memo));
+            }
+            row
+        }
+        Some(crate::ir::core::StmtKind::Hole { .. }) | Some(crate::ir::core::StmtKind::Error(_)) => {
+            SortedEffectRow::empty()
+        }
+        None => SortedEffectRow::empty(),
+    };
+
+    memo[stmt_id.index()] = Some(row.clone());
+    row
 }
 
 fn infer_expr_type(

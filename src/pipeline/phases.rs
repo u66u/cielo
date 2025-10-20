@@ -42,15 +42,17 @@ pub struct HandlerDischarge {
 pub struct SemanticTables {
     pub type_of_expr: Vec<Option<TypeId>>,
     pub effects_of_expr: Vec<SortedEffectRow>,
+    pub effects_of_stmt: Vec<SortedEffectRow>,
     pub persistability_of_type: Vec<Persistability>,
     pub effect_properties: HashMap<EffectLabelId, EffectProperties>,
 }
 
 impl SemanticTables {
-    pub fn with_expr_count(expr_count: usize) -> Self {
+    pub fn with_counts(expr_count: usize, stmt_count: usize) -> Self {
         Self {
             type_of_expr: vec![None; expr_count],
             effects_of_expr: vec![SortedEffectRow::empty(); expr_count],
+            effects_of_stmt: vec![SortedEffectRow::empty(); stmt_count],
             persistability_of_type: Vec::new(),
             effect_properties: HashMap::new(),
         }
