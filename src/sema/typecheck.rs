@@ -83,9 +83,12 @@ fn infer_stmt_effect(
 
     let row = match program.stmt(stmt_id).map(|node| &node.kind) {
         Some(crate::ir::core::StmtKind::Return(_)) => SortedEffectRow::empty(),
-        Some(crate::ir::core::StmtKind::Let { next, .. }) => infer_stmt_effect(program, *next, memo),
-        Some(crate::ir::core::StmtKind::Val { value, next, .. }) => infer_stmt_effect(program, *value, memo)
-            .union(&infer_stmt_effect(program, *next, memo)),
+        Some(crate::ir::core::StmtKind::Let { next, .. }) => {
+            infer_stmt_effect(program, *next, memo)
+        }
+        Some(crate::ir::core::StmtKind::Val { value, next, .. }) => {
+            infer_stmt_effect(program, *value, memo).union(&infer_stmt_effect(program, *next, memo))
+        }
         Some(crate::ir::core::StmtKind::Call { effects, next, .. }) => {
             effects.union(&infer_stmt_effect(program, *next, memo))
         }
@@ -96,8 +99,11 @@ fn infer_stmt_effect(
             then_branch,
             else_branch,
             ..
-        }) => infer_stmt_effect(program, *then_branch, memo)
-            .union(&infer_stmt_effect(program, *else_branch, memo)),
+        }) => infer_stmt_effect(program, *then_branch, memo).union(&infer_stmt_effect(
+            program,
+            *else_branch,
+            memo,
+        )),
         Some(crate::ir::core::StmtKind::Match { arms, default, .. }) => {
             let mut row = SortedEffectRow::empty();
             for arm in arms {
@@ -115,9 +121,8 @@ fn infer_stmt_effect(
             }
             row
         }
-        Some(crate::ir::core::StmtKind::Hole { .. }) | Some(crate::ir::core::StmtKind::Error(_)) => {
-            SortedEffectRow::empty()
-        }
+        Some(crate::ir::core::StmtKind::Hole { .. })
+        | Some(crate::ir::core::StmtKind::Error(_)) => SortedEffectRow::empty(),
         None => SortedEffectRow::empty(),
     };
 

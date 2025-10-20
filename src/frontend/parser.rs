@@ -364,9 +364,16 @@ impl Parser {
     fn parse_perform_stmt(&mut self) -> Stmt {
         let start = self.expect_keyword(Keyword::Do).span;
         let effect = self.expect_identifier("Expected effect name after `do`");
-        self.expect_kind(TokenKind::Dot, "Expected `.` after effect name in `do` statement");
-        let operation = self.expect_identifier("Expected operation name after effect in `do` statement");
-        self.expect_kind(TokenKind::LParen, "Expected `(` after effect operation name");
+        self.expect_kind(
+            TokenKind::Dot,
+            "Expected `.` after effect name in `do` statement",
+        );
+        let operation =
+            self.expect_identifier("Expected operation name after effect in `do` statement");
+        self.expect_kind(
+            TokenKind::LParen,
+            "Expected `(` after effect operation name",
+        );
         let mut args = Vec::new();
         if !self.check_kind(TokenKind::RParen) {
             loop {
@@ -376,7 +383,10 @@ impl Parser {
                 }
             }
         }
-        let end = self.expect_kind(TokenKind::RParen, "Expected `)` after effect operation arguments");
+        let end = self.expect_kind(
+            TokenKind::RParen,
+            "Expected `)` after effect operation arguments",
+        );
         Stmt::Perform {
             effect,
             operation,

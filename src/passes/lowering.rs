@@ -167,15 +167,19 @@ impl Lowerer {
                     args,
                     span,
                 } => {
-                    let effect_label = self.effect_labels.get(effect).copied().unwrap_or_else(|| {
-                        self.diagnostics.error(
-                            "LOWER_UNKNOWN_EFFECT",
-                            "Unknown effect in `do` statement during AST->Core lowering",
-                            *span,
-                        );
-                        EffectLabelId::INVALID
-                    });
-                    let lowered_args = args.iter().map(|arg| self.lower_expr(arg, &locals)).collect();
+                    let effect_label =
+                        self.effect_labels.get(effect).copied().unwrap_or_else(|| {
+                            self.diagnostics.error(
+                                "LOWER_UNKNOWN_EFFECT",
+                                "Unknown effect in `do` statement during AST->Core lowering",
+                                *span,
+                            );
+                            EffectLabelId::INVALID
+                        });
+                    let lowered_args = args
+                        .iter()
+                        .map(|arg| self.lower_expr(arg, &locals))
+                        .collect();
                     actions.push(Action::Perform {
                         span: *span,
                         effect: effect_label,
