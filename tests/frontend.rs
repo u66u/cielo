@@ -1,5 +1,6 @@
 use cielo::common::ids::SourceId;
 use cielo::common::symbols::Interner;
+use cielo::frontend::ast::{Item, Stmt};
 use cielo::frontend::lexer::{Keyword, TokenKind, lex};
 use cielo::frontend::parser::parse_source;
 
@@ -53,4 +54,32 @@ effect Console { fn print(s: String) -> () }
     let mut interner = Interner::new();
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     assert_eq!(parsed.program.items.len(), 3);
+}
+
+#[test]
+fn parse_do_effect_statement() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+fn main() -> Int {
+  do Console.print("hi");
+  0
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let func = parsed
+        .program
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Function(func) => Some(func),
+            _ => None,
+        })
+        .expect("expected function");
+    assert!(
+        func.body
+            .statements
+            .iter()
+            .any(|stmt| matches!(stmt, Stmt::Perform { .. }))
+    );
 }
