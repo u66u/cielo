@@ -4,9 +4,10 @@ use crate::common::symbols::Interner;
 use crate::frontend::parser::parse_source;
 use crate::ir::core::CoreProgram;
 use crate::passes::lowering::lower_program;
+use crate::passes::monomorphize;
 use crate::pipeline::phases::{
-    BtaClassified, BtaTables, CoreBuilt, CtPropagated, CtPropagationTables,
-    MonomorphizationSummary, Monomorphized, Parsed, ResidualTables, Residualized, Typed,
+    BtaClassified, BtaTables, CoreBuilt, CtPropagated, CtPropagationTables, Monomorphized, Parsed,
+    ResidualTables, Residualized, Typed,
 };
 use crate::sema::typecheck::typecheck_core;
 
@@ -119,7 +120,7 @@ impl Compiler {
 
     fn monomorphize(&self, typed: Typed) -> Monomorphized {
         let _ = self.config.target;
-        typed.into_monomorphized(MonomorphizationSummary::default())
+        monomorphize::run(typed)
     }
 
     fn ct_propagate(&self, mono: Monomorphized) -> CtPropagated {
