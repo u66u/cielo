@@ -3,11 +3,13 @@ use crate::common::ids::SourceId;
 use crate::common::symbols::Interner;
 use crate::frontend::parser::parse_source;
 use crate::ir::core::CoreProgram;
+use crate::passes::bta;
+use crate::passes::ct_propagate;
 use crate::passes::lowering::lower_program;
 use crate::passes::monomorphize;
+use crate::passes::residualize;
 use crate::pipeline::phases::{
-    BtaClassified, BtaTables, CoreBuilt, CtPropagated, CtPropagationTables, Monomorphized, Parsed,
-    ResidualTables, Residualized, Typed,
+    BtaClassified, CoreBuilt, CtPropagated, Monomorphized, Parsed, Residualized, Typed,
 };
 use crate::sema::typecheck::typecheck_core;
 
@@ -125,16 +127,16 @@ impl Compiler {
 
     fn ct_propagate(&self, mono: Monomorphized) -> CtPropagated {
         let _ = self.config.target;
-        mono.into_ct_propagated(CtPropagationTables::default())
+        ct_propagate::run(mono)
     }
 
     fn classify_staging(&self, ct: CtPropagated) -> BtaClassified {
         let _ = self.config.target;
-        ct.into_bta_classified(BtaTables::default())
+        bta::run(ct)
     }
 
     fn residualize(&self, bta: BtaClassified) -> Residualized {
         let _ = self.config.target;
-        bta.into_residualized(ResidualTables::default())
+        residualize::run(bta)
     }
 }
