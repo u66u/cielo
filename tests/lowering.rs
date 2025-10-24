@@ -2,7 +2,7 @@ use cielo::common::ids::SourceId;
 use cielo::common::symbols::Interner;
 use cielo::frontend::parser::parse_source;
 use cielo::ir::core::StmtKind;
-use cielo::passes::lowering::lower_program;
+use cielo::passes::lowering::{LowerConfig, lower_program};
 
 #[test]
 fn lowers_simple_program() {
@@ -19,7 +19,7 @@ fn add(x: Int, y: Int) -> Int {
 "#;
     let mut interner = Interner::new();
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
-    let lowered = lower_program(&parsed.program);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
     assert_eq!(lowered.program.functions().len(), 2);
     assert!(!lowered.diagnostics.has_errors());
 }
@@ -35,7 +35,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
-    let lowered = lower_program(&parsed.program);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
     let main = lowered.program.functions().first().expect("function");
     let mut cursor = main.body;
     let mut seen_perform = false;

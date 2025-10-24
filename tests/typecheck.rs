@@ -4,7 +4,7 @@ use cielo::common::span::Span;
 use cielo::common::symbols::Interner;
 use cielo::frontend::parser::parse_source;
 use cielo::ir::core::{BinaryOp, CoreProgram, ExprKind, ExprNode, Literal};
-use cielo::passes::lowering::lower_program;
+use cielo::passes::lowering::{LowerConfig, lower_program};
 use cielo::sema::typecheck::typecheck_core;
 
 #[test]
@@ -43,7 +43,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
-    let lowered = lower_program(&parsed.program);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
     let sema = typecheck_core(&lowered.program, &mut diagnostics);
     assert!(
