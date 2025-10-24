@@ -9,6 +9,15 @@ use crate::frontend::ast::{
 };
 use crate::frontend::lexer::{Keyword, Token, TokenKind, lex};
 
+macro_rules! map_binops {
+    ($tok:expr, $($pat:pat => $op:expr),+ $(,)?) => {
+        match $tok {
+            $($pat => Some(($op, $op.precedence())),)+
+            _ => None,
+        }
+    };
+}
+
 #[derive(Clone, Debug)]
 pub struct ParseOutput {
     pub program: Program,
@@ -591,7 +600,8 @@ impl Parser {
     }
 
     fn peek_binop(&self) -> Option<(BinOp, u8)> {
-        let op = match self.current().kind {
+        map_binops!(
+            self.current().kind,
             TokenKind::Plus => BinOp::Add,
             TokenKind::Minus => BinOp::Sub,
             TokenKind::Star => BinOp::Mul,
@@ -604,10 +614,8 @@ impl Parser {
             TokenKind::Gt => BinOp::Gt,
             TokenKind::Ge => BinOp::Ge,
             TokenKind::AndAnd => BinOp::And,
-            TokenKind::OrOr => BinOp::Or,
-            _ => return None,
-        };
-        Some((op, op.precedence()))
+            TokenKind::OrOr => BinOp::Or
+        )
     }
 
     fn recover_item(&mut self) {

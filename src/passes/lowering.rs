@@ -15,8 +15,29 @@ pub struct LowerOutput {
     pub diagnostics: DiagnosticBag,
 }
 
-pub fn lower_program(ast: &ast::Program) -> LowerOutput {
-    let mut lowerer = Lowerer::new();
+#[derive(Clone, Debug)]
+pub struct LowerConfig {
+    pub entrypoints: Vec<SymbolId>,
+}
+
+impl Default for LowerConfig {
+    fn default() -> Self {
+        Self {
+            entrypoints: Vec::new(),
+        }
+    }
+}
+
+impl LowerConfig {
+    pub fn with_entrypoint(entrypoint: SymbolId) -> Self {
+        Self {
+            entrypoints: vec![entrypoint],
+        }
+    }
+}
+
+pub fn lower_program(ast: &ast::Program, config: LowerConfig) -> LowerOutput {
+    let mut lowerer = Lowerer::new(config);
     lowerer.lower(ast);
     LowerOutput {
         program: lowerer.program,
@@ -30,16 +51,18 @@ struct Lowerer {
     next_var: u32,
     functions_by_name: HashMap<SymbolId, FuncId>,
     effect_labels: HashMap<SymbolId, EffectLabelId>,
+    config: LowerConfig,
 }
 
 impl Lowerer {
-    fn new() -> Self {
+    fn new(config: LowerConfig) -> Self {
         Self {
             program: CoreProgram::new(),
             diagnostics: DiagnosticBag::default(),
             next_var: 0,
             functions_by_name: HashMap::new(),
             effect_labels: HashMap::new(),
+            config,
         }
     }
 
@@ -109,7 +132,7 @@ impl Lowerer {
                     .functions_by_name
                     .get(&function.name)
                     .copied()
-                    .filter(|_| self.symbol_is_named(function.name, "main")),
+                    .filter(|_| self.config.entrypoints.contains(&function.name)),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -327,12 +350,6 @@ impl Lowerer {
         let id = VarId::from_u32(self.next_var);
         self.next_var += 1;
         id
-    }
-
-    fn symbol_is_named(&self, _symbol: SymbolId, _expected: &str) -> bool {
-        // We intentionally keep lowering independent from the interner in this layer.
-        // Entry point wiring will move to typed/name-resolved passes.
-        false
     }
 }
 

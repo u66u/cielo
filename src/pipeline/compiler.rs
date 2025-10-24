@@ -5,7 +5,7 @@ use crate::frontend::parser::parse_source;
 use crate::ir::core::CoreProgram;
 use crate::passes::bta;
 use crate::passes::ct_propagate;
-use crate::passes::lowering::lower_program;
+use crate::passes::lowering::{LowerConfig, lower_program};
 use crate::passes::monomorphize;
 use crate::passes::residualize;
 use crate::pipeline::phases::{
@@ -78,7 +78,17 @@ impl Compiler {
 
     pub fn lower_parsed_to_core(&self, parsed: Parsed) -> CoreBuilt {
         let _ = self.config;
-        let lowered = lower_program(&parsed.ast);
+        let lowered = lower_program(&parsed.ast, LowerConfig::default());
+        parsed.into_core_built(lowered.program, lowered.diagnostics)
+    }
+
+    pub fn lower_parsed_to_core_with_config(
+        &self,
+        parsed: Parsed,
+        config: LowerConfig,
+    ) -> CoreBuilt {
+        let _ = self.config;
+        let lowered = lower_program(&parsed.ast, config);
         parsed.into_core_built(lowered.program, lowered.diagnostics)
     }
 
@@ -89,7 +99,8 @@ impl Compiler {
         interner: &mut Interner,
     ) -> CoreBuilt {
         let parsed = self.parse(source, source_id, interner);
-        self.lower_parsed_to_core(parsed)
+        let main_symbol = interner.intern("main");
+        self.lower_parsed_to_core_with_config(parsed, LowerConfig::with_entrypoint(main_symbol))
     }
 
     pub fn compile_source_v0(
