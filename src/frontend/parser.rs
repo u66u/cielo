@@ -4,8 +4,8 @@ use crate::common::span::Span;
 use crate::common::symbols::Interner;
 use crate::frontend::ast::{
     BinOp, BlockExpr, EffectDecl, EffectOperationDecl, EnumDecl, EnumVariantDecl, Expr, ExprKind,
-    FieldDecl, FunctionDecl, Item, Param, Program, StageMarker, Stmt, StructDecl, TypeExpr,
-    TypeExprKind, UnaryOp,
+    FieldDecl, FunctionDecl, HandleClause, Item, Param, Program, StageMarker, Stmt, StructDecl,
+    TypeExpr, TypeExprKind, UnaryOp,
 };
 use crate::frontend::lexer::{Keyword, Token, TokenKind, lex};
 
@@ -478,6 +478,7 @@ impl Parser {
                 expr
             }
             TokenKind::Keyword(Keyword::If) => self.parse_if_expr(),
+            TokenKind::Keyword(Keyword::Handle) => self.parse_handle_expr(),
             TokenKind::LBrace => {
                 let block = self.parse_block();
                 Expr {
@@ -596,6 +597,66 @@ impl Parser {
         Expr {
             kind: ExprKind::StageBlock { stage, block },
             span: span_join(start, self.prev_span()),
+        }
+    }
+
+    fn parse_handle_expr(&mut self) -> Expr {
+        let start = self.expect_keyword(Keyword::Handle).span;
+        let body = self.parse_expr(0);
+        self.expect_keyword(Keyword::With);
+        let effect = self.expect_identifier("Expected effect name after `with`");
+        self.expect_kind(TokenKind::LBrace, "Expected `{` to open handler clauses");
+
+        let mut clauses = Vec::new();
+        while !self.check_kind(TokenKind::RBrace) && !self.at_eof() {
+            self.consume_kind(TokenKind::Pipe);
+            let clause_start = self.current_span();
+            let operation = self.expect_identifier("Expected handler operation name");
+            self.expect_kind(TokenKind::LParen, "Expected `(` after handler operation");
+            let mut params = Vec::new();
+            if !self.check_kind(TokenKind::RParen) {
+                loop {
+                    params.push(self.expect_identifier("Expected handler clause parameter"));
+                    if self.consume_kind(TokenKind::Comma).is_none() {
+                        break;
+                    }
+                }
+            }
+            self.expect_kind(TokenKind::RParen, "Expected `)` after handler clause parameters");
+            self.expect_kind(TokenKind::FatArrow, "Expected `=>` after handler clause head");
+            let clause_body = self.parse_handler_clause_body();
+            let clause_span = span_join(clause_start, clause_body.span);
+            clauses.push(HandleClause {
+                operation,
+                params,
+                body: clause_body,
+                span: clause_span,
+            });
+            self.consume_kind(TokenKind::Comma);
+            self.consume_kind(TokenKind::Semi);
+        }
+
+        let end = self.expect_kind(TokenKind::RBrace, "Expected `}` to close handler body");
+        Expr {
+            kind: ExprKind::Handle {
+                body: Box::new(body),
+                effect,
+                clauses,
+            },
+            span: span_join(start, end.span),
+        }
+    }
+
+    fn parse_handler_clause_body(&mut self) -> BlockExpr {
+        if self.check_kind(TokenKind::LBrace) {
+            return self.parse_block();
+        }
+
+        let expr = self.parse_expr(0);
+        BlockExpr {
+            statements: Vec::new(),
+            span: expr.span,
+            tail: Some(Box::new(expr)),
         }
     }
 

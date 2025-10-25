@@ -77,6 +77,14 @@ pub struct EffectOperationDecl {
 }
 
 #[derive(Clone, Debug)]
+pub struct HandleClause {
+    pub operation: SymbolId,
+    pub params: Vec<SymbolId>,
+    pub body: BlockExpr,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
 pub struct TypeExpr {
     pub kind: TypeExprKind,
     pub span: Span,
@@ -151,6 +159,11 @@ pub enum ExprKind {
     StageBlock {
         stage: StageMarker,
         block: BlockExpr,
+    },
+    Handle {
+        body: Box<Expr>,
+        effect: SymbolId,
+        clauses: Vec<HandleClause>,
     },
     Error(ErrorNode),
 }

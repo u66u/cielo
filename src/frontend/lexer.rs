@@ -9,6 +9,7 @@ pub enum Keyword {
     Struct,
     Enum,
     Effect,
+    Handle,
     Do,
     Let,
     If,
@@ -37,6 +38,7 @@ pub enum TokenKind {
     Semi,
     Dot,
     Arrow,
+    FatArrow,
     Eq,
     EqEq,
     Bang,
@@ -51,6 +53,7 @@ pub enum TokenKind {
     Gt,
     Ge,
     AndAnd,
+    Pipe,
     OrOr,
     At,
     Eof,
@@ -121,6 +124,8 @@ impl<'a> Lexer<'a> {
                 b'=' => {
                     if self.peek_n(1) == Some(b'=') {
                         self.double(TokenKind::EqEq)
+                    } else if self.peek_n(1) == Some(b'>') {
+                        self.double(TokenKind::FatArrow)
                     } else {
                         self.single(TokenKind::Eq)
                     }
@@ -148,6 +153,7 @@ impl<'a> Lexer<'a> {
                 }
                 b'&' if self.peek_n(1) == Some(b'&') => self.double(TokenKind::AndAnd),
                 b'|' if self.peek_n(1) == Some(b'|') => self.double(TokenKind::OrOr),
+                b'|' => self.single(TokenKind::Pipe),
                 b'-' if self.peek_n(1) == Some(b'>') => self.double(TokenKind::Arrow),
                 b'-' => self.single(TokenKind::Minus),
                 b'/' => self.single(TokenKind::Slash),
@@ -299,6 +305,7 @@ fn keyword_from_text(text: &str) -> Option<Keyword> {
         "struct" => Some(Keyword::Struct),
         "enum" => Some(Keyword::Enum),
         "effect" => Some(Keyword::Effect),
+        "handle" => Some(Keyword::Handle),
         "do" => Some(Keyword::Do),
         "let" => Some(Keyword::Let),
         "if" => Some(Keyword::If),
