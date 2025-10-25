@@ -1,6 +1,7 @@
 use std::ops::Deref;
 
 use crate::common::ids::EffectLabelId;
+use smallvec::SmallVec;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum CapabilityLevel {
@@ -73,23 +74,24 @@ impl Default for EffectProperties {
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
-pub struct SortedEffectRow(Vec<EffectLabelId>);
+pub struct SortedEffectRow(SmallVec<[EffectLabelId; 4]>);
 
 impl SortedEffectRow {
     pub fn empty() -> Self {
-        Self(Vec::new())
+        Self(SmallVec::new())
     }
 
     pub fn singleton(effect: EffectLabelId) -> Self {
-        Self(vec![effect])
+        Self(SmallVec::from_slice(&[effect]))
     }
 
     pub fn from_slice(effects: &[EffectLabelId]) -> Self {
-        Self::new(effects.iter().copied().collect())
+        Self::new(effects.iter().copied())
     }
 
-    pub fn new(mut effects: Vec<EffectLabelId>) -> Self {
-        effects.retain(|effect| effect.is_valid());
+    pub fn new(effects: impl IntoIterator<Item = EffectLabelId>) -> Self {
+        let mut effects: SmallVec<[EffectLabelId; 4]> =
+            effects.into_iter().filter(|effect| effect.is_valid()).collect();
         effects.sort_unstable();
         effects.dedup();
         Self(effects)
@@ -146,7 +148,7 @@ impl Deref for SortedEffectRow {
 
 impl IntoIterator for SortedEffectRow {
     type Item = EffectLabelId;
-    type IntoIter = std::vec::IntoIter<EffectLabelId>;
+    type IntoIter = smallvec::IntoIter<[EffectLabelId; 4]>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
