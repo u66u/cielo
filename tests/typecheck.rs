@@ -52,3 +52,24 @@ fn main() -> Int {
             .any(|row| row.contains(EffectLabelId::from_u32(0)))
     );
 }
+
+#[test]
+fn handle_stmt_discharge_removes_handled_effect_from_root_flow() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+fn main() -> Int {
+  let x = handle { do Console.print("x"); 7 } with Console {
+    | print(s) => 0
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let sema = typecheck_core(&lowered.program, &mut diagnostics);
+    let main_body = lowered.program.functions()[0].body;
+    let root_row = &sema.effects_of_stmt[main_body.index()];
+    assert!(!root_row.contains(EffectLabelId::from_u32(0)));
+}
