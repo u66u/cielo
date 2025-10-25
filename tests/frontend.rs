@@ -1,6 +1,6 @@
 use cielo::common::ids::SourceId;
 use cielo::common::symbols::Interner;
-use cielo::frontend::ast::{Item, Stmt};
+use cielo::frontend::ast::{ExprKind, Item, Stmt};
 use cielo::frontend::lexer::{Keyword, TokenKind, lex};
 use cielo::frontend::parser::parse_source;
 
@@ -82,4 +82,33 @@ fn main() -> Int {
             .iter()
             .any(|stmt| matches!(stmt, Stmt::Perform { .. }))
     );
+}
+
+#[test]
+fn parse_handle_expression() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+fn main() -> Int {
+  let x = handle 0 with Console {
+    | print(s) => 1
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let func = parsed
+        .program
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Function(func) => Some(func),
+            _ => None,
+        })
+        .expect("expected function");
+    let has_handle = func.body.statements.iter().any(|stmt| match stmt {
+        Stmt::Let { value, .. } => matches!(value.kind, ExprKind::Handle { .. }),
+        _ => false,
+    });
+    assert!(has_handle);
 }

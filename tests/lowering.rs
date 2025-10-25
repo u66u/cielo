@@ -52,3 +52,41 @@ fn main() -> Int {
     }
     assert!(seen_perform);
 }
+
+#[test]
+fn lowers_handle_expression_into_handler_and_val_flow() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+fn main() -> Int {
+  let x = handle 7 with Console {
+    | print(s) => 0
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    assert_eq!(lowered.program.handlers().len(), 1);
+
+    let main = lowered.program.functions().first().expect("function");
+    let mut cursor = main.body;
+    let mut seen_val_with_handle = false;
+    while let Some(stmt) = lowered.program.stmt(cursor) {
+        match &stmt.kind {
+            StmtKind::Val { value, next, .. } => {
+                if matches!(
+                    lowered.program.stmt(*value).map(|node| &node.kind),
+                    Some(StmtKind::Handle { .. })
+                ) {
+                    seen_val_with_handle = true;
+                }
+                cursor = *next;
+            }
+            StmtKind::Let { next, .. } => cursor = *next,
+            StmtKind::Return(_) => break,
+            _ => break,
+        }
+    }
+    assert!(seen_val_with_handle);
+}
