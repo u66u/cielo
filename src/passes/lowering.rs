@@ -5,7 +5,8 @@ use crate::common::ids::{EffectLabelId, FuncId, SymbolId, TypeId, VarId};
 use crate::common::span::Span;
 use crate::frontend::ast::{self, ExprKind as AstExprKind, Item, Stmt as AstStmt};
 use crate::ir::core::{
-    BinaryOp, CoreProgram, ExprKind, ExprNode, FunctionDecl, Literal, StmtKind, StmtNode, UnaryOp,
+    BinaryOp, CoreProgram, ExprKind, ExprNode, FunctionDecl, HandlerClause, HandlerDef, Literal,
+    StmtKind, StmtNode, UnaryOp,
 };
 use crate::sema::effect::SortedEffectRow;
 
@@ -54,6 +55,11 @@ struct Lowerer {
     config: LowerConfig,
 }
 
+enum LoweredValue {
+    Expr(crate::common::ids::ExprId),
+    Stmt(crate::common::ids::StmtId),
+}
+
 impl Lowerer {
     fn new(config: LowerConfig) -> Self {
         Self {
@@ -82,19 +88,24 @@ impl Lowerer {
                     param_vars.push(self.fresh_var());
                 }
                 let dummy = self.make_dummy_body(function.span);
-                let declared_effects = SortedEffectRow::new(
-                    function
-                        .effects
-                        .iter()
-                        .filter_map(|name| self.effect_labels.get(name).copied())
-                        .collect(),
-                );
+                let mut declared_effects = Vec::with_capacity(function.effects.len());
+                for name in &function.effects {
+                    if let Some(effect_id) = self.effect_labels.get(name).copied() {
+                        declared_effects.push(effect_id);
+                    } else {
+                        self.diagnostics.error(
+                            "LOWER_UNKNOWN_EFFECT_ANNOT",
+                            "Unknown effect in function `with` annotation",
+                            function.span,
+                        );
+                    }
+                }
                 let func_id = self.program.add_function(FunctionDecl {
                     name: function.name,
                     params: param_vars.clone(),
                     param_types: vec![TypeId::INVALID; param_vars.len()],
                     return_type: TypeId::INVALID,
-                    declared_effects,
+                    declared_effects: SortedEffectRow::new(declared_effects),
                     body: dummy,
                     ct_only: false,
                     span: function.span,
@@ -108,14 +119,6 @@ impl Lowerer {
             let mut locals = HashMap::new();
             for (param, var_id) in function.params.iter().zip(param_vars.iter().copied()) {
                 locals.insert(param.name, var_id);
-            }
-
-            if !function.effects.is_empty() {
-                self.diagnostics.note(
-                    "LOWER_EFFECTS_TODO",
-                    "Function effects are parsed but not yet lowered into effect rows in v0",
-                    function.span,
-                );
             }
 
             let body = self.lower_block(&function.body, &mut locals);
@@ -150,6 +153,11 @@ impl Lowerer {
                 binding: VarId,
                 value: crate::common::ids::ExprId,
             },
+            Val {
+                span: Span,
+                binding: VarId,
+                value: crate::common::ids::StmtId,
+            },
             Perform {
                 span: Span,
                 effect: EffectLabelId,
@@ -167,22 +175,35 @@ impl Lowerer {
                     name, value, span, ..
                 } => {
                     let binding = self.fresh_var();
-                    let value_id = self.lower_expr(value, &locals);
+                    let lowered = self.lower_binding_value(value, &locals);
                     locals.insert(*name, binding);
-                    actions.push(Action::Let {
-                        span: *span,
-                        binding,
-                        value: value_id,
-                    });
+                    match lowered {
+                        LoweredValue::Expr(value) => actions.push(Action::Let {
+                            span: *span,
+                            binding,
+                            value,
+                        }),
+                        LoweredValue::Stmt(value) => actions.push(Action::Val {
+                            span: *span,
+                            binding,
+                            value,
+                        }),
+                    }
                 }
                 AstStmt::Expr { value, span } => {
                     let temp = self.fresh_var();
-                    let value_id = self.lower_expr(value, &locals);
-                    actions.push(Action::Let {
-                        span: *span,
-                        binding: temp,
-                        value: value_id,
-                    });
+                    match self.lower_binding_value(value, &locals) {
+                        LoweredValue::Expr(value) => actions.push(Action::Let {
+                            span: *span,
+                            binding: temp,
+                            value,
+                        }),
+                        LoweredValue::Stmt(value) => actions.push(Action::Val {
+                            span: *span,
+                            binding: temp,
+                            value,
+                        }),
+                    }
                 }
                 AstStmt::Perform {
                     effect,
@@ -222,12 +243,27 @@ impl Lowerer {
             }
         }
 
-        let tail_expr = if let Some(tail) = &block.tail {
-            self.lower_expr(tail, &locals)
+        let mut next = if let Some(tail) = &block.tail {
+            match self.lower_binding_value(tail, &locals) {
+                LoweredValue::Expr(value) => self.push_stmt(StmtKind::Return(value), block.span),
+                LoweredValue::Stmt(value) => {
+                    let binding = self.fresh_var();
+                    let return_value = self.push_expr(ExprKind::Var(binding), tail.span);
+                    let return_stmt = self.push_stmt(StmtKind::Return(return_value), tail.span);
+                    self.push_stmt(
+                        StmtKind::Val {
+                            binding,
+                            value,
+                            next: return_stmt,
+                        },
+                        tail.span,
+                    )
+                }
+            }
         } else {
-            self.push_expr(ExprKind::Literal(Literal::Unit), block.span)
+            let unit = self.push_expr(ExprKind::Literal(Literal::Unit), block.span);
+            self.push_stmt(StmtKind::Return(unit), block.span)
         };
-        let mut next = self.push_stmt(StmtKind::Return(tail_expr), block.span);
 
         for action in actions.into_iter().rev() {
             next = match action {
@@ -237,6 +273,18 @@ impl Lowerer {
                     value,
                 } => self.push_stmt(
                     StmtKind::Let {
+                        binding,
+                        value,
+                        next,
+                    },
+                    span,
+                ),
+                Action::Val {
+                    span,
+                    binding,
+                    value,
+                } => self.push_stmt(
+                    StmtKind::Val {
                         binding,
                         value,
                         next,
@@ -261,6 +309,89 @@ impl Lowerer {
             };
         }
         next
+    }
+
+    fn lower_binding_value(
+        &mut self,
+        value: &ast::Expr,
+        locals: &HashMap<SymbolId, VarId>,
+    ) -> LoweredValue {
+        if let Some(stmt) = self.lower_effectful_expr(value, locals) {
+            LoweredValue::Stmt(stmt)
+        } else {
+            LoweredValue::Expr(self.lower_expr(value, locals))
+        }
+    }
+
+    fn lower_effectful_expr(
+        &mut self,
+        expr: &ast::Expr,
+        locals: &HashMap<SymbolId, VarId>,
+    ) -> Option<crate::common::ids::StmtId> {
+        let AstExprKind::Handle {
+            body,
+            effect,
+            clauses,
+        } = &expr.kind
+        else {
+            return None;
+        };
+
+        let effect_label = self.effect_labels.get(effect).copied().unwrap_or_else(|| {
+            self.diagnostics.error(
+                "LOWER_UNKNOWN_HANDLER_EFFECT",
+                "Unknown effect in `handle` expression during AST->Core lowering",
+                expr.span,
+            );
+            EffectLabelId::INVALID
+        });
+
+        let return_param = self.fresh_var();
+        let return_expr = self.push_expr(ExprKind::Var(return_param), expr.span);
+        let return_body = self.push_stmt(StmtKind::Return(return_expr), expr.span);
+
+        let mut core_clauses = Vec::with_capacity(clauses.len());
+        for clause in clauses {
+            let mut clause_locals = locals.clone();
+            let mut params = Vec::with_capacity(clause.params.len());
+            for param in &clause.params {
+                let var = self.fresh_var();
+                clause_locals.insert(*param, var);
+                params.push(var);
+            }
+            let clause_body = self.lower_block(&clause.body, &mut clause_locals);
+            core_clauses.push(HandlerClause {
+                operation: clause.operation,
+                params,
+                resume_param: None,
+                body: clause_body,
+                span: clause.span,
+            });
+        }
+
+        let handler_id = self.program.add_handler(HandlerDef {
+            effect: effect_label,
+            return_param,
+            return_body,
+            clauses: core_clauses,
+            span: expr.span,
+        });
+
+        let body_stmt = if let Some(stmt) = self.lower_effectful_expr(body, locals) {
+            stmt
+        } else {
+            let body_expr = self.lower_expr(body, locals);
+            self.push_stmt(StmtKind::Return(body_expr), body.span)
+        };
+        let handled = self.push_stmt(
+            StmtKind::Handle {
+                handler: handler_id,
+                body: body_stmt,
+                next: None,
+            },
+            expr.span,
+        );
+        Some(handled)
     }
 
     fn lower_expr(
@@ -320,7 +451,10 @@ impl Lowerer {
                     ExprKind::Error(error)
                 }
             }
-            AstExprKind::If { .. } | AstExprKind::Block(_) | AstExprKind::StageBlock { .. } => {
+            AstExprKind::If { .. }
+            | AstExprKind::Block(_)
+            | AstExprKind::StageBlock { .. }
+            | AstExprKind::Handle { .. } => {
                 let error = self.diagnostics.error_node(
                     "LOWER_EXPR_UNSUPPORTED",
                     "This expression form is parsed but not lowered yet in v0",
