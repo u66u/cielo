@@ -380,8 +380,16 @@ impl Lowerer {
         let body_stmt = if let Some(stmt) = self.lower_effectful_expr(body, locals) {
             stmt
         } else {
-            let body_expr = self.lower_expr(body, locals);
-            self.push_stmt(StmtKind::Return(body_expr), body.span)
+            match &body.kind {
+                AstExprKind::Block(block) => {
+                    let mut block_locals = locals.clone();
+                    self.lower_block(block, &mut block_locals)
+                }
+                _ => {
+                    let body_expr = self.lower_expr(body, locals);
+                    self.push_stmt(StmtKind::Return(body_expr), body.span)
+                }
+            }
         };
         let handled = self.push_stmt(
             StmtKind::Handle {

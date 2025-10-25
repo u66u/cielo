@@ -114,8 +114,16 @@ fn infer_stmt_effect(
             }
             row
         }
-        Some(crate::ir::core::StmtKind::Handle { body, next, .. }) => {
+        Some(crate::ir::core::StmtKind::Handle {
+            handler,
+            body,
+            next,
+        }) => {
             let mut row = infer_stmt_effect(program, *body, memo);
+            let handled_effect = program.handlers().get(handler.index()).map(|h| h.effect);
+            if let Some(effect) = handled_effect {
+                row = row.subtract(&SortedEffectRow::singleton(effect));
+            }
             if let Some(next_stmt) = next {
                 row = row.union(&infer_stmt_effect(program, *next_stmt, memo));
             }
