@@ -41,7 +41,7 @@ fn run_file_case(compiler: &Compiler, path: &str) {
 }
 
 fn run_smoke_cases(compiler: &Compiler) {
-    const CASES: [(&str, &str); 3] = [
+    const CASES: [(&str, &str); 4] = [
         (
             "arith",
             r#"
@@ -69,6 +69,18 @@ fn add(a: Int, b: Int) -> Int {
 }
 fn main() -> Int {
   add(3, 4)
+}
+"#,
+        ),
+        (
+            "handled",
+            r#"
+effect Console { fn print(s: String) -> () }
+fn main() -> Int {
+  let x = handle { do Console.print("hi"); 7 } with Console {
+    | print(s) => 0
+  };
+  x
 }
 "#,
         ),
