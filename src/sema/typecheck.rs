@@ -1,3 +1,24 @@
+// Pass: typecheck_core (v0 type + stmt-effect table population)
+//
+// Inputs:
+// - CoreProgram produced by lowering
+//
+// Outputs:
+// - SemanticTables: expr types, expr effects, stmt effects, persistability
+// - Diagnostics for incomplete type inference in v0
+//
+// Invariants:
+// - Expr effects are always empty (Expr/Stmt split)
+// - Stmt effects conservatively approximate dynamic effect flow
+// - Handle nodes discharge their handled effect label from body summaries
+//
+// Diagnostics:
+// - `TYPE_INFER_INCOMPLETE` warnings for unresolved expr types
+//
+// Complexity:
+// - Type inference: fixpoint over expr graph
+// - Effect inference: memoized DFS over stmt graph (linear in stmt count)
+
 use crate::common::diagnostics::DiagnosticBag;
 use crate::ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, UnaryOp};
 use crate::pipeline::phases::SemanticTables;

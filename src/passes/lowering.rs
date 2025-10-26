@@ -1,5 +1,27 @@
 use std::collections::HashMap;
 
+// Pass: lowering (AST -> Core)
+//
+// Inputs:
+// - Parsed AST (`frontend::ast::Program`)
+// - LowerConfig (entrypoint symbols)
+//
+// Outputs:
+// - CoreProgram with dense Expr/Stmt/Handler/Function IDs
+// - Diagnostics collected during structural lowering
+//
+// Invariants:
+// - Expr nodes remain pure in Core
+// - Effectful constructs (`do`, `handle`) are lowered to Stmt nodes
+// - Function declarations exist before body lowering (for call resolution)
+//
+// Diagnostics:
+// - Unknown vars/functions/effects
+// - Unsupported expression forms in v0 lowering
+//
+// Complexity:
+// - Linear in AST size (single walk + reverse statement stitching per block)
+
 use crate::common::diagnostics::DiagnosticBag;
 use crate::common::ids::{EffectLabelId, FuncId, SymbolId, TypeId, VarId};
 use crate::common::span::Span;

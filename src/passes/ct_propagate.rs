@@ -1,3 +1,21 @@
+// Pass: ct_propagate (compile-time constant propagation)
+//
+// Inputs:
+// - Monomorphized Core program
+//
+// Outputs:
+// - CtPropagationTables (`ct_cache`, branch decisions, file deps)
+//
+// Invariants:
+// - Only pure Expr nodes are evaluated
+// - Cache entries are deterministic literals keyed by ExprId
+//
+// Diagnostics:
+// - None in v0
+//
+// Complexity:
+// - O(expr_count * fixpoint_iters), with small bounded iter count in practice
+
 use crate::common::ids::ExprId;
 use crate::ir::core::{BinaryOp, ExprKind, Literal, UnaryOp};
 use crate::pipeline::phases::{CtPropagated, CtPropagationTables, Monomorphized};

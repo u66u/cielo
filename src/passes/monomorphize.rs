@@ -1,5 +1,23 @@
 use std::collections::HashMap;
 
+// Pass: monomorphize (v0 skeleton)
+//
+// Inputs:
+// - Typed Core program
+//
+// Outputs:
+// - Monomorphized wrapper with source->mono summary table
+//
+// Invariants:
+// - No IR mutation in v0 (identity mapping)
+// - Every function maps to at least one monomorphized instance (itself)
+//
+// Diagnostics:
+// - None in v0
+//
+// Complexity:
+// - O(function_count)
+
 use crate::common::ids::FuncId;
 use crate::pipeline::phases::{MonomorphizationSummary, Monomorphized, Typed};
 

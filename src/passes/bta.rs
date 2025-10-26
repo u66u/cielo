@@ -1,3 +1,21 @@
+// Pass: bta (binding-time analysis, v0 classifier)
+//
+// Inputs:
+// - Ct-propagated program + ct literal cache
+//
+// Outputs:
+// - Stage table for expressions (`Ct` / `Rt(reason)`)
+//
+// Invariants:
+// - Stage is assigned for every ExprId
+// - CT cache membership implies CT stage in v0
+//
+// Diagnostics:
+// - None in v0
+//
+// Complexity:
+// - O(expr_count)
+
 use crate::pipeline::phases::{BtaClassified, BtaTables, CtPropagated, Reason, Stage};
 
 pub fn run(ct: CtPropagated) -> BtaClassified {
