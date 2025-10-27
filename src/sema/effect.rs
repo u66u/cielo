@@ -90,8 +90,10 @@ impl SortedEffectRow {
     }
 
     pub fn new(effects: impl IntoIterator<Item = EffectLabelId>) -> Self {
-        let mut effects: SmallVec<[EffectLabelId; 4]> =
-            effects.into_iter().filter(|effect| effect.is_valid()).collect();
+        let mut effects: SmallVec<[EffectLabelId; 4]> = effects
+            .into_iter()
+            .filter(|effect| effect.is_valid())
+            .collect();
         effects.sort_unstable();
         effects.dedup();
         Self(effects)

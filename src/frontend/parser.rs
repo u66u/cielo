@@ -622,8 +622,14 @@ impl Parser {
                     }
                 }
             }
-            self.expect_kind(TokenKind::RParen, "Expected `)` after handler clause parameters");
-            self.expect_kind(TokenKind::FatArrow, "Expected `=>` after handler clause head");
+            self.expect_kind(
+                TokenKind::RParen,
+                "Expected `)` after handler clause parameters",
+            );
+            self.expect_kind(
+                TokenKind::FatArrow,
+                "Expected `=>` after handler clause head",
+            );
             let clause_body = self.parse_handler_clause_body();
             let clause_span = span_join(clause_start, clause_body.span);
             clauses.push(HandleClause {
