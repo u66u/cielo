@@ -73,3 +73,31 @@ fn main() -> Int {
     let root_row = &sema.effects_of_stmt[main_body.index()];
     assert!(!root_row.contains(EffectLabelId::from_u32(0)));
 }
+
+#[test]
+fn call_stmt_effects_include_declared_function_effects() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+fn ping() -> Int with Console {
+  do Console.print("x");
+  7
+}
+fn main() -> Int {
+  let y = ping();
+  y
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let sema = typecheck_core(&lowered.program, &mut diagnostics);
+    let main_body = lowered
+        .program
+        .functions()
+        .iter()
+        .find(|f| interner.resolve(f.name) == Some("main"))
+        .expect("main")
+        .body;
+    assert!(sema.effects_of_stmt[main_body.index()].contains(EffectLabelId::from_u32(0)));
+}

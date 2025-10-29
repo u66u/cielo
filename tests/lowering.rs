@@ -90,3 +90,47 @@ fn main() -> Int {
     }
     assert!(seen_val_with_handle);
 }
+
+#[test]
+fn lowers_effectful_function_call_to_call_stmt() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+fn ping() -> Int with Console {
+  do Console.print("x");
+  7
+}
+fn main() -> Int {
+  let y = ping();
+  y
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let main = lowered
+        .program
+        .functions()
+        .iter()
+        .find(|f| interner.resolve(f.name) == Some("main"))
+        .expect("main");
+
+    let mut cursor = main.body;
+    let mut saw_call_stmt = false;
+    while let Some(stmt) = lowered.program.stmt(cursor) {
+        match &stmt.kind {
+            StmtKind::Val { value, next, .. } => {
+                if matches!(
+                    lowered.program.stmt(*value).map(|node| &node.kind),
+                    Some(StmtKind::Call { .. })
+                ) {
+                    saw_call_stmt = true;
+                }
+                cursor = *next;
+            }
+            StmtKind::Let { next, .. } => cursor = *next,
+            StmtKind::Return(_) => break,
+            _ => break,
+        }
+    }
+    assert!(saw_call_stmt);
+}
