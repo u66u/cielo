@@ -350,6 +350,34 @@ impl Lowerer {
         expr: &ast::Expr,
         locals: &HashMap<SymbolId, VarId>,
     ) -> Option<crate::common::ids::StmtId> {
+        if let AstExprKind::Call { callee, args } = &expr.kind
+            && let AstExprKind::Var(symbol) = callee.kind
+            && let Some(&func_id) = self.functions_by_name.get(&symbol)
+        {
+            let effects = self
+                .program
+                .function(func_id)
+                .map(|f| f.declared_effects.clone())
+                .filter(|row| !row.is_empty());
+            let Some(effects) = effects else {
+                return None;
+            };
+            let result = self.fresh_var();
+            let arg_ids = args.iter().map(|arg| self.lower_expr(arg, locals)).collect();
+            let return_expr = self.push_expr(ExprKind::Var(result), expr.span);
+            let return_stmt = self.push_stmt(StmtKind::Return(return_expr), expr.span);
+            return Some(self.push_stmt(
+                StmtKind::Call {
+                    result,
+                    callee: func_id,
+                    args: arg_ids,
+                    effects,
+                    next: return_stmt,
+                },
+                expr.span,
+            ));
+        }
+
         let AstExprKind::Handle {
             body,
             effect,
@@ -457,6 +485,18 @@ impl Lowerer {
             AstExprKind::Call { callee, args } => {
                 if let AstExprKind::Var(symbol) = callee.kind {
                     if let Some(func_id) = self.functions_by_name.get(&symbol) {
+                        let is_effectful = self
+                            .program
+                            .function(*func_id)
+                            .is_some_and(|f| !f.declared_effects.is_empty());
+                        if is_effectful {
+                            let error = self.diagnostics.error_node(
+                                "LOWER_EFFECTFUL_CALL_PURE_CTX",
+                                "Effectful call used where a pure expression is required in v0",
+                                expr.span,
+                            );
+                            return self.push_expr(ExprKind::Error(error), expr.span);
+                        }
                         ExprKind::PureCall {
                             callee: *func_id,
                             args: args
