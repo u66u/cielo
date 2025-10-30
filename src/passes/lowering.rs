@@ -28,7 +28,7 @@ use crate::common::span::Span;
 use crate::frontend::ast::{self, ExprKind as AstExprKind, Item, Stmt as AstStmt};
 use crate::ir::core::{
     BinaryOp, CoreProgram, ExprKind, ExprNode, FunctionDecl, HandlerClause, HandlerDef, Literal,
-    StmtKind, StmtNode, UnaryOp,
+    StageDirective, StmtKind, StmtNode, UnaryOp,
 };
 use crate::sema::effect::SortedEffectRow;
 
@@ -350,6 +350,19 @@ impl Lowerer {
         expr: &ast::Expr,
         locals: &HashMap<SymbolId, VarId>,
     ) -> Option<crate::common::ids::StmtId> {
+        if let AstExprKind::StageBlock { stage, block } = &expr.kind {
+            let mut block_locals = locals.clone();
+            let body = self.lower_block(block, &mut block_locals);
+            return Some(self.push_stmt(
+                StmtKind::Stage {
+                    stage: map_stage_marker(*stage),
+                    body,
+                    next: None,
+                },
+                expr.span,
+            ));
+        }
+
         if let AstExprKind::Call { callee, args } = &expr.kind
             && let AstExprKind::Var(symbol) = callee.kind
             && let Some(&func_id) = self.functions_by_name.get(&symbol)
@@ -579,5 +592,12 @@ fn map_binary_op(op: ast::BinOp) -> BinaryOp {
         ast::BinOp::Ge => BinaryOp::Ge,
         ast::BinOp::And => BinaryOp::And,
         ast::BinOp::Or => BinaryOp::Or,
+    }
+}
+
+fn map_stage_marker(stage: ast::StageMarker) -> StageDirective {
+    match stage {
+        ast::StageMarker::Comptime => StageDirective::Comptime,
+        ast::StageMarker::Runtime => StageDirective::Runtime,
     }
 }

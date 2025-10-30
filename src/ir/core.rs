@@ -38,6 +38,12 @@ pub enum BinaryOp {
     Or,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StageDirective {
+    Comptime,
+    Runtime,
+}
+
 #[derive(Clone, Debug)]
 pub struct ExprNode {
     pub span: Span,
@@ -118,6 +124,11 @@ pub enum StmtKind {
     },
     Handle {
         handler: HandlerId,
+        body: StmtId,
+        next: Option<StmtId>,
+    },
+    Stage {
+        stage: StageDirective,
         body: StmtId,
         next: Option<StmtId>,
     },

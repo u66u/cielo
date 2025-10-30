@@ -150,6 +150,13 @@ fn infer_stmt_effect(
             }
             row
         }
+        Some(crate::ir::core::StmtKind::Stage { body, next, .. }) => {
+            let mut row = infer_stmt_effect(program, *body, memo);
+            if let Some(next_stmt) = next {
+                row = row.union(&infer_stmt_effect(program, *next_stmt, memo));
+            }
+            row
+        }
         Some(crate::ir::core::StmtKind::Hole { .. })
         | Some(crate::ir::core::StmtKind::Error(_)) => SortedEffectRow::empty(),
         None => SortedEffectRow::empty(),
