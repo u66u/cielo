@@ -41,7 +41,7 @@ fn run_file_case(compiler: &Compiler, path: &str) {
 }
 
 fn run_smoke_cases(compiler: &Compiler) {
-    const CASES: [(&str, &str); 4] = [
+    const CASES: [(&str, &str); 5] = [
         (
             "arith",
             r#"
@@ -81,6 +81,16 @@ fn main() -> Int {
     | print(s) => 0
   };
   x
+}
+"#,
+        ),
+        (
+            "staged",
+            r#"
+fn main() -> Int {
+  let a = @runtime { 1 + 2 };
+  let b = @comptime { a };
+  b
 }
 "#,
         ),

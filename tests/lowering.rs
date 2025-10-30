@@ -134,3 +134,37 @@ fn main() -> Int {
     }
     assert!(saw_call_stmt);
 }
+
+#[test]
+fn lowers_stage_block_into_stage_stmt() {
+    let src = r#"
+fn main() -> Int {
+  let y = @runtime { 1 + 2 };
+  y
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let main = lowered.program.functions().first().expect("function");
+
+    let mut cursor = main.body;
+    let mut saw_stage_stmt = false;
+    while let Some(stmt) = lowered.program.stmt(cursor) {
+        match &stmt.kind {
+            StmtKind::Val { value, next, .. } => {
+                if matches!(
+                    lowered.program.stmt(*value).map(|node| &node.kind),
+                    Some(StmtKind::Stage { .. })
+                ) {
+                    saw_stage_stmt = true;
+                }
+                cursor = *next;
+            }
+            StmtKind::Let { next, .. } => cursor = *next,
+            StmtKind::Return(_) => break,
+            _ => break,
+        }
+    }
+    assert!(saw_stage_stmt);
+}
