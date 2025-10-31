@@ -136,7 +136,7 @@ fn print_case_summary(name: &str, residual: &cielo::pipeline::phases::Residualiz
             Severity::Note => "note",
         };
         println!(
-            "  - {level} {} @{}:{}-{}: {}",
+            "  - {level} {} @src{} bytes[{}..{}]: {}",
             diag.code, diag.span.source, diag.span.start, diag.span.end, diag.message
         );
     }
