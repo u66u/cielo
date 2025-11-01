@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-// Pass: lowering (AST -> Core)
+// Pass 1/6: lowering (AST -> Core)
 //
 // Inputs:
 // - Parsed AST (`frontend::ast::Program`)
@@ -74,6 +74,7 @@ struct Lowerer {
     next_var: u32,
     functions_by_name: HashMap<SymbolId, FuncId>,
     effect_labels: HashMap<SymbolId, EffectLabelId>,
+    effect_ops: HashMap<(EffectLabelId, SymbolId), usize>,
     config: LowerConfig,
 }
 
@@ -90,6 +91,7 @@ impl Lowerer {
             next_var: 0,
             functions_by_name: HashMap::new(),
             effect_labels: HashMap::new(),
+            effect_ops: HashMap::new(),
             config,
         }
     }
@@ -100,6 +102,10 @@ impl Lowerer {
             if let Item::Effect(effect) = item {
                 let effect_id = EffectLabelId::new(self.effect_labels.len());
                 self.effect_labels.insert(effect.name, effect_id);
+                for operation in &effect.operations {
+                    self.effect_ops
+                        .insert((effect_id, operation.name), operation.params.len());
+                }
             }
         }
 
@@ -242,6 +248,31 @@ impl Lowerer {
                             );
                             EffectLabelId::INVALID
                         });
+
+                    if effect_label.is_valid() {
+                        match self.effect_ops.get(&(effect_label, *operation)) {
+                            Some(expected) if *expected != args.len() => {
+                                self.diagnostics.error(
+                                    "LOWER_BAD_EFFECT_OP_ARITY",
+                                    format!(
+                                        "Effect operation argument count mismatch: expected {}, got {}",
+                                        expected,
+                                        args.len()
+                                    ),
+                                    *span,
+                                );
+                            }
+                            Some(_) => {}
+                            None => {
+                                self.diagnostics.error(
+                                    "LOWER_UNKNOWN_EFFECT_OP",
+                                    "Unknown operation for this effect in `do` statement",
+                                    *span,
+                                );
+                            }
+                        }
+                    }
+
                     let lowered_args = args
                         .iter()
                         .map(|arg| self.lower_expr(arg, &locals))
@@ -422,6 +453,31 @@ impl Lowerer {
                 clause_locals.insert(*param, var);
                 params.push(var);
             }
+
+            if effect_label.is_valid() {
+                match self.effect_ops.get(&(effect_label, clause.operation)) {
+                    Some(expected) if *expected != clause.params.len() => {
+                        self.diagnostics.error(
+                            "LOWER_BAD_HANDLER_CLAUSE_ARITY",
+                            format!(
+                                "Handler clause parameter count mismatch: expected {}, got {}",
+                                expected,
+                                clause.params.len()
+                            ),
+                            clause.span,
+                        );
+                    }
+                    Some(_) => {}
+                    None => {
+                        self.diagnostics.error(
+                            "LOWER_UNKNOWN_HANDLER_OP",
+                            "Unknown operation in handler clause for this effect",
+                            clause.span,
+                        );
+                    }
+                }
+            }
+
             let clause_body = self.lower_block(&clause.body, &mut clause_locals);
             core_clauses.push(HandlerClause {
                 operation: clause.operation,
