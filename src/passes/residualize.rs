@@ -1,4 +1,4 @@
-// Pass: residualize (v0 identity residualization)
+// Pass 6/6: residualize (v0 identity residualization)
 //
 // Inputs:
 // - BTA-classified program

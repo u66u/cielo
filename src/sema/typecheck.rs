@@ -1,4 +1,4 @@
-// Pass: typecheck_core (v0 type + stmt-effect table population)
+// Pass 2/6: typecheck_core (v0 type + stmt-effect table population)
 //
 // Inputs:
 // - CoreProgram produced by lowering
