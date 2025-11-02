@@ -1,0 +1,13 @@
+effect Console { fn print(s: String) -> () }
+
+fn ping(msg: String) -> Int with Console {
+  do Console.print(msg);
+  7
+}
+
+fn main() -> Int {
+  let out = handle { ping("hello") } with Console {
+    | print(s) => 0
+  };
+  out
+}

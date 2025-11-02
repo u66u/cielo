@@ -1,0 +1,14 @@
+effect Console { fn print(s: String) -> () }
+
+fn emit() -> Int with Console {
+  do Console.print("emit");
+  5
+}
+
+fn main() -> Int {
+  let a = @runtime { 1 + 2 };
+  let b = handle { emit() } with Console {
+    | print(s) => 0
+  };
+  a
+}

@@ -1,0 +1,6 @@
+fn main() -> Int {
+  let seed = 40 + 2;
+  let forced_rt = @runtime { seed + 1 };
+  let forced_ct = @comptime { seed };
+  forced_ct
+}
