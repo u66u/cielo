@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // Pass 1/6: lowering (AST -> Core)
 //
@@ -445,6 +445,7 @@ impl Lowerer {
         let return_body = self.push_stmt(StmtKind::Return(return_expr), expr.span);
 
         let mut core_clauses = Vec::with_capacity(clauses.len());
+        let mut seen_clause_ops = HashSet::new();
         for clause in clauses {
             let mut clause_locals = locals.clone();
             let mut params = Vec::with_capacity(clause.params.len());
@@ -452,6 +453,14 @@ impl Lowerer {
                 let var = self.fresh_var();
                 clause_locals.insert(*param, var);
                 params.push(var);
+            }
+
+            if !seen_clause_ops.insert(clause.operation) {
+                self.diagnostics.error(
+                    "LOWER_DUP_HANDLER_CLAUSE",
+                    "Duplicate handler clause for operation",
+                    clause.span,
+                );
             }
 
             if effect_label.is_valid() {
