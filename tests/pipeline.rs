@@ -41,3 +41,22 @@ fn main() -> Int {
         SortedEffectRow::empty()
     );
 }
+
+#[test]
+fn compiles_adt_constructor_flow_without_diagnostics() {
+    let src = r#"
+enum Option { Some(Int), None }
+struct Pair { a: Int, b: Int }
+fn main() -> Int {
+  let x = Some(1);
+  let y = Pair(1, 2);
+  0
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
+    assert_eq!(residual.program.structs().len(), 1);
+    assert_eq!(residual.program.enums().len(), 1);
+    assert!(residual.diagnostics.entries().is_empty());
+}

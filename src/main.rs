@@ -41,7 +41,7 @@ fn run_file_case(compiler: &Compiler, path: &str) {
 }
 
 fn run_smoke_cases(compiler: &Compiler) {
-    const CASES: [(&str, &str); 5] = [
+    const CASES: [(&str, &str); 6] = [
         (
             "arith",
             r#"
@@ -91,6 +91,18 @@ fn main() -> Int {
   let a = @runtime { 1 + 2 };
   let b = @comptime { a };
   b
+}
+"#,
+        ),
+        (
+            "adt",
+            r#"
+enum Option { Some(Int), None }
+struct Pair { a: Int, b: Int }
+fn main() -> Int {
+  let x = Some(1);
+  let y = Pair(1, 2);
+  0
 }
 "#,
         ),

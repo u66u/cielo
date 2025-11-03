@@ -1,0 +1,8 @@
+enum Option { Some(Int), None }
+struct Pair { a: Int, b: Int }
+
+fn main() -> Int {
+  let x = Some(1);
+  let y = Pair(1, 2);
+  0
+}
