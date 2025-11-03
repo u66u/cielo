@@ -236,3 +236,47 @@ fn main() -> Int {
             .any(|diag| diag.code == "LOWER_DUP_HANDLER_CLAUSE")
     );
 }
+
+#[test]
+fn lowers_enum_variant_constructor_call() {
+    let src = r#"
+enum Option { Some(Int), None }
+fn main() -> Int {
+  let v = Some(1);
+  0
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    assert_eq!(lowered.program.enums().len(), 1);
+
+    let has_ctor = lowered
+        .program
+        .exprs()
+        .iter()
+        .any(|expr| matches!(expr.kind, cielo::ir::core::ExprKind::MakeEnum { .. }));
+    assert!(has_ctor);
+}
+
+#[test]
+fn lowers_struct_constructor_call() {
+    let src = r#"
+struct Point { x: Int, y: Int }
+fn main() -> Int {
+  let p = Point(1, 2);
+  0
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    assert_eq!(lowered.program.structs().len(), 1);
+
+    let has_ctor = lowered
+        .program
+        .exprs()
+        .iter()
+        .any(|expr| matches!(expr.kind, cielo::ir::core::ExprKind::MakeStruct { .. }));
+    assert!(has_ctor);
+}

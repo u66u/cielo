@@ -101,3 +101,54 @@ fn main() -> Int {
         .body;
     assert!(sema.effects_of_stmt[main_body.index()].contains(EffectLabelId::from_u32(0)));
 }
+
+#[test]
+fn infers_types_for_constructor_expressions() {
+    let src = r#"
+enum Option { Some(Int), None }
+struct Pair { a: Int, b: Int }
+fn main() -> Int {
+  let x = Some(1);
+  let y = Pair(1, 2);
+  0
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let sema = typecheck_core(&lowered.program, &mut diagnostics);
+    let all_ctors_typed = lowered
+        .program
+        .exprs()
+        .iter()
+        .enumerate()
+        .filter(|(_, expr)| {
+            matches!(
+                expr.kind,
+                ExprKind::MakeEnum { .. } | ExprKind::MakeStruct { .. }
+            )
+        })
+        .all(|(idx, _)| sema.type_of_expr[idx].is_some());
+    assert!(all_ctors_typed);
+}
+
+#[test]
+fn infers_simple_function_call_chain_without_warnings() {
+    let src = r#"
+fn add(a: Int, b: Int) -> Int {
+  a + b
+}
+fn main() -> Int {
+  let z = add(1, 2);
+  z
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    assert!(!diagnostics.has_errors());
+    assert!(diagnostics.entries().is_empty());
+}
