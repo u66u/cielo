@@ -4,6 +4,7 @@ use cielo::common::diagnostics::Severity;
 use cielo::common::ids::SourceId;
 use cielo::common::symbols::Interner;
 use cielo::{Compiler, CompilerConfig};
+use miette::{GraphicalReportHandler, LabeledSpan, MietteDiagnostic, NamedSource, Report};
 
 fn main() {
     let compiler = Compiler::new(CompilerConfig::default());
@@ -33,7 +34,7 @@ fn run_file_case(compiler: &Compiler, path: &str) {
 
     let mut interner = Interner::new();
     let residual = compiler.compile_source_v0(&source, SourceId::from_u32(0), &mut interner);
-    print_case_summary("file", &source, &residual);
+    print_case_summary("file", path, &source, &residual);
 
     if residual.diagnostics.has_errors() {
         std::process::exit(1);
@@ -100,7 +101,8 @@ fn main() -> Int {
     for (idx, (name, source)) in CASES.iter().enumerate() {
         let mut interner = Interner::new();
         let residual = compiler.compile_source_v0(source, SourceId::new(idx), &mut interner);
-        print_case_summary(name, source, &residual);
+        let source_name = format!("smoke/{name}.cielo");
+        print_case_summary(name, &source_name, source, &residual);
         if residual.diagnostics.has_errors() {
             failures += 1;
         }
@@ -112,7 +114,12 @@ fn main() -> Int {
     }
 }
 
-fn print_case_summary(name: &str, source: &str, residual: &cielo::pipeline::phases::Residualized) {
+fn print_case_summary(
+    name: &str,
+    source_name: &str,
+    source: &str,
+    residual: &cielo::pipeline::phases::Residualized,
+) {
     let ct_exprs = residual
         .bta
         .stage_of_expr
@@ -129,43 +136,54 @@ fn print_case_summary(name: &str, source: &str, residual: &cielo::pipeline::phas
         residual.diagnostics.entries().len()
     );
 
+    let handler = GraphicalReportHandler::new()
+        .with_width(120)
+        .with_context_lines(1)
+        .without_cause_chain();
+
     for diag in residual.diagnostics.entries() {
-        let level = match diag.severity {
-            Severity::Error => "error",
-            Severity::Warning => "warn",
-            Severity::Note => "note",
-        };
-        let (start_line, start_col) = byte_to_line_col(source, diag.span.start as usize);
-        let (end_line, end_col) = byte_to_line_col(source, diag.span.end as usize);
-        println!(
-            "  - {level} {} @src{} l{}:c{}..l{}:c{} bytes[{}..{}]: {}",
-            diag.code,
-            diag.span.source,
-            start_line,
-            start_col,
-            end_line,
-            end_col,
-            diag.span.start,
-            diag.span.end,
-            diag.message
-        );
+        let report = diagnostic_report(diag, source_name, source);
+        let mut rendered = String::new();
+        if handler.render_report(&mut rendered, &*report).is_ok() {
+            for line in rendered.lines() {
+                println!("  {line}");
+            }
+        } else {
+            println!(
+                "  - {:?} {} @src{} bytes[{}..{}]: {}",
+                diag.severity,
+                diag.code,
+                diag.span.source,
+                diag.span.start,
+                diag.span.end,
+                diag.message
+            );
+        }
     }
 }
 
-fn byte_to_line_col(source: &str, byte_offset: usize) -> (usize, usize) {
-    let clamped = byte_offset.min(source.len());
-    let mut line = 1usize;
-    let mut col = 1usize;
-    for (idx, ch) in source.char_indices() {
-        if idx >= clamped {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
-        }
-    }
-    (line, col)
+fn diagnostic_report(
+    diag: &cielo::common::diagnostics::Diagnostic,
+    source_name: &str,
+    source: &str,
+) -> Report {
+    let source_len = source.len();
+    let start = (diag.span.start as usize).min(source_len);
+    let end = (diag.span.end as usize).min(source_len);
+    let span_len = end.saturating_sub(start);
+    let label = if span_len == 0 {
+        LabeledSpan::at_offset(start, diag.message.clone())
+    } else {
+        LabeledSpan::new_primary_with_span(Some(diag.message.clone()), (start, span_len))
+    };
+    let severity = match diag.severity {
+        Severity::Error => miette::Severity::Error,
+        Severity::Warning => miette::Severity::Warning,
+        Severity::Note => miette::Severity::Advice,
+    };
+    let diagnostic = MietteDiagnostic::new(diag.message.clone())
+        .with_code(format!("cielo::{}", diag.code))
+        .with_severity(severity)
+        .with_label(label);
+    Report::new(diagnostic).with_source_code(NamedSource::new(source_name, source.to_owned()))
 }

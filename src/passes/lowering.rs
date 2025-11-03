@@ -407,7 +407,10 @@ impl Lowerer {
                 return None;
             };
             let result = self.fresh_var();
-            let arg_ids = args.iter().map(|arg| self.lower_expr(arg, locals)).collect();
+            let arg_ids = args
+                .iter()
+                .map(|arg| self.lower_expr(arg, locals))
+                .collect();
             let return_expr = self.push_expr(ExprKind::Var(result), expr.span);
             let return_stmt = self.push_stmt(StmtKind::Return(return_expr), expr.span);
             return Some(self.push_stmt(
