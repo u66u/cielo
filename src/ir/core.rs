@@ -68,11 +68,11 @@ pub enum ExprKind {
         args: Vec<ExprId>,
     },
     MakeStruct {
-        ty: TypeId,
+        ty: SymbolId,
         fields: Vec<ExprId>,
     },
     MakeEnum {
-        ty: TypeId,
+        ty: SymbolId,
         variant: SymbolId,
         fields: Vec<ExprId>,
     },
@@ -176,12 +176,35 @@ pub struct FunctionDecl {
     pub span: Span,
 }
 
+#[derive(Clone, Debug)]
+pub struct AdtStructDecl {
+    pub name: SymbolId,
+    pub field_count: usize,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct AdtEnumVariantDecl {
+    pub name: SymbolId,
+    pub field_count: usize,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct AdtEnumDecl {
+    pub name: SymbolId,
+    pub variants: Vec<AdtEnumVariantDecl>,
+    pub span: Span,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct CoreProgram {
     exprs: Vec<ExprNode>,
     stmts: Vec<StmtNode>,
     handlers: Vec<HandlerDef>,
     functions: Vec<FunctionDecl>,
+    structs: Vec<AdtStructDecl>,
+    enums: Vec<AdtEnumDecl>,
     entrypoints: Vec<FuncId>,
 }
 
@@ -214,6 +237,14 @@ impl CoreProgram {
         id
     }
 
+    pub fn add_struct(&mut self, decl: AdtStructDecl) {
+        self.structs.push(decl);
+    }
+
+    pub fn add_enum(&mut self, decl: AdtEnumDecl) {
+        self.enums.push(decl);
+    }
+
     pub fn set_entrypoints(&mut self, entrypoints: impl IntoIterator<Item = FuncId>) {
         self.entrypoints.clear();
         self.entrypoints.extend(entrypoints);
@@ -233,6 +264,14 @@ impl CoreProgram {
 
     pub fn functions(&self) -> &[FunctionDecl] {
         &self.functions
+    }
+
+    pub fn structs(&self) -> &[AdtStructDecl] {
+        &self.structs
+    }
+
+    pub fn enums(&self) -> &[AdtEnumDecl] {
+        &self.enums
     }
 
     pub fn entrypoints(&self) -> &[FuncId] {

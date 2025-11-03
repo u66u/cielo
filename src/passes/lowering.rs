@@ -27,8 +27,9 @@ use crate::common::ids::{EffectLabelId, FuncId, SymbolId, TypeId, VarId};
 use crate::common::span::Span;
 use crate::frontend::ast::{self, ExprKind as AstExprKind, Item, Stmt as AstStmt};
 use crate::ir::core::{
-    BinaryOp, CoreProgram, ExprKind, ExprNode, FunctionDecl, HandlerClause, HandlerDef, Literal,
-    StageDirective, StmtKind, StmtNode, UnaryOp,
+    AdtEnumDecl, AdtEnumVariantDecl, AdtStructDecl, BinaryOp, CoreProgram, ExprKind, ExprNode,
+    FunctionDecl, HandlerClause, HandlerDef, Literal, StageDirective, StmtKind, StmtNode,
+    UnaryOp,
 };
 use crate::sema::effect::SortedEffectRow;
 
@@ -75,6 +76,8 @@ struct Lowerer {
     functions_by_name: HashMap<SymbolId, FuncId>,
     effect_labels: HashMap<SymbolId, EffectLabelId>,
     effect_ops: HashMap<(EffectLabelId, SymbolId), usize>,
+    struct_ctors: HashMap<SymbolId, usize>,
+    enum_ctors: HashMap<SymbolId, (SymbolId, usize)>,
     config: LowerConfig,
 }
 
@@ -92,6 +95,8 @@ impl Lowerer {
             functions_by_name: HashMap::new(),
             effect_labels: HashMap::new(),
             effect_ops: HashMap::new(),
+            struct_ctors: HashMap::new(),
+            enum_ctors: HashMap::new(),
             config,
         }
     }
@@ -99,13 +104,41 @@ impl Lowerer {
     fn lower(&mut self, ast: &ast::Program) {
         let mut function_work = Vec::new();
         for item in &ast.items {
-            if let Item::Effect(effect) = item {
-                let effect_id = EffectLabelId::new(self.effect_labels.len());
-                self.effect_labels.insert(effect.name, effect_id);
-                for operation in &effect.operations {
-                    self.effect_ops
-                        .insert((effect_id, operation.name), operation.params.len());
+            match item {
+                Item::Effect(effect) => {
+                    let effect_id = EffectLabelId::new(self.effect_labels.len());
+                    self.effect_labels.insert(effect.name, effect_id);
+                    for operation in &effect.operations {
+                        self.effect_ops
+                            .insert((effect_id, operation.name), operation.params.len());
+                    }
                 }
+                Item::Struct(decl) => {
+                    self.struct_ctors.insert(decl.name, decl.fields.len());
+                    self.program.add_struct(AdtStructDecl {
+                        name: decl.name,
+                        field_count: decl.fields.len(),
+                        span: decl.span,
+                    });
+                }
+                Item::Enum(decl) => {
+                    let mut variants = Vec::with_capacity(decl.variants.len());
+                    for variant in &decl.variants {
+                        self.enum_ctors
+                            .insert(variant.name, (decl.name, variant.fields.len()));
+                        variants.push(AdtEnumVariantDecl {
+                            name: variant.name,
+                            field_count: variant.fields.len(),
+                            span: variant.span,
+                        });
+                    }
+                    self.program.add_enum(AdtEnumDecl {
+                        name: decl.name,
+                        variants,
+                        span: decl.span,
+                    });
+                }
+                _ => {}
             }
         }
 
@@ -581,6 +614,46 @@ impl Lowerer {
                         ExprKind::PureCall {
                             callee: *func_id,
                             args: args
+                                .iter()
+                                .map(|arg| self.lower_expr(arg, locals))
+                                .collect(),
+                        }
+                    } else if let Some((enum_name, expected)) = self.enum_ctors.get(&symbol).copied()
+                    {
+                        if expected != args.len() {
+                            self.diagnostics.error(
+                                "LOWER_BAD_ENUM_CTOR_ARITY",
+                                format!(
+                                    "Enum constructor argument count mismatch: expected {}, got {}",
+                                    expected,
+                                    args.len()
+                                ),
+                                expr.span,
+                            );
+                        }
+                        ExprKind::MakeEnum {
+                            ty: enum_name,
+                            variant: symbol,
+                            fields: args
+                                .iter()
+                                .map(|arg| self.lower_expr(arg, locals))
+                                .collect(),
+                        }
+                    } else if let Some(expected) = self.struct_ctors.get(&symbol).copied() {
+                        if expected != args.len() {
+                            self.diagnostics.error(
+                                "LOWER_BAD_STRUCT_CTOR_ARITY",
+                                format!(
+                                    "Struct constructor argument count mismatch: expected {}, got {}",
+                                    expected,
+                                    args.len()
+                                ),
+                                expr.span,
+                            );
+                        }
+                        ExprKind::MakeStruct {
+                            ty: symbol,
+                            fields: args
                                 .iter()
                                 .map(|arg| self.lower_expr(arg, locals))
                                 .collect(),
