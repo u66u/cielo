@@ -1,10 +1,9 @@
 use std::fs;
 
-use cielo::common::diagnostics::Severity;
 use cielo::common::ids::SourceId;
+use cielo::common::reporting::render_diagnostic;
 use cielo::common::symbols::Interner;
 use cielo::{Compiler, CompilerConfig};
-use miette::{GraphicalReportHandler, LabeledSpan, MietteDiagnostic, NamedSource, Report};
 
 fn main() {
     let compiler = Compiler::new(CompilerConfig::default());
@@ -136,19 +135,9 @@ fn print_case_summary(
         residual.diagnostics.entries().len()
     );
 
-    let handler = GraphicalReportHandler::new()
-        .with_width(120)
-        .with_context_lines(1)
-        .without_cause_chain();
-
     for diag in residual.diagnostics.entries() {
-        let report = diagnostic_report(diag, source_name, source);
-        let mut rendered = String::new();
-        if handler.render_report(&mut rendered, &*report).is_ok() {
-            for line in rendered.lines() {
-                println!("  {line}");
-            }
-        } else {
+        let rendered = render_diagnostic(diag, source_name, source);
+        if rendered.trim().is_empty() {
             println!(
                 "  - {:?} {} @src{} bytes[{}..{}]: {}",
                 diag.severity,
@@ -158,32 +147,10 @@ fn print_case_summary(
                 diag.span.end,
                 diag.message
             );
+            continue;
+        }
+        for line in rendered.lines() {
+            println!("  {line}");
         }
     }
-}
-
-fn diagnostic_report(
-    diag: &cielo::common::diagnostics::Diagnostic,
-    source_name: &str,
-    source: &str,
-) -> Report {
-    let source_len = source.len();
-    let start = (diag.span.start as usize).min(source_len);
-    let end = (diag.span.end as usize).min(source_len);
-    let span_len = end.saturating_sub(start);
-    let label = if span_len == 0 {
-        LabeledSpan::at_offset(start, diag.message.clone())
-    } else {
-        LabeledSpan::new_primary_with_span(Some(diag.message.clone()), (start, span_len))
-    };
-    let severity = match diag.severity {
-        Severity::Error => miette::Severity::Error,
-        Severity::Warning => miette::Severity::Warning,
-        Severity::Note => miette::Severity::Advice,
-    };
-    let diagnostic = MietteDiagnostic::new(diag.message.clone())
-        .with_code(format!("cielo::{}", diag.code))
-        .with_severity(severity)
-        .with_label(label);
-    Report::new(diagnostic).with_source_code(NamedSource::new(source_name, source.to_owned()))
 }
