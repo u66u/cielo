@@ -212,3 +212,27 @@ fn main() -> Int {
             .any(|diag| diag.code == "LOWER_BAD_HANDLER_CLAUSE_ARITY")
     );
 }
+
+#[test]
+fn reports_duplicate_handler_clause() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+fn main() -> Int {
+  let x = handle 7 with Console {
+    | print(s) => 0
+    | print(s) => 1
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    assert!(
+        lowered
+            .diagnostics
+            .entries()
+            .iter()
+            .any(|diag| diag.code == "LOWER_DUP_HANDLER_CLAUSE")
+    );
+}
