@@ -28,8 +28,7 @@ use crate::common::span::Span;
 use crate::frontend::ast::{self, ExprKind as AstExprKind, Item, Stmt as AstStmt};
 use crate::ir::core::{
     AdtEnumDecl, AdtEnumVariantDecl, AdtStructDecl, BinaryOp, CoreProgram, ExprKind, ExprNode,
-    FunctionDecl, HandlerClause, HandlerDef, Literal, StageDirective, StmtKind, StmtNode,
-    UnaryOp,
+    FunctionDecl, HandlerClause, HandlerDef, Literal, StageDirective, StmtKind, StmtNode, UnaryOp,
 };
 use crate::sema::effect::SortedEffectRow;
 
@@ -618,7 +617,8 @@ impl Lowerer {
                                 .map(|arg| self.lower_expr(arg, locals))
                                 .collect(),
                         }
-                    } else if let Some((enum_name, expected)) = self.enum_ctors.get(&symbol).copied()
+                    } else if let Some((enum_name, expected)) =
+                        self.enum_ctors.get(&symbol).copied()
                     {
                         if expected != args.len() {
                             self.diagnostics.error(

@@ -147,26 +147,19 @@ fn infer_expr_type(
     };
 
     match &expr.kind {
-        ExprKind::Literal(lit) => set_expr_type(program, expr_id, type_for_literal(lit, prim), expr_types, var_types),
-        ExprKind::Var(var) => unify_expr_with_var(program, expr_id, *var, expr_types, var_types),
-        ExprKind::Unary { op, expr } => infer_unary(
+        ExprKind::Literal(lit) => set_expr_type(
             program,
             expr_id,
-            *op,
-            *expr,
-            prim,
+            type_for_literal(lit, prim),
             expr_types,
             var_types,
         ),
+        ExprKind::Var(var) => unify_expr_with_var(program, expr_id, *var, expr_types, var_types),
+        ExprKind::Unary { op, expr } => {
+            infer_unary(program, expr_id, *op, *expr, prim, expr_types, var_types)
+        }
         ExprKind::Binary { op, lhs, rhs } => infer_binary(
-            program,
-            expr_id,
-            *op,
-            *lhs,
-            *rhs,
-            prim,
-            expr_types,
-            var_types,
+            program, expr_id, *op, *lhs, *rhs, prim, expr_types, var_types,
         ),
         ExprKind::PureCall { callee, args } => constrain_call_signature(
             program,
@@ -184,7 +177,15 @@ fn infer_expr_type(
                 changed |= set_expr_type(program, expr_id, adt_ty, expr_types, var_types);
             }
             for field in fields {
-                changed |= infer_expr_type(program, *field, adt_types, prim, expr_types, var_types, func_returns);
+                changed |= infer_expr_type(
+                    program,
+                    *field,
+                    adt_types,
+                    prim,
+                    expr_types,
+                    var_types,
+                    func_returns,
+                );
             }
             changed
         }
@@ -194,7 +195,15 @@ fn infer_expr_type(
                 changed |= set_expr_type(program, expr_id, adt_ty, expr_types, var_types);
             }
             for field in fields {
-                changed |= infer_expr_type(program, *field, adt_types, prim, expr_types, var_types, func_returns);
+                changed |= infer_expr_type(
+                    program,
+                    *field,
+                    adt_types,
+                    prim,
+                    expr_types,
+                    var_types,
+                    func_returns,
+                );
             }
             changed
         }
@@ -393,8 +402,12 @@ fn infer_binary(
         }
         BinaryOp::Eq | BinaryOp::Ne => {
             match (left, right) {
-                (Some(ty), None) => changed |= set_expr_type(program, rhs, ty, expr_types, var_types),
-                (None, Some(ty)) => changed |= set_expr_type(program, lhs, ty, expr_types, var_types),
+                (Some(ty), None) => {
+                    changed |= set_expr_type(program, rhs, ty, expr_types, var_types)
+                }
+                (None, Some(ty)) => {
+                    changed |= set_expr_type(program, lhs, ty, expr_types, var_types)
+                }
                 _ => {}
             }
             if let (Some(left), Some(right)) = (expr_types[lhs.index()], expr_types[rhs.index()]) {
@@ -422,7 +435,9 @@ fn infer_binary(
         BinaryOp::And | BinaryOp::Or => {
             changed |= set_expr_type(program, lhs, prim.bool_, expr_types, var_types);
             changed |= set_expr_type(program, rhs, prim.bool_, expr_types, var_types);
-            if expr_types[lhs.index()] == Some(prim.bool_) && expr_types[rhs.index()] == Some(prim.bool_) {
+            if expr_types[lhs.index()] == Some(prim.bool_)
+                && expr_types[rhs.index()] == Some(prim.bool_)
+            {
                 changed |= set_expr_type(program, expr_id, prim.bool_, expr_types, var_types);
             }
         }
