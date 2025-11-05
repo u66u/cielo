@@ -15,6 +15,14 @@ fn main() {
 
     let mut args = std::env::args().skip(1);
     if let Some(path) = args.next() {
+        if path == "--emit-c" {
+            let Some(input) = args.next() else {
+                eprintln!("usage: cielo --emit-c <input.cielo>");
+                std::process::exit(1);
+            };
+            emit_c_file_case(&compiler, &input);
+            return;
+        }
         run_file_case(&compiler, &path);
         return;
     }
@@ -36,6 +44,29 @@ fn run_file_case(compiler: &Compiler, path: &str) {
     print_case_summary("file", path, &source, &residual);
 
     if residual.diagnostics.has_errors() {
+        std::process::exit(1);
+    }
+}
+
+fn emit_c_file_case(compiler: &Compiler, path: &str) {
+    let source = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) => {
+            eprintln!("failed to read {path}: {err}");
+            std::process::exit(1);
+        }
+    };
+
+    let mut interner = Interner::new();
+    let compiled = compiler.compile_source_v0_to_c(&source, SourceId::from_u32(0), &mut interner);
+    print_case_summary("emit-c", path, &source, &compiled.residual);
+    println!(
+        "/* linear functions: {} */",
+        compiled.linear.functions.len()
+    );
+    println!("{}", compiled.c_source);
+
+    if compiled.residual.diagnostics.has_errors() {
         std::process::exit(1);
     }
 }

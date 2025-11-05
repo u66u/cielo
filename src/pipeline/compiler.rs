@@ -4,7 +4,9 @@ use crate::common::symbols::Interner;
 use crate::frontend::parser::parse_source;
 use crate::ir::core::CoreProgram;
 use crate::passes::bta;
+use crate::passes::c_emit;
 use crate::passes::ct_propagate;
+use crate::passes::linearize;
 use crate::passes::lowering::{LowerConfig, lower_program};
 use crate::passes::monomorphize;
 use crate::passes::residualize;
@@ -48,6 +50,13 @@ pub struct CompilerConfig {
 #[derive(Debug, Default)]
 pub struct Compiler {
     config: CompilerConfig,
+}
+
+#[derive(Clone, Debug)]
+pub struct CompiledC {
+    pub residual: Residualized,
+    pub linear: crate::ir::linear::LinearProgram,
+    pub c_source: String,
 }
 
 impl Compiler {
@@ -111,6 +120,22 @@ impl Compiler {
     ) -> Residualized {
         let core = self.parse_and_lower_to_core(source, source_id, interner);
         self.run_v0_core_pipeline(core)
+    }
+
+    pub fn compile_source_v0_to_c(
+        &self,
+        source: &str,
+        source_id: SourceId,
+        interner: &mut Interner,
+    ) -> CompiledC {
+        let residual = self.compile_source_v0(source, source_id, interner);
+        let linearized = linearize::run(residual);
+        let emitted = c_emit::run(linearized, interner);
+        CompiledC {
+            residual: emitted.linearized.residual,
+            linear: emitted.linearized.linear,
+            c_source: emitted.c_source,
+        }
     }
 
     pub fn run_v0_core_pipeline(&self, built: CoreBuilt) -> Residualized {

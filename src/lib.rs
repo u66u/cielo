@@ -5,4 +5,4 @@ pub mod passes;
 pub mod pipeline;
 pub mod sema;
 
-pub use pipeline::compiler::{Compiler, CompilerConfig, Endianness, TargetSpec};
+pub use pipeline::compiler::{CompiledC, Compiler, CompilerConfig, Endianness, TargetSpec};

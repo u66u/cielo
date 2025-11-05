@@ -1,4 +1,4 @@
-// Pass 4/6: ct_propagate (compile-time constant propagation)
+// Pass 4/8: ct_propagate (compile-time constant propagation)
 //
 // Inputs:
 // - Monomorphized Core program

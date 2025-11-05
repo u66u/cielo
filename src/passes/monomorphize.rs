@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-// Pass 3/6: monomorphize (v0 skeleton)
+// Pass 3/8: monomorphize (v0 skeleton)
 //
 // Inputs:
 // - Typed Core program
