@@ -7,11 +7,6 @@ use cielo::{Compiler, CompilerConfig};
 
 fn main() {
     let compiler = Compiler::new(CompilerConfig::default());
-    let target = compiler.config().target;
-    println!(
-        "cielo bootstrap ready (target: {}-bit {:?})",
-        target.word_size_bits, target.endianness
-    );
 
     let mut args = std::env::args().skip(1);
     if let Some(path) = args.next() {
@@ -23,10 +18,21 @@ fn main() {
             emit_c_file_case(&compiler, &input);
             return;
         }
+
+        let target = compiler.config().target;
+        println!(
+            "cielo bootstrap ready (target: {}-bit {:?})",
+            target.word_size_bits, target.endianness
+        );
         run_file_case(&compiler, &path);
         return;
     }
 
+    let target = compiler.config().target;
+    println!(
+        "cielo bootstrap ready (target: {}-bit {:?})",
+        target.word_size_bits, target.endianness
+    );
     run_smoke_cases(&compiler);
 }
 
@@ -59,16 +65,23 @@ fn emit_c_file_case(compiler: &Compiler, path: &str) {
 
     let mut interner = Interner::new();
     let compiled = compiler.compile_source_v0_to_c(&source, SourceId::from_u32(0), &mut interner);
-    print_case_summary("emit-c", path, &source, &compiled.residual);
-    println!(
-        "/* linear functions: {} */",
-        compiled.linear.functions.len()
-    );
-    println!("{}", compiled.c_source);
+    for diag in compiled.residual.diagnostics.entries() {
+        let rendered = render_diagnostic(diag, path, &source);
+        if rendered.trim().is_empty() {
+            eprintln!(
+                "{:?} {} @{}..{}: {}",
+                diag.severity, diag.code, diag.span.start, diag.span.end, diag.message
+            );
+        } else {
+            eprintln!("{rendered}");
+        }
+    }
 
     if compiled.residual.diagnostics.has_errors() {
         std::process::exit(1);
     }
+
+    println!("{}", compiled.c_source);
 }
 
 fn run_smoke_cases(compiler: &Compiler) {
