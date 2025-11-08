@@ -16,28 +16,34 @@
 // Complexity:
 // - O(expr_count * fixpoint_iters), with small bounded iter count in practice
 
+use std::collections::HashMap;
+
+use crate::common::fixpoint::fixpoint;
 use crate::common::ids::ExprId;
 use crate::ir::core::{BinaryOp, ExprKind, Literal, UnaryOp};
 use crate::pipeline::phases::{CtPropagated, CtPropagationTables, Monomorphized};
 
 pub fn run(mono: Monomorphized) -> CtPropagated {
     let mut ct = CtPropagationTables::default();
-
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for (idx, expr) in mono.program.exprs().iter().enumerate() {
-            let expr_id = ExprId::new(idx);
-            if ct.ct_cache.contains_key(&expr_id) {
-                continue;
+    let limit = mono.program.exprs().len().saturating_add(1).max(1);
+    ct.ct_cache = fixpoint(
+        HashMap::new(),
+        |cache| {
+            let mut next = cache.clone();
+            for (idx, expr) in mono.program.exprs().iter().enumerate() {
+                let expr_id = ExprId::new(idx);
+                if next.contains_key(&expr_id) {
+                    continue;
+                }
+                let Some(value) = eval_expr(expr_id, expr, &next) else {
+                    continue;
+                };
+                next.insert(expr_id, value);
             }
-            let Some(value) = eval_expr(expr_id, expr, &ct.ct_cache) else {
-                continue;
-            };
-            ct.ct_cache.insert(expr_id, value);
-            changed = true;
-        }
-    }
+            next
+        },
+        limit,
+    );
 
     mono.into_ct_propagated(ct)
 }
