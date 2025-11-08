@@ -4,11 +4,11 @@
 // - Residualized Core program
 //
 // Outputs:
-// - LinearProgram with statement trees detached from arena IDs
+// - Arena-backed LinearProgram with explicit expression/statement ids
 //
 // Invariants:
 // - Function/variable identities are preserved
-// - All `next` edges are materialized as nested linear nodes
+// - Core node sharing is preserved via memoized ID mapping
 //
 // Diagnostics:
 // - `LINEARIZE_UNKNOWN_CALLEE` when a call target cannot be resolved
@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 
 use crate::common::diagnostics::DiagnosticBag;
-use crate::common::ids::{ExprId, FuncId, StmtId, SymbolId};
+use crate::common::ids::{ExprId, FuncId, LinearExprId, LinearStmtId, StmtId, SymbolId};
 use crate::ir::core::{CoreProgram, ExprKind, StmtKind};
 use crate::ir::linear::{LinearExpr, LinearFunction, LinearMatchArm, LinearProgram, LinearStmt};
 use crate::pipeline::phases::Residualized;
@@ -44,22 +44,30 @@ fn lower_program(program: &CoreProgram, diagnostics: &mut DiagnosticBag) -> Line
         .map(|(idx, func)| (FuncId::new(idx), func.name))
         .collect();
 
-    let functions = program
-        .functions()
-        .iter()
-        .enumerate()
-        .map(|(idx, function)| LinearFunction {
+    let mut linear = LinearProgram::default();
+    let mut expr_map: Vec<Option<LinearExprId>> = vec![None; program.exprs().len()];
+    let mut stmt_map: Vec<Option<LinearStmtId>> = vec![None; program.stmts().len()];
+
+    for (idx, function) in program.functions().iter().enumerate() {
+        let body = lower_stmt(
+            program,
+            function.body,
+            &fn_names,
+            diagnostics,
+            &mut linear,
+            &mut expr_map,
+            &mut stmt_map,
+        );
+        linear.functions.push(LinearFunction {
             id: FuncId::new(idx),
             name: function.name,
             params: function.params.clone(),
-            body: lower_stmt(program, function.body, &fn_names, diagnostics),
-        })
-        .collect();
-
-    LinearProgram {
-        functions,
-        entrypoints: program.entrypoints().to_vec(),
+            body,
+        });
     }
+
+    linear.entrypoints = program.entrypoints().to_vec();
+    linear
 }
 
 fn lower_stmt(
@@ -67,21 +75,40 @@ fn lower_stmt(
     stmt_id: StmtId,
     fn_names: &HashMap<FuncId, SymbolId>,
     diagnostics: &mut DiagnosticBag,
-) -> LinearStmt {
+    linear: &mut LinearProgram,
+    expr_map: &mut [Option<LinearExprId>],
+    stmt_map: &mut [Option<LinearStmtId>],
+) -> LinearStmtId {
+    if let Some(id) = stmt_map.get(stmt_id.index()).copied().flatten() {
+        return id;
+    }
+
     let Some(stmt) = program.stmt(stmt_id) else {
-        return LinearStmt::Error;
+        let id = linear.push_stmt(LinearStmt::Error);
+        stmt_map[stmt_id.index()] = Some(id);
+        return id;
     };
 
-    match &stmt.kind {
-        StmtKind::Return(expr) => LinearStmt::Return(lower_expr(program, *expr, fn_names)),
+    let kind = match &stmt.kind {
+        StmtKind::Return(expr) => {
+            LinearStmt::Return(lower_expr(program, *expr, fn_names, linear, expr_map))
+        }
         StmtKind::Let {
             binding,
             value,
             next,
         } => LinearStmt::Let {
             binding: *binding,
-            value: lower_expr(program, *value, fn_names),
-            next: Box::new(lower_stmt(program, *next, fn_names, diagnostics)),
+            value: lower_expr(program, *value, fn_names, linear, expr_map),
+            next: lower_stmt(
+                program,
+                *next,
+                fn_names,
+                diagnostics,
+                linear,
+                expr_map,
+                stmt_map,
+            ),
         },
         StmtKind::Val {
             binding,
@@ -89,8 +116,24 @@ fn lower_stmt(
             next,
         } => LinearStmt::Val {
             binding: *binding,
-            value: Box::new(lower_stmt(program, *value, fn_names, diagnostics)),
-            next: Box::new(lower_stmt(program, *next, fn_names, diagnostics)),
+            value: lower_stmt(
+                program,
+                *value,
+                fn_names,
+                diagnostics,
+                linear,
+                expr_map,
+                stmt_map,
+            ),
+            next: lower_stmt(
+                program,
+                *next,
+                fn_names,
+                diagnostics,
+                linear,
+                expr_map,
+                stmt_map,
+            ),
         },
         StmtKind::Call {
             result,
@@ -113,9 +156,17 @@ fn lower_stmt(
                 args: args
                     .iter()
                     .copied()
-                    .map(|arg| lower_expr(program, arg, fn_names))
+                    .map(|arg| lower_expr(program, arg, fn_names, linear, expr_map))
                     .collect(),
-                next: Box::new(lower_stmt(program, *next, fn_names, diagnostics)),
+                next: lower_stmt(
+                    program,
+                    *next,
+                    fn_names,
+                    diagnostics,
+                    linear,
+                    expr_map,
+                    stmt_map,
+                ),
             }
         }
         StmtKind::If {
@@ -123,26 +174,58 @@ fn lower_stmt(
             then_branch,
             else_branch,
         } => LinearStmt::If {
-            cond: lower_expr(program, *cond, fn_names),
-            then_branch: Box::new(lower_stmt(program, *then_branch, fn_names, diagnostics)),
-            else_branch: Box::new(lower_stmt(program, *else_branch, fn_names, diagnostics)),
+            cond: lower_expr(program, *cond, fn_names, linear, expr_map),
+            then_branch: lower_stmt(
+                program,
+                *then_branch,
+                fn_names,
+                diagnostics,
+                linear,
+                expr_map,
+                stmt_map,
+            ),
+            else_branch: lower_stmt(
+                program,
+                *else_branch,
+                fn_names,
+                diagnostics,
+                linear,
+                expr_map,
+                stmt_map,
+            ),
         },
         StmtKind::Match {
             scrutinee,
             arms,
             default,
         } => LinearStmt::Match {
-            scrutinee: lower_expr(program, *scrutinee, fn_names),
+            scrutinee: lower_expr(program, *scrutinee, fn_names, linear, expr_map),
             arms: arms
                 .iter()
                 .map(|arm| LinearMatchArm {
                     tag: arm.tag,
                     binders: arm.binders.clone(),
-                    body: Box::new(lower_stmt(program, arm.body, fn_names, diagnostics)),
+                    body: lower_stmt(
+                        program,
+                        arm.body,
+                        fn_names,
+                        diagnostics,
+                        linear,
+                        expr_map,
+                        stmt_map,
+                    ),
                 })
                 .collect(),
             default: default.map(|default_stmt| {
-                Box::new(lower_stmt(program, default_stmt, fn_names, diagnostics))
+                lower_stmt(
+                    program,
+                    default_stmt,
+                    fn_names,
+                    diagnostics,
+                    linear,
+                    expr_map,
+                    stmt_map,
+                )
             }),
         },
         StmtKind::Perform {
@@ -158,9 +241,17 @@ fn lower_stmt(
             args: args
                 .iter()
                 .copied()
-                .map(|arg| lower_expr(program, arg, fn_names))
+                .map(|arg| lower_expr(program, arg, fn_names, linear, expr_map))
                 .collect(),
-            next: Box::new(lower_stmt(program, *next, fn_names, diagnostics)),
+            next: lower_stmt(
+                program,
+                *next,
+                fn_names,
+                diagnostics,
+                linear,
+                expr_map,
+                stmt_map,
+            ),
         },
         StmtKind::Handle {
             handler,
@@ -178,50 +269,95 @@ fn lower_stmt(
             });
             LinearStmt::Handle {
                 effect,
-                body: Box::new(lower_stmt(program, *body, fn_names, diagnostics)),
+                body: lower_stmt(
+                    program,
+                    *body,
+                    fn_names,
+                    diagnostics,
+                    linear,
+                    expr_map,
+                    stmt_map,
+                ),
                 next: next.map(|next_stmt| {
-                    Box::new(lower_stmt(program, next_stmt, fn_names, diagnostics))
+                    lower_stmt(
+                        program,
+                        next_stmt,
+                        fn_names,
+                        diagnostics,
+                        linear,
+                        expr_map,
+                        stmt_map,
+                    )
                 }),
             }
         }
         StmtKind::Stage { stage, body, next } => LinearStmt::Stage {
             stage: *stage,
-            body: Box::new(lower_stmt(program, *body, fn_names, diagnostics)),
-            next: next
-                .map(|next_stmt| Box::new(lower_stmt(program, next_stmt, fn_names, diagnostics))),
+            body: lower_stmt(
+                program,
+                *body,
+                fn_names,
+                diagnostics,
+                linear,
+                expr_map,
+                stmt_map,
+            ),
+            next: next.map(|next_stmt| {
+                lower_stmt(
+                    program,
+                    next_stmt,
+                    fn_names,
+                    diagnostics,
+                    linear,
+                    expr_map,
+                    stmt_map,
+                )
+            }),
         },
         StmtKind::Hole { .. } => LinearStmt::Hole,
         StmtKind::Error(_) => LinearStmt::Error,
-    }
+    };
+
+    let id = linear.push_stmt(kind);
+    stmt_map[stmt_id.index()] = Some(id);
+    id
 }
 
 fn lower_expr(
     program: &CoreProgram,
     expr_id: ExprId,
     fn_names: &HashMap<FuncId, SymbolId>,
-) -> LinearExpr {
+    linear: &mut LinearProgram,
+    expr_map: &mut [Option<LinearExprId>],
+) -> LinearExprId {
+    if let Some(id) = expr_map.get(expr_id.index()).copied().flatten() {
+        return id;
+    }
+
     let Some(expr) = program.expr(expr_id) else {
-        return LinearExpr::Error;
+        let id = linear.push_expr(LinearExpr::Error);
+        expr_map[expr_id.index()] = Some(id);
+        return id;
     };
 
-    match &expr.kind {
+    let kind = match &expr.kind {
         ExprKind::Var(var) => LinearExpr::Var(*var),
         ExprKind::Literal(lit) => LinearExpr::Literal(lit.clone()),
         ExprKind::Unary { op, expr } => LinearExpr::Unary {
             op: *op,
-            expr: Box::new(lower_expr(program, *expr, fn_names)),
+            expr: lower_expr(program, *expr, fn_names, linear, expr_map),
         },
         ExprKind::Binary { op, lhs, rhs } => LinearExpr::Binary {
             op: *op,
-            lhs: Box::new(lower_expr(program, *lhs, fn_names)),
-            rhs: Box::new(lower_expr(program, *rhs, fn_names)),
+            lhs: lower_expr(program, *lhs, fn_names, linear, expr_map),
+            rhs: lower_expr(program, *rhs, fn_names, linear, expr_map),
         },
         ExprKind::PureCall { callee, args } => LinearExpr::PureCall {
             callee: fn_names.get(callee).copied().unwrap_or(SymbolId::INVALID),
             args: args
                 .iter()
                 .copied()
-                .map(|arg| lower_expr(program, arg, fn_names))
+                .map(|arg| lower_expr(program, arg, fn_names, linear, expr_map))
                 .collect(),
         },
         ExprKind::MakeStruct { ty, fields } => LinearExpr::MakeStruct {
@@ -229,7 +365,7 @@ fn lower_expr(
             fields: fields
                 .iter()
                 .copied()
-                .map(|field| lower_expr(program, field, fn_names))
+                .map(|field| lower_expr(program, field, fn_names, linear, expr_map))
                 .collect(),
         },
         ExprKind::MakeEnum {
@@ -242,9 +378,13 @@ fn lower_expr(
             fields: fields
                 .iter()
                 .copied()
-                .map(|field| lower_expr(program, field, fn_names))
+                .map(|field| lower_expr(program, field, fn_names, linear, expr_map))
                 .collect(),
         },
         ExprKind::Error(_) => LinearExpr::Error,
-    }
+    };
+
+    let id = linear.push_expr(kind);
+    expr_map[expr_id.index()] = Some(id);
+    id
 }
