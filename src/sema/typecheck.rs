@@ -38,6 +38,54 @@ pub struct PrimitiveTypeIds {
     pub string: TypeId,
 }
 
+struct TypeCheckerContext<'a> {
+    program: &'a CoreProgram,
+    adt_types: &'a HashMap<SymbolId, TypeId>,
+    prim: PrimitiveTypeIds,
+    stmt_returns: &'a [Vec<ExprId>],
+    expr_types: &'a mut [Option<TypeId>],
+    var_types: &'a mut Vec<Option<TypeId>>,
+    func_returns: &'a mut [Option<TypeId>],
+}
+
+impl<'a> TypeCheckerContext<'a> {
+    fn infer_expr_type(&mut self, expr_id: ExprId) -> bool {
+        infer_expr_type(
+            self.program,
+            expr_id,
+            self.adt_types,
+            self.prim,
+            self.expr_types,
+            self.var_types,
+            self.func_returns,
+        )
+    }
+
+    fn constrain_stmt(&mut self, stmt_id: StmtId, stmt: &crate::ir::core::StmtNode) -> bool {
+        constrain_stmt(
+            self.program,
+            stmt_id,
+            stmt,
+            self.stmt_returns,
+            self.prim,
+            self.expr_types,
+            self.var_types,
+            self.func_returns,
+        )
+    }
+
+    fn unify_expr_with_func_return(&mut self, expr_id: ExprId, func_id: FuncId) -> bool {
+        unify_expr_with_func_return(
+            self.program,
+            expr_id,
+            func_id,
+            self.expr_types,
+            self.var_types,
+            self.func_returns,
+        )
+    }
+}
+
 pub fn typecheck_core(program: &CoreProgram, diagnostics: &mut DiagnosticBag) -> SemanticTables {
     let mut store = TypeStore::new();
     let primitives = intern_primitives(&mut store);
@@ -64,50 +112,36 @@ pub fn typecheck_core(program: &CoreProgram, diagnostics: &mut DiagnosticBag) ->
     }
 
     let stmt_returns = precompute_stmt_returns(program);
+    {
+        let mut checker = TypeCheckerContext {
+            program,
+            adt_types: &adt_types,
+            prim: primitives,
+            stmt_returns: &stmt_returns,
+            expr_types: &mut sema.type_of_expr,
+            var_types: &mut var_types,
+            func_returns: &mut func_returns,
+        };
 
-    let mut changed = true;
-    while changed {
-        changed = false;
+        let mut changed = true;
+        while changed {
+            changed = false;
 
-        for (idx, _) in program.exprs().iter().enumerate() {
-            let expr_id = ExprId::new(idx);
-            changed |= infer_expr_type(
-                program,
-                expr_id,
-                &adt_types,
-                primitives,
-                &mut sema.type_of_expr,
-                &mut var_types,
-                &mut func_returns,
-            );
-            sema.effects_of_expr[idx] = SortedEffectRow::empty();
-        }
+            for (idx, _) in checker.program.exprs().iter().enumerate() {
+                let expr_id = ExprId::new(idx);
+                changed |= checker.infer_expr_type(expr_id);
+            }
 
-        for (idx, stmt) in program.stmts().iter().enumerate() {
-            let stmt_id = StmtId::new(idx);
-            changed |= constrain_stmt(
-                program,
-                stmt_id,
-                stmt,
-                &stmt_returns,
-                primitives,
-                &mut sema.type_of_expr,
-                &mut var_types,
-                &mut func_returns,
-            );
-        }
+            for (idx, stmt) in checker.program.stmts().iter().enumerate() {
+                let stmt_id = StmtId::new(idx);
+                changed |= checker.constrain_stmt(stmt_id, stmt);
+            }
 
-        for (func_idx, function) in program.functions().iter().enumerate() {
-            let func_id = FuncId::new(func_idx);
-            for return_expr in &stmt_returns[function.body.index()] {
-                changed |= unify_expr_with_func_return(
-                    program,
-                    *return_expr,
-                    func_id,
-                    &mut sema.type_of_expr,
-                    &mut var_types,
-                    &mut func_returns,
-                );
+            for (func_idx, function) in checker.program.functions().iter().enumerate() {
+                let func_id = FuncId::new(func_idx);
+                for return_expr in &checker.stmt_returns[function.body.index()] {
+                    changed |= checker.unify_expr_with_func_return(*return_expr, func_id);
+                }
             }
         }
     }
