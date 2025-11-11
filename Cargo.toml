@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 bitflags = "2.11.0"
+clap = { version = "4.5.32", features = ["derive"] }
 indexmap = "2.13.0"
 lasso = "0.7.3"
 miette = { version = "7.6.0", features = ["fancy"] }
