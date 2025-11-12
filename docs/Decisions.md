@@ -1,5 +1,48 @@
 Cielo's philosophy is "everything that can realistically be comptime should be comptime". We use effects to get more granular information about what computations can be compile-time. Effects also provide a nice primitive to create control flow units. Explicit > implicit.
 
+## Compiler style policy (v0/v1, authoritative)
+
+Default implementation style for v0/v1 is conservative and explicit. Clever syntax and
+meta-programming are optional tools, not the baseline.
+
+Rules:
+- Prioritize readability, phase safety, and easy reasoning over stylistic novelty.
+- A non-trivial pattern is acceptable only if it gives one of:
+  - clear correctness/safety win
+  - elimination of repeated bug-prone boilerplate
+  - measurable complexity reduction without obscuring control/data flow
+- If understanding control flow requires mentally expanding dense macro/type tricks,
+  do not use that pattern in v0/v1.
+
+Pattern policy for v0/v1:
+- Adopt now:
+  - extension traits for domain semantics
+  - scope guards/RAII for push-pop compiler context
+  - pattern matching compression when explicit and exhaustive
+  - newtype wrappers for invariants and IDs
+  - display impls for diagnostics and dumps
+  - generic fixpoint helpers for monotone analyses
+- Defer (case-by-case only):
+  - iterator alchemy for allocation-free traversal
+  - const generics fixed-size containers
+  - bitset-encoded effect rows/sets
+- Avoid for now:
+  - blanket `From/Into` IR construction tricks
+  - closure-based IR builder DSLs
+  - manual function-table dispatch in place of straightforward enum matching
+
+## Phase integrity policy (v0/v1, authoritative)
+
+Analyses and IDs must be phase-safe.
+
+Rules:
+- Transformation boundaries use phase-specific newtype IDs (no shared generic ExprId/StmtId
+  across unrelated phases).
+- Analysis tables are inseparable from the IR they were computed against.
+- Pass artifacts must expose only phase-typed accessors, so cross-phase misuse is prevented
+  at compile time.
+- Generic/raw ID mixing across phase boundaries is prohibited.
+
 ## Core v1 features:
 Koka's core (System Fw + Effect Rows + evidence passing)
 lexical handlers + effect capability hierarchy (refer to order semantics)

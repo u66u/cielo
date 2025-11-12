@@ -4,6 +4,18 @@ General approach: separate passes with IR, each pass only having access to what 
 Pipeline: parsing -> HIR -> CoreHIR -> TypedHIR -> Core (fw) -> ... -> ANF, etc.
 Only for passes that actually need it. Otherwise reuse IR struct from a previous pass.
 
+## Implementation constraints (v0/v1)
+
+Authoritative policy is in `docs/Decisions.md`.
+
+- Keep style conservative and explicit by default.
+- Use advanced syntax patterns only when they materially improve safety/correctness
+  or remove repeated bug-prone code.
+- Enforce phase integrity:
+  - phase-specific ID newtypes at transformation boundaries
+  - analyses inseparable from the IR they were computed against
+  - pass artifacts exposing phase-typed accessors only
+
 ## Modules
 
 Basically rust's system. File = module, `mod`/`pub`/`use` are name resolution, crates are compilation units. For v0/v1 we don't care, just single file compilation.
