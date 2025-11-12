@@ -42,8 +42,32 @@ Use smallvec (when explicit data structures are not necessary), arenas by IDs, b
 ## Rich error reporting
 In our compiler errors are first class nodes, they accumulate as we go through phases. Use miette to display them cleanly and point to specific source code places.
 
+## Authority
+`docs/Decisions.md` is authoritative for v0/v1 style acceptance policy and phase integrity.
+This file is tactical guidance.
+
+## Advanced pattern gating (v0/v1)
+Use advanced syntax patterns only when they satisfy the policy in `docs/Decisions.md`.
+
+- Adopt now:
+  - extension traits for domain semantics
+  - scope guards (RAII) for context push/pop
+  - pattern matching compression when explicit and exhaustive
+  - newtype wrappers for invariants and phase IDs
+  - display impls for diagnostics and source-like dumps
+  - generic fixpoint helpers for monotone analysis
+- Defer (case-by-case):
+  - iterator alchemy for allocation-free traversal
+  - const-generic fixed-capacity containers
+  - bitset-based effect sets
+- Avoid for now:
+  - blanket `From/Into` IR construction tricks
+  - closure-based IR builder DSLs
+  - manual function-table dispatch instead of direct enum matching
+
 ## Stylistic choices
-Overall code style is clean, simple, intuitive, self-documenting, but also humanized. Use code compression where it doesn't lead to obfuscation, e.g. instead of defining each id manually:
+Overall code style is clean, simple, intuitive, self-documenting, and humanized.
+Use code compression only when it does not reduce clarity, e.g. instead of defining each id manually:
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VarId(u32);
@@ -70,7 +94,7 @@ macro_rules! define_id {
     };
 }
 ```
-When appropriate also add demo scene stylish code choices that show language knowledge and don't lead to obfuscation or overcomplication, e.g.
+When appropriate, add expressive "demo scene" style only if it preserves readability and follows the gating policy above, e.g.
 ```
 macro_rules! binops {
     ($($variant:ident : $prec:expr, $tok:pat),* $(,)?) => {
@@ -106,8 +130,10 @@ binops! {
     Or:   2,  TokenKind::Keyword(Keyword::Or),
 }
 ```
-This also includes TRAIT COHERENCE TRICKS — zero-cost IR construction, EXTENSION TRAITS — adding domain methods without modifying types, SCOPE GUARDS — RAII for compiler context, ITERATOR ALCHEMY — tree traversal without allocation, PATTERN MATCHING COMPRESSION — multi-arm collapse, CONST GENERICS + ARRAYS — compile-time-sized lookup tables, ENUM DISPATCH WITHOUT DYN — visitor via match + function table, GENERIC FIXPOINT — reusable dataflow iteration, DISPLAY IMPLS — pretty-printing that mirrors source syntax
-NEWTYPE + DEREF — transparent wrappers that add semantics, etc. Be creative, but don't overcomplicate! Example of NEWTYPE + DEREF for instance:
+Patterns like extension traits, scope guards, pattern compression, fixpoint helpers,
+display impls, and newtype wrappers are preferred when they improve correctness and
+maintainability. Others are deferred/avoided in v0/v1 per `docs/Decisions.md`.
+Example of NEWTYPE + DEREF:
 ```
 pub struct SortedEffectRow(SmallVec<[EffectLabelId; 4]>);
 
