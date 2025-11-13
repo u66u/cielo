@@ -22,7 +22,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::common::diagnostics::DiagnosticBag;
-use crate::common::ids::{EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, TypeId, VarId};
+use crate::common::ids::{
+    EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, TypeId, VarId,
+};
 use crate::ir::core::{
     BinaryOp, CoreProgram, CoreTypeRef, ExprKind, Literal, PrimitiveTypeRef, UnaryOp,
 };

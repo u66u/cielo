@@ -302,6 +302,10 @@ impl CoreProgram {
         &self.stmts
     }
 
+    pub fn stmts_mut(&mut self) -> &mut [StmtNode] {
+        &mut self.stmts
+    }
+
     pub fn handlers(&self) -> &[HandlerDef] {
         &self.handlers
     }
@@ -312,6 +316,10 @@ impl CoreProgram {
 
     pub fn functions(&self) -> &[FunctionDecl] {
         &self.functions
+    }
+
+    pub fn functions_mut(&mut self) -> &mut [FunctionDecl] {
+        &mut self.functions
     }
 
     pub fn structs(&self) -> &[AdtStructDecl] {
@@ -332,6 +340,10 @@ impl CoreProgram {
 
     pub fn stmt(&self, id: StmtId) -> Option<&StmtNode> {
         self.stmts.get(id.index())
+    }
+
+    pub fn stmt_mut(&mut self, id: StmtId) -> Option<&mut StmtNode> {
+        self.stmts.get_mut(id.index())
     }
 
     pub fn function(&self, id: FuncId) -> Option<&FunctionDecl> {
