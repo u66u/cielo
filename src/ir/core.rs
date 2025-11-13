@@ -44,6 +44,23 @@ pub enum StageDirective {
     Runtime,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PrimitiveTypeRef {
+    Bool,
+    Int,
+    Float,
+    Char,
+    String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CoreTypeRef {
+    Unit,
+    Primitive(PrimitiveTypeRef),
+    Named(SymbolId),
+    Unknown,
+}
+
 #[derive(Clone, Debug)]
 pub struct ExprNode {
     pub span: Span,
@@ -156,6 +173,22 @@ pub struct HandlerClause {
 }
 
 #[derive(Clone, Debug)]
+pub struct EffectOperationDecl {
+    pub name: SymbolId,
+    pub param_types: Vec<CoreTypeRef>,
+    pub return_type: CoreTypeRef,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct EffectDecl {
+    pub label: EffectLabelId,
+    pub name: SymbolId,
+    pub operations: Vec<EffectOperationDecl>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
 pub struct HandlerDef {
     pub effect: EffectLabelId,
     pub return_param: VarId,
@@ -201,6 +234,7 @@ pub struct AdtEnumDecl {
 pub struct CoreProgram {
     exprs: Vec<ExprNode>,
     stmts: Vec<StmtNode>,
+    effects: Vec<EffectDecl>,
     handlers: Vec<HandlerDef>,
     functions: Vec<FunctionDecl>,
     structs: Vec<AdtStructDecl>,
@@ -228,6 +262,16 @@ impl CoreProgram {
     pub fn add_handler(&mut self, handler: HandlerDef) -> HandlerId {
         let id = HandlerId::new(self.handlers.len());
         self.handlers.push(handler);
+        id
+    }
+
+    pub fn add_effect(&mut self, effect: EffectDecl) -> EffectLabelId {
+        let id = EffectLabelId::new(self.effects.len());
+        debug_assert_eq!(
+            id, effect.label,
+            "effect label should be dense and match insertion order"
+        );
+        self.effects.push(effect);
         id
     }
 
@@ -262,6 +306,10 @@ impl CoreProgram {
         &self.handlers
     }
 
+    pub fn effects(&self) -> &[EffectDecl] {
+        &self.effects
+    }
+
     pub fn functions(&self) -> &[FunctionDecl] {
         &self.functions
     }
@@ -292,5 +340,9 @@ impl CoreProgram {
 
     pub fn function_mut(&mut self, id: FuncId) -> Option<&mut FunctionDecl> {
         self.functions.get_mut(id.index())
+    }
+
+    pub fn effect(&self, id: EffectLabelId) -> Option<&EffectDecl> {
+        self.effects.get(id.index())
     }
 }

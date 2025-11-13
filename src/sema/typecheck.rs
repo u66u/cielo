@@ -22,8 +22,10 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::common::diagnostics::DiagnosticBag;
-use crate::common::ids::{ExprId, FuncId, StmtId, SymbolId, TypeId, VarId};
-use crate::ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, UnaryOp};
+use crate::common::ids::{EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, TypeId, VarId};
+use crate::ir::core::{
+    BinaryOp, CoreProgram, CoreTypeRef, ExprKind, Literal, PrimitiveTypeRef, UnaryOp,
+};
 use crate::pipeline::phases::SemanticTables;
 use crate::sema::effect::SortedEffectRow;
 use crate::sema::ty::{EnumVariant, PrimitiveType, StructField, TypeKind, TypeStore};
@@ -41,12 +43,21 @@ pub struct PrimitiveTypeIds {
 struct TypeCheckerContext<'a> {
     program: &'a CoreProgram,
     adt_types: &'a HashMap<SymbolId, TypeId>,
+    effect_signatures: &'a EffectSignatureTable,
     prim: PrimitiveTypeIds,
     stmt_returns: &'a [Vec<ExprId>],
     expr_types: &'a mut [Option<TypeId>],
     var_types: &'a mut Vec<Option<TypeId>>,
     func_returns: &'a mut [Option<TypeId>],
 }
+
+#[derive(Clone, Debug)]
+struct EffectSignature {
+    param_types: Vec<Option<TypeId>>,
+    return_type: Option<TypeId>,
+}
+
+type EffectSignatureTable = HashMap<(EffectLabelId, SymbolId), EffectSignature>;
 
 impl<'a> TypeCheckerContext<'a> {
     fn infer_expr_type(&mut self, expr_id: ExprId) -> bool {
@@ -66,6 +77,7 @@ impl<'a> TypeCheckerContext<'a> {
             self.program,
             stmt_id,
             stmt,
+            self.effect_signatures,
             self.stmt_returns,
             self.prim,
             self.expr_types,
@@ -90,6 +102,7 @@ pub fn typecheck_core(program: &CoreProgram, diagnostics: &mut DiagnosticBag) ->
     let mut store = TypeStore::new();
     let primitives = intern_primitives(&mut store);
     let adt_types = intern_program_adts(program, &mut store);
+    let effect_signatures = build_effect_signatures(program, &adt_types, primitives);
 
     let mut sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
     sema.effects_of_expr = vec![SortedEffectRow::empty(); program.exprs().len()];
@@ -116,6 +129,7 @@ pub fn typecheck_core(program: &CoreProgram, diagnostics: &mut DiagnosticBag) ->
         let mut checker = TypeCheckerContext {
             program,
             adt_types: &adt_types,
+            effect_signatures: &effect_signatures,
             prim: primitives,
             stmt_returns: &stmt_returns,
             expr_types: &mut sema.type_of_expr,
@@ -145,6 +159,14 @@ pub fn typecheck_core(program: &CoreProgram, diagnostics: &mut DiagnosticBag) ->
             }
         }
     }
+
+    validate_effect_signatures(
+        program,
+        &effect_signatures,
+        &sema.type_of_expr,
+        &var_types,
+        diagnostics,
+    );
 
     for (idx, expr) in program.exprs().iter().enumerate() {
         if sema.type_of_expr[idx].is_none() {
@@ -249,6 +271,7 @@ fn constrain_stmt(
     program: &CoreProgram,
     _stmt_id: StmtId,
     stmt: &crate::ir::core::StmtNode,
+    effect_signatures: &EffectSignatureTable,
     stmt_returns: &[Vec<ExprId>],
     prim: PrimitiveTypeIds,
     expr_types: &mut [Option<TypeId>],
@@ -286,12 +309,32 @@ fn constrain_stmt(
             set_expr_type(program, *cond, prim.bool_, expr_types, var_types)
         }
         crate::ir::core::StmtKind::Match { .. } => false,
-        crate::ir::core::StmtKind::Perform { result, .. } => {
-            if let Some(var) = result {
-                set_var_type(*var, prim.unit, var_types)
-            } else {
-                false
+        crate::ir::core::StmtKind::Perform {
+            result,
+            effect,
+            operation,
+            args,
+            ..
+        } => {
+            let mut changed = false;
+            if let Some(signature) = effect_signatures.get(&(*effect, *operation)) {
+                for (arg, expected_ty) in args.iter().zip(signature.param_types.iter()) {
+                    if let Some(expected_ty) = expected_ty {
+                        changed |=
+                            set_expr_type(program, *arg, *expected_ty, expr_types, var_types);
+                    }
+                }
+                if let Some(var) = result {
+                    if let Some(return_ty) = signature.return_type {
+                        changed |= set_var_type(*var, return_ty, var_types);
+                    } else {
+                        changed |= set_var_type(*var, prim.unit, var_types);
+                    }
+                }
+            } else if let Some(var) = result {
+                changed |= set_var_type(*var, prim.unit, var_types);
             }
+            changed
         }
         crate::ir::core::StmtKind::Handle { handler, body, .. } => {
             let mut changed = false;
@@ -306,6 +349,16 @@ fn constrain_stmt(
                     );
                 }
                 for clause in &handler_def.clauses {
+                    if let Some(signature) =
+                        effect_signatures.get(&(handler_def.effect, clause.operation))
+                    {
+                        for (param, expected_ty) in clause.params.iter().zip(&signature.param_types)
+                        {
+                            if let Some(expected_ty) = expected_ty {
+                                changed |= set_var_type(*param, *expected_ty, var_types);
+                            }
+                        }
+                    }
                     for clause_ret in &stmt_returns[clause.body.index()] {
                         changed |= unify_expr_with_var(
                             program,
@@ -687,6 +740,209 @@ fn intern_program_adts(program: &CoreProgram, store: &mut TypeStore) -> HashMap<
     }
 
     adt_types
+}
+
+fn build_effect_signatures(
+    program: &CoreProgram,
+    adt_types: &HashMap<SymbolId, TypeId>,
+    prim: PrimitiveTypeIds,
+) -> EffectSignatureTable {
+    let mut table = EffectSignatureTable::new();
+    for effect in program.effects() {
+        for operation in &effect.operations {
+            table.insert(
+                (effect.label, operation.name),
+                EffectSignature {
+                    param_types: operation
+                        .param_types
+                        .iter()
+                        .copied()
+                        .map(|ty| resolve_type_ref(ty, adt_types, prim))
+                        .collect(),
+                    return_type: resolve_type_ref(operation.return_type, adt_types, prim),
+                },
+            );
+        }
+    }
+    table
+}
+
+fn resolve_type_ref(
+    ty: CoreTypeRef,
+    adt_types: &HashMap<SymbolId, TypeId>,
+    prim: PrimitiveTypeIds,
+) -> Option<TypeId> {
+    match ty {
+        CoreTypeRef::Unit => Some(prim.unit),
+        CoreTypeRef::Primitive(primitive) => Some(match primitive {
+            PrimitiveTypeRef::Bool => prim.bool_,
+            PrimitiveTypeRef::Int => prim.int,
+            PrimitiveTypeRef::Float => prim.float,
+            PrimitiveTypeRef::Char => prim.char_,
+            PrimitiveTypeRef::String => prim.string,
+        }),
+        CoreTypeRef::Named(name) => adt_types.get(&name).copied(),
+        CoreTypeRef::Unknown => None,
+    }
+}
+
+fn validate_effect_signatures(
+    program: &CoreProgram,
+    signatures: &EffectSignatureTable,
+    expr_types: &[Option<TypeId>],
+    var_types: &[Option<TypeId>],
+    diagnostics: &mut DiagnosticBag,
+) {
+    let mut seen_handlers = HashSet::new();
+
+    for stmt in program.stmts() {
+        match &stmt.kind {
+            crate::ir::core::StmtKind::Perform {
+                effect,
+                operation,
+                args,
+                ..
+            } => validate_perform_signature(
+                signatures,
+                *effect,
+                *operation,
+                args,
+                expr_types,
+                stmt.span,
+                diagnostics,
+            ),
+            crate::ir::core::StmtKind::Handle { handler, .. } => {
+                validate_handler_signature(
+                    program,
+                    signatures,
+                    *handler,
+                    var_types,
+                    &mut seen_handlers,
+                    diagnostics,
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+fn validate_perform_signature(
+    signatures: &EffectSignatureTable,
+    effect: EffectLabelId,
+    operation: SymbolId,
+    args: &[ExprId],
+    expr_types: &[Option<TypeId>],
+    span: crate::common::span::Span,
+    diagnostics: &mut DiagnosticBag,
+) {
+    let Some(signature) = signatures.get(&(effect, operation)) else {
+        diagnostics.error(
+            "TYPE_UNKNOWN_EFFECT_OP",
+            "Unknown effect operation in Core perform statement",
+            span,
+        );
+        return;
+    };
+
+    if signature.param_types.len() != args.len() {
+        diagnostics.error(
+            "TYPE_BAD_EFFECT_OP_ARITY",
+            format!(
+                "Effect operation arity mismatch: expected {}, got {}",
+                signature.param_types.len(),
+                args.len()
+            ),
+            span,
+        );
+        return;
+    }
+
+    for (idx, (arg, expected_ty)) in args.iter().zip(signature.param_types.iter()).enumerate() {
+        let Some(expected_ty) = expected_ty else {
+            continue;
+        };
+        let Some(actual_ty) = expr_types.get(arg.index()).copied().flatten() else {
+            continue;
+        };
+        if actual_ty != *expected_ty {
+            diagnostics.error(
+                "TYPE_EFFECT_ARG_MISMATCH",
+                format!(
+                    "Effect argument #{} type mismatch: expected t{}, got t{}",
+                    idx + 1,
+                    expected_ty.as_u32(),
+                    actual_ty.as_u32()
+                ),
+                span,
+            );
+        }
+    }
+}
+
+fn validate_handler_signature(
+    program: &CoreProgram,
+    signatures: &EffectSignatureTable,
+    handler: HandlerId,
+    var_types: &[Option<TypeId>],
+    seen_handlers: &mut HashSet<HandlerId>,
+    diagnostics: &mut DiagnosticBag,
+) {
+    if !seen_handlers.insert(handler) {
+        return;
+    }
+    let Some(handler_def) = program.handlers().get(handler.index()) else {
+        return;
+    };
+
+    for clause in &handler_def.clauses {
+        let Some(signature) = signatures.get(&(handler_def.effect, clause.operation)) else {
+            diagnostics.error(
+                "TYPE_UNKNOWN_HANDLER_OP",
+                "Unknown effect operation in handler clause",
+                clause.span,
+            );
+            continue;
+        };
+
+        if signature.param_types.len() != clause.params.len() {
+            diagnostics.error(
+                "TYPE_BAD_HANDLER_CLAUSE_ARITY",
+                format!(
+                    "Handler clause arity mismatch: expected {}, got {}",
+                    signature.param_types.len(),
+                    clause.params.len()
+                ),
+                clause.span,
+            );
+            continue;
+        }
+
+        for (idx, (param, expected_ty)) in clause
+            .params
+            .iter()
+            .zip(signature.param_types.iter())
+            .enumerate()
+        {
+            let Some(expected_ty) = expected_ty else {
+                continue;
+            };
+            let Some(actual_ty) = var_types.get(param.index()).copied().flatten() else {
+                continue;
+            };
+            if actual_ty != *expected_ty {
+                diagnostics.error(
+                    "TYPE_HANDLER_PARAM_MISMATCH",
+                    format!(
+                        "Handler clause param #{} type mismatch: expected t{}, got t{}",
+                        idx + 1,
+                        expected_ty.as_u32(),
+                        actual_ty.as_u32()
+                    ),
+                    clause.span,
+                );
+            }
+        }
+    }
 }
 
 fn infer_stmt_effects(program: &CoreProgram, out: &mut [SortedEffectRow]) {

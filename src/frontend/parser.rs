@@ -3,9 +3,9 @@ use crate::common::ids::{SourceId, SymbolId};
 use crate::common::span::Span;
 use crate::common::symbols::Interner;
 use crate::frontend::ast::{
-    BinOp, BlockExpr, EffectDecl, EffectOperationDecl, EnumDecl, EnumVariantDecl, Expr, ExprKind,
-    FieldDecl, FunctionDecl, HandleClause, Item, Param, Program, StageMarker, Stmt, StructDecl,
-    TypeExpr, TypeExprKind, UnaryOp,
+    BinOp, BlockExpr, BuiltinType, EffectDecl, EffectOperationDecl, EnumDecl, EnumVariantDecl,
+    Expr, ExprKind, FieldDecl, FunctionDecl, HandleClause, Item, Param, Program, StageMarker,
+    Stmt, StructDecl, TypeExpr, TypeExprKind, UnaryOp,
 };
 use crate::frontend::lexer::{Keyword, Token, TokenKind, lex};
 
@@ -25,8 +25,9 @@ pub struct ParseOutput {
 }
 
 pub fn parse_source(source: &str, source_id: SourceId, interner: &mut Interner) -> ParseOutput {
+    let builtins = BuiltinTypeSymbols::intern(interner);
     let lexed = lex(source, source_id, interner);
-    let mut parser = Parser::new(lexed.tokens, lexed.diagnostics);
+    let mut parser = Parser::new(lexed.tokens, lexed.diagnostics, builtins);
     let program = parser.parse_program();
     ParseOutput {
         program,
@@ -38,14 +39,16 @@ struct Parser {
     tokens: Vec<Token>,
     index: usize,
     diagnostics: DiagnosticBag,
+    builtins: BuiltinTypeSymbols,
 }
 
 impl Parser {
-    fn new(tokens: Vec<Token>, diagnostics: DiagnosticBag) -> Self {
+    fn new(tokens: Vec<Token>, diagnostics: DiagnosticBag, builtins: BuiltinTypeSymbols) -> Self {
         Self {
             tokens,
             index: 0,
             diagnostics,
+            builtins,
         }
     }
 
@@ -281,6 +284,13 @@ impl Parser {
                 TokenKind::RBracket,
                 "Expected `]` after generic type arguments",
             );
+        }
+
+        if args.is_empty() && let Some(builtin) = self.builtins.resolve(name) {
+            return TypeExpr {
+                kind: TypeExprKind::Builtin(builtin),
+                span: span_join(start, self.prev_span()),
+            };
         }
 
         TypeExpr {
@@ -813,4 +823,44 @@ fn span_join(left: Span, right: Span) -> Span {
         left.start.min(right.start),
         left.end.max(right.end),
     )
+}
+
+#[derive(Clone, Copy)]
+struct BuiltinTypeSymbols {
+    bool_: SymbolId,
+    int: SymbolId,
+    float: SymbolId,
+    char_: SymbolId,
+    string: SymbolId,
+}
+
+impl BuiltinTypeSymbols {
+    fn intern(interner: &mut Interner) -> Self {
+        Self {
+            bool_: interner.intern("Bool"),
+            int: interner.intern("Int"),
+            float: interner.intern("Float"),
+            char_: interner.intern("Char"),
+            string: interner.intern("String"),
+        }
+    }
+
+    fn resolve(self, symbol: SymbolId) -> Option<BuiltinType> {
+        if symbol == self.bool_ {
+            return Some(BuiltinType::Bool);
+        }
+        if symbol == self.int {
+            return Some(BuiltinType::Int);
+        }
+        if symbol == self.float {
+            return Some(BuiltinType::Float);
+        }
+        if symbol == self.char_ {
+            return Some(BuiltinType::Char);
+        }
+        if symbol == self.string {
+            return Some(BuiltinType::String);
+        }
+        None
+    }
 }

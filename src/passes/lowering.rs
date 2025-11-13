@@ -25,10 +25,13 @@ use std::collections::{HashMap, HashSet};
 use crate::common::diagnostics::DiagnosticBag;
 use crate::common::ids::{EffectLabelId, FuncId, SymbolId, TypeId, VarId};
 use crate::common::span::Span;
-use crate::frontend::ast::{self, ExprKind as AstExprKind, Item, Stmt as AstStmt};
+use crate::frontend::ast::{
+    self, BuiltinType, ExprKind as AstExprKind, Item, Stmt as AstStmt, TypeExpr, TypeExprKind,
+};
 use crate::ir::core::{
-    AdtEnumDecl, AdtEnumVariantDecl, AdtStructDecl, BinaryOp, CoreProgram, ExprKind, ExprNode,
-    FunctionDecl, HandlerClause, HandlerDef, Literal, StageDirective, StmtKind, StmtNode, UnaryOp,
+    AdtEnumDecl, AdtEnumVariantDecl, AdtStructDecl, BinaryOp, CoreProgram, CoreTypeRef, EffectDecl,
+    EffectOperationDecl, ExprKind, ExprNode, FunctionDecl, HandlerClause, HandlerDef, Literal,
+    PrimitiveTypeRef, StageDirective, StmtKind, StmtNode, UnaryOp,
 };
 use crate::sema::effect::SortedEffectRow;
 
@@ -107,10 +110,31 @@ impl Lowerer {
                 Item::Effect(effect) => {
                     let effect_id = EffectLabelId::new(self.effect_labels.len());
                     self.effect_labels.insert(effect.name, effect_id);
+                    let mut operations = Vec::with_capacity(effect.operations.len());
                     for operation in &effect.operations {
                         self.effect_ops
                             .insert((effect_id, operation.name), operation.params.len());
+                        operations.push(EffectOperationDecl {
+                            name: operation.name,
+                            param_types: operation
+                                .params
+                                .iter()
+                                .map(|param| lower_type_ref(&param.ty))
+                                .collect(),
+                            return_type: operation
+                                .return_type
+                                .as_ref()
+                                .map(lower_type_ref)
+                                .unwrap_or(CoreTypeRef::Unit),
+                            span: operation.span,
+                        });
                     }
+                    self.program.add_effect(EffectDecl {
+                        label: effect_id,
+                        name: effect.name,
+                        operations,
+                        span: effect.span,
+                    });
                 }
                 Item::Struct(decl) => {
                     self.struct_ctors.insert(decl.name, decl.fields.len());
@@ -708,6 +732,25 @@ impl Lowerer {
         let id = VarId::from_u32(self.next_var);
         self.next_var += 1;
         id
+    }
+}
+
+fn lower_type_ref(ty: &TypeExpr) -> CoreTypeRef {
+    match &ty.kind {
+        TypeExprKind::Unit => CoreTypeRef::Unit,
+        TypeExprKind::Builtin(builtin) => CoreTypeRef::Primitive(map_builtin_type(*builtin)),
+        TypeExprKind::Path { name, .. } => CoreTypeRef::Named(*name),
+        TypeExprKind::Error(_) => CoreTypeRef::Unknown,
+    }
+}
+
+fn map_builtin_type(ty: BuiltinType) -> PrimitiveTypeRef {
+    match ty {
+        BuiltinType::Bool => PrimitiveTypeRef::Bool,
+        BuiltinType::Int => PrimitiveTypeRef::Int,
+        BuiltinType::Float => PrimitiveTypeRef::Float,
+        BuiltinType::Char => PrimitiveTypeRef::Char,
+        BuiltinType::String => PrimitiveTypeRef::String,
     }
 }
 

@@ -92,9 +92,19 @@ pub struct TypeExpr {
 
 #[derive(Clone, Debug)]
 pub enum TypeExprKind {
+    Builtin(BuiltinType),
     Path { name: SymbolId, args: Vec<TypeExpr> },
     Unit,
     Error(ErrorNode),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BuiltinType {
+    Bool,
+    Int,
+    Float,
+    Char,
+    String,
 }
 
 #[derive(Clone, Debug)]
