@@ -4,6 +4,7 @@ use crate::common::ids::{
 };
 use crate::common::span::Span;
 use crate::sema::effect::SortedEffectRow;
+use smallvec::{SmallVec, smallvec};
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Literal {
@@ -21,6 +22,15 @@ pub enum UnaryOp {
     Not,
 }
 
+impl UnaryOp {
+    pub const fn c_func(self) -> &'static str {
+        match self {
+            Self::Neg => "cv_neg",
+            Self::Not => "cv_not",
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BinaryOp {
     Add,
@@ -36,6 +46,43 @@ pub enum BinaryOp {
     Ge,
     And,
     Or,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OpCategory {
+    Arithmetic,
+    Comparison,
+    Equality,
+    Logical,
+}
+
+impl BinaryOp {
+    pub const fn category(self) -> OpCategory {
+        match self {
+            Self::Add | Self::Sub | Self::Mul | Self::Div | Self::Mod => OpCategory::Arithmetic,
+            Self::Lt | Self::Le | Self::Gt | Self::Ge => OpCategory::Comparison,
+            Self::Eq | Self::Ne => OpCategory::Equality,
+            Self::And | Self::Or => OpCategory::Logical,
+        }
+    }
+
+    pub const fn c_func(self) -> &'static str {
+        match self {
+            Self::Add => "cv_add",
+            Self::Sub => "cv_sub",
+            Self::Mul => "cv_mul",
+            Self::Div => "cv_div",
+            Self::Mod => "cv_mod",
+            Self::Eq => "cv_eq",
+            Self::Ne => "cv_ne",
+            Self::Lt => "cv_lt",
+            Self::Le => "cv_le",
+            Self::Gt => "cv_gt",
+            Self::Ge => "cv_ge",
+            Self::And => "cv_and",
+            Self::Or => "cv_or",
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -100,6 +147,55 @@ pub enum ExprKind {
 pub struct StmtNode {
     pub span: Span,
     pub kind: StmtKind,
+}
+
+impl StmtNode {
+    pub fn child_stmts(&self) -> SmallVec<[StmtId; 4]> {
+        match &self.kind {
+            StmtKind::Return(_) | StmtKind::Hole { .. } | StmtKind::Error(_) => SmallVec::new(),
+            StmtKind::Let { next, .. }
+            | StmtKind::Call { next, .. }
+            | StmtKind::Perform { next, .. } => smallvec![*next],
+            StmtKind::Val { value, next, .. } => smallvec![*value, *next],
+            StmtKind::If {
+                then_branch,
+                else_branch,
+                ..
+            } => smallvec![*then_branch, *else_branch],
+            StmtKind::Match { arms, default, .. } => {
+                let mut children: SmallVec<[StmtId; 4]> = arms.iter().map(|arm| arm.body).collect();
+                if let Some(default_stmt) = default {
+                    children.push(*default_stmt);
+                }
+                children
+            }
+            StmtKind::Handle { body, next, .. } | StmtKind::Stage { body, next, .. } => {
+                let mut children = smallvec![*body];
+                if let Some(next_stmt) = next {
+                    children.push(*next_stmt);
+                }
+                children
+            }
+        }
+    }
+
+    pub fn child_exprs(&self) -> SmallVec<[ExprId; 4]> {
+        match &self.kind {
+            StmtKind::Return(expr) => smallvec![*expr],
+            StmtKind::Let { value, .. } => smallvec![*value],
+            StmtKind::If { cond, .. } | StmtKind::Match { scrutinee: cond, .. } => {
+                smallvec![*cond]
+            }
+            StmtKind::Call { args, .. } | StmtKind::Perform { args, .. } => {
+                args.iter().copied().collect()
+            }
+            StmtKind::Val { .. }
+            | StmtKind::Handle { .. }
+            | StmtKind::Stage { .. }
+            | StmtKind::Hole { .. }
+            | StmtKind::Error(_) => SmallVec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

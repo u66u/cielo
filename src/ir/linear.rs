@@ -1,5 +1,6 @@
 use crate::common::ids::{EffectLabelId, FuncId, LinearExprId, LinearStmtId, SymbolId, VarId};
 use crate::ir::core::{BinaryOp, Literal, StageDirective, UnaryOp};
+use smallvec::{SmallVec, smallvec};
 
 #[derive(Clone, Debug, Default)]
 pub struct LinearProgram {
@@ -47,6 +48,56 @@ pub struct LinearExprNode {
 #[derive(Clone, Debug)]
 pub struct LinearStmtNode {
     pub kind: LinearStmt,
+}
+
+impl LinearStmtNode {
+    pub fn child_stmts(&self) -> SmallVec<[LinearStmtId; 4]> {
+        match &self.kind {
+            LinearStmt::Return(_) | LinearStmt::Hole | LinearStmt::Error => SmallVec::new(),
+            LinearStmt::Let { next, .. }
+            | LinearStmt::Call { next, .. }
+            | LinearStmt::Perform { next, .. } => smallvec![*next],
+            LinearStmt::Val { value, next, .. } => smallvec![*value, *next],
+            LinearStmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => smallvec![*then_branch, *else_branch],
+            LinearStmt::Match { arms, default, .. } => {
+                let mut children: SmallVec<[LinearStmtId; 4]> =
+                    arms.iter().map(|arm| arm.body).collect();
+                if let Some(default_stmt) = default {
+                    children.push(*default_stmt);
+                }
+                children
+            }
+            LinearStmt::Handle { body, next, .. } | LinearStmt::Stage { body, next, .. } => {
+                let mut children = smallvec![*body];
+                if let Some(next_stmt) = next {
+                    children.push(*next_stmt);
+                }
+                children
+            }
+        }
+    }
+
+    pub fn child_exprs(&self) -> SmallVec<[LinearExprId; 4]> {
+        match &self.kind {
+            LinearStmt::Return(expr) => smallvec![*expr],
+            LinearStmt::Let { value, .. } => smallvec![*value],
+            LinearStmt::If { cond, .. } | LinearStmt::Match { scrutinee: cond, .. } => {
+                smallvec![*cond]
+            }
+            LinearStmt::Call { args, .. } | LinearStmt::Perform { args, .. } => {
+                args.iter().copied().collect()
+            }
+            LinearStmt::Val { .. }
+            | LinearStmt::Handle { .. }
+            | LinearStmt::Stage { .. }
+            | LinearStmt::Hole
+            | LinearStmt::Error => SmallVec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
