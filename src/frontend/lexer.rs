@@ -3,22 +3,37 @@ use crate::common::ids::{SourceId, SymbolId};
 use crate::common::span::Span;
 use crate::common::symbols::Interner;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Keyword {
-    Fn,
-    Struct,
-    Enum,
-    Effect,
-    Handle,
-    Do,
-    Let,
-    If,
-    Else,
-    True,
-    False,
-    With,
-    Comptime,
-    Runtime,
+macro_rules! define_keywords {
+    ($($text:literal => $variant:ident),* $(,)?) => {
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        pub enum Keyword {
+            $($variant),*
+        }
+
+        fn keyword_from_text(text: &str) -> Option<Keyword> {
+            match text {
+                $($text => Some(Keyword::$variant),)*
+                _ => None,
+            }
+        }
+    };
+}
+
+define_keywords! {
+    "fn" => Fn,
+    "struct" => Struct,
+    "enum" => Enum,
+    "effect" => Effect,
+    "handle" => Handle,
+    "do" => Do,
+    "let" => Let,
+    "if" => If,
+    "else" => Else,
+    "true" => True,
+    "false" => False,
+    "with" => With,
+    "comptime" => Comptime,
+    "runtime" => Runtime,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -296,25 +311,5 @@ impl<'a> Lexer<'a> {
 
     fn span(&self, start: usize, end: usize) -> Span {
         Span::new(self.source_id, start as u32, end as u32)
-    }
-}
-
-fn keyword_from_text(text: &str) -> Option<Keyword> {
-    match text {
-        "fn" => Some(Keyword::Fn),
-        "struct" => Some(Keyword::Struct),
-        "enum" => Some(Keyword::Enum),
-        "effect" => Some(Keyword::Effect),
-        "handle" => Some(Keyword::Handle),
-        "do" => Some(Keyword::Do),
-        "let" => Some(Keyword::Let),
-        "if" => Some(Keyword::If),
-        "else" => Some(Keyword::Else),
-        "true" => Some(Keyword::True),
-        "false" => Some(Keyword::False),
-        "with" => Some(Keyword::With),
-        "comptime" => Some(Keyword::Comptime),
-        "runtime" => Some(Keyword::Runtime),
-        _ => None,
     }
 }

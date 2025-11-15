@@ -5,6 +5,7 @@ use crate::common::ids::{
 use crate::common::span::Span;
 use crate::sema::effect::SortedEffectRow;
 use smallvec::{SmallVec, smallvec};
+use std::collections::HashSet;
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Literal {
@@ -452,5 +453,38 @@ impl CoreProgram {
 
     pub fn effect(&self, id: EffectLabelId) -> Option<&EffectDecl> {
         self.effects.get(id.index())
+    }
+
+    pub fn fold_stmts<T: Clone + Default>(
+        &self,
+        root: StmtId,
+        memo: &mut [Option<T>],
+        visiting: &mut HashSet<StmtId>,
+        f: &mut impl FnMut(&StmtNode, &[T]) -> T,
+    ) -> T {
+        if let Some(cached) = memo.get(root.index()).and_then(Clone::clone) {
+            return cached;
+        }
+        if !visiting.insert(root) {
+            return T::default();
+        }
+
+        let Some(stmt) = self.stmt(root) else {
+            visiting.remove(&root);
+            return T::default();
+        };
+
+        let child_results: SmallVec<[T; 4]> = stmt
+            .child_stmts()
+            .into_iter()
+            .map(|child| self.fold_stmts(child, memo, visiting, f))
+            .collect();
+
+        let result = f(stmt, &child_results);
+        visiting.remove(&root);
+        if let Some(slot) = memo.get_mut(root.index()) {
+            *slot = Some(result.clone());
+        }
+        result
     }
 }
