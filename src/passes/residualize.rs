@@ -25,9 +25,10 @@ use crate::pipeline::phases::{BtaClassified, ResidualTables, Residualized};
 use crate::sema::effect::SortedEffectRow;
 
 pub fn run(mut bta: BtaClassified) -> Residualized {
-    let function_effect_summary = collect_function_effect_summary(&bta.program, &bta.sema.effects_of_stmt);
-    rewrite_call_effect_rows(&mut bta.program, &function_effect_summary);
-    erase_function_effect_annotations(&mut bta.program);
+    let function_effect_summary =
+        collect_function_effect_summary(bta.program(), &bta.sema().effects_of_stmt);
+    rewrite_call_effect_rows(bta.program_mut(), &function_effect_summary);
+    erase_function_effect_annotations(bta.program_mut());
     bta.into_residualized(ResidualTables {
         function_effect_summary,
     })

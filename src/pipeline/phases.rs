@@ -85,72 +85,23 @@ pub struct ResidualTables {
 
 #[derive(Clone, Debug)]
 pub struct Parsed {
-    pub ast: AstProgram,
-    pub diagnostics: DiagnosticBag,
-}
-
-#[derive(Clone, Debug)]
-pub struct CoreBuilt {
-    pub program: CoreProgram,
-    pub diagnostics: DiagnosticBag,
-}
-
-#[derive(Clone, Debug)]
-pub struct Typed {
-    pub program: CoreProgram,
-    pub diagnostics: DiagnosticBag,
-    pub sema: SemanticTables,
-}
-
-#[derive(Clone, Debug)]
-pub struct Monomorphized {
-    pub program: CoreProgram,
-    pub diagnostics: DiagnosticBag,
-    pub sema: SemanticTables,
-    pub mono: MonomorphizationSummary,
-}
-
-#[derive(Clone, Debug)]
-pub struct CtPropagated {
-    pub program: CoreProgram,
-    pub diagnostics: DiagnosticBag,
-    pub sema: SemanticTables,
-    pub mono: MonomorphizationSummary,
-    pub ct: CtPropagationTables,
-}
-
-#[derive(Clone, Debug)]
-pub struct BtaClassified {
-    pub program: CoreProgram,
-    pub diagnostics: DiagnosticBag,
-    pub sema: SemanticTables,
-    pub mono: MonomorphizationSummary,
-    pub ct: CtPropagationTables,
-    pub bta: BtaTables,
-}
-
-#[derive(Clone, Debug)]
-pub struct Residualized {
-    pub program: CoreProgram,
-    pub diagnostics: DiagnosticBag,
-    pub sema: SemanticTables,
-    pub mono: MonomorphizationSummary,
-    pub ct: CtPropagationTables,
-    pub bta: BtaTables,
-    pub residual: ResidualTables,
-}
-
-impl CoreBuilt {
-    pub fn into_typed(self, sema: SemanticTables) -> Typed {
-        Typed {
-            program: self.program,
-            diagnostics: self.diagnostics,
-            sema,
-        }
-    }
+    ast: AstProgram,
+    diagnostics: DiagnosticBag,
 }
 
 impl Parsed {
+    pub fn new(ast: AstProgram, diagnostics: DiagnosticBag) -> Self {
+        Self { ast, diagnostics }
+    }
+
+    pub fn ast(&self) -> &AstProgram {
+        &self.ast
+    }
+
+    pub fn diagnostics(&self) -> &DiagnosticBag {
+        &self.diagnostics
+    }
+
     pub fn into_core_built(
         self,
         program: CoreProgram,
@@ -158,59 +109,344 @@ impl Parsed {
     ) -> CoreBuilt {
         let mut diagnostics = self.diagnostics;
         diagnostics.extend(extra_diagnostics);
-        CoreBuilt {
+        CoreBuilt::new(program, diagnostics)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CoreBuilt {
+    program: CoreProgram,
+    diagnostics: DiagnosticBag,
+}
+
+impl CoreBuilt {
+    pub fn new(program: CoreProgram, diagnostics: DiagnosticBag) -> Self {
+        Self {
             program,
             diagnostics,
         }
     }
+
+    pub fn program(&self) -> &CoreProgram {
+        &self.program
+    }
+
+    pub fn diagnostics(&self) -> &DiagnosticBag {
+        &self.diagnostics
+    }
+
+    pub(crate) fn into_parts(self) -> (CoreProgram, DiagnosticBag) {
+        (self.program, self.diagnostics)
+    }
+
+    pub fn into_typed(self, sema: SemanticTables) -> Typed {
+        let (program, diagnostics) = self.into_parts();
+        Typed::new(program, diagnostics, sema)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Typed {
+    program: CoreProgram,
+    diagnostics: DiagnosticBag,
+    sema: SemanticTables,
 }
 
 impl Typed {
-    pub fn into_monomorphized(self, mono: MonomorphizationSummary) -> Monomorphized {
-        Monomorphized {
-            program: self.program,
-            diagnostics: self.diagnostics,
-            sema: self.sema,
-            mono,
+    pub fn new(program: CoreProgram, diagnostics: DiagnosticBag, sema: SemanticTables) -> Self {
+        Self {
+            program,
+            diagnostics,
+            sema,
         }
     }
+
+    pub fn program(&self) -> &CoreProgram {
+        &self.program
+    }
+
+    pub fn diagnostics(&self) -> &DiagnosticBag {
+        &self.diagnostics
+    }
+
+    pub fn sema(&self) -> &SemanticTables {
+        &self.sema
+    }
+
+    pub(crate) fn into_parts(self) -> (CoreProgram, DiagnosticBag, SemanticTables) {
+        (self.program, self.diagnostics, self.sema)
+    }
+
+    pub fn into_monomorphized(self, mono: MonomorphizationSummary) -> Monomorphized {
+        let (program, diagnostics, sema) = self.into_parts();
+        Monomorphized::new(program, diagnostics, sema, mono)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Monomorphized {
+    program: CoreProgram,
+    diagnostics: DiagnosticBag,
+    sema: SemanticTables,
+    mono: MonomorphizationSummary,
 }
 
 impl Monomorphized {
-    pub fn into_ct_propagated(self, ct: CtPropagationTables) -> CtPropagated {
-        CtPropagated {
-            program: self.program,
-            diagnostics: self.diagnostics,
-            sema: self.sema,
-            mono: self.mono,
-            ct,
+    pub fn new(
+        program: CoreProgram,
+        diagnostics: DiagnosticBag,
+        sema: SemanticTables,
+        mono: MonomorphizationSummary,
+    ) -> Self {
+        Self {
+            program,
+            diagnostics,
+            sema,
+            mono,
         }
     }
+
+    pub fn program(&self) -> &CoreProgram {
+        &self.program
+    }
+
+    pub fn diagnostics(&self) -> &DiagnosticBag {
+        &self.diagnostics
+    }
+
+    pub fn sema(&self) -> &SemanticTables {
+        &self.sema
+    }
+
+    pub fn mono(&self) -> &MonomorphizationSummary {
+        &self.mono
+    }
+
+    pub fn into_ct_propagated(self, ct: CtPropagationTables) -> CtPropagated {
+        let (program, diagnostics, sema, mono) = self.into_parts();
+        CtPropagated::new(program, diagnostics, sema, mono, ct)
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        CoreProgram,
+        DiagnosticBag,
+        SemanticTables,
+        MonomorphizationSummary,
+    ) {
+        (self.program, self.diagnostics, self.sema, self.mono)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CtPropagated {
+    program: CoreProgram,
+    diagnostics: DiagnosticBag,
+    sema: SemanticTables,
+    mono: MonomorphizationSummary,
+    ct: CtPropagationTables,
 }
 
 impl CtPropagated {
-    pub fn into_bta_classified(self, bta: BtaTables) -> BtaClassified {
-        BtaClassified {
-            program: self.program,
-            diagnostics: self.diagnostics,
-            sema: self.sema,
-            mono: self.mono,
-            ct: self.ct,
-            bta,
+    pub fn new(
+        program: CoreProgram,
+        diagnostics: DiagnosticBag,
+        sema: SemanticTables,
+        mono: MonomorphizationSummary,
+        ct: CtPropagationTables,
+    ) -> Self {
+        Self {
+            program,
+            diagnostics,
+            sema,
+            mono,
+            ct,
         }
+    }
+
+    pub fn program(&self) -> &CoreProgram {
+        &self.program
+    }
+
+    pub fn diagnostics(&self) -> &DiagnosticBag {
+        &self.diagnostics
+    }
+
+    pub fn sema(&self) -> &SemanticTables {
+        &self.sema
+    }
+
+    pub fn mono(&self) -> &MonomorphizationSummary {
+        &self.mono
+    }
+
+    pub fn ct(&self) -> &CtPropagationTables {
+        &self.ct
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        CoreProgram,
+        DiagnosticBag,
+        SemanticTables,
+        MonomorphizationSummary,
+        CtPropagationTables,
+    ) {
+        (self.program, self.diagnostics, self.sema, self.mono, self.ct)
+    }
+
+    pub fn into_bta_classified(self, bta: BtaTables) -> BtaClassified {
+        let (program, diagnostics, sema, mono, ct) = self.into_parts();
+        BtaClassified::new(program, diagnostics, sema, mono, ct, bta)
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct BtaClassified {
+    program: CoreProgram,
+    diagnostics: DiagnosticBag,
+    sema: SemanticTables,
+    mono: MonomorphizationSummary,
+    ct: CtPropagationTables,
+    bta: BtaTables,
+}
+
 impl BtaClassified {
+    pub fn new(
+        program: CoreProgram,
+        diagnostics: DiagnosticBag,
+        sema: SemanticTables,
+        mono: MonomorphizationSummary,
+        ct: CtPropagationTables,
+        bta: BtaTables,
+    ) -> Self {
+        Self {
+            program,
+            diagnostics,
+            sema,
+            mono,
+            ct,
+            bta,
+        }
+    }
+
+    pub fn program(&self) -> &CoreProgram {
+        &self.program
+    }
+
+    pub(crate) fn program_mut(&mut self) -> &mut CoreProgram {
+        &mut self.program
+    }
+
+    pub fn diagnostics(&self) -> &DiagnosticBag {
+        &self.diagnostics
+    }
+
+    pub fn sema(&self) -> &SemanticTables {
+        &self.sema
+    }
+
+    pub fn mono(&self) -> &MonomorphizationSummary {
+        &self.mono
+    }
+
+    pub fn ct(&self) -> &CtPropagationTables {
+        &self.ct
+    }
+
+    pub fn bta(&self) -> &BtaTables {
+        &self.bta
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        CoreProgram,
+        DiagnosticBag,
+        SemanticTables,
+        MonomorphizationSummary,
+        CtPropagationTables,
+        BtaTables,
+    ) {
+        (
+            self.program,
+            self.diagnostics,
+            self.sema,
+            self.mono,
+            self.ct,
+            self.bta,
+        )
+    }
+
     pub fn into_residualized(self, residual: ResidualTables) -> Residualized {
-        Residualized {
-            program: self.program,
-            diagnostics: self.diagnostics,
-            sema: self.sema,
-            mono: self.mono,
-            ct: self.ct,
-            bta: self.bta,
+        let (program, diagnostics, sema, mono, ct, bta) = self.into_parts();
+        Residualized::new(program, diagnostics, sema, mono, ct, bta, residual)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Residualized {
+    program: CoreProgram,
+    diagnostics: DiagnosticBag,
+    sema: SemanticTables,
+    mono: MonomorphizationSummary,
+    ct: CtPropagationTables,
+    bta: BtaTables,
+    residual: ResidualTables,
+}
+
+impl Residualized {
+    pub fn new(
+        program: CoreProgram,
+        diagnostics: DiagnosticBag,
+        sema: SemanticTables,
+        mono: MonomorphizationSummary,
+        ct: CtPropagationTables,
+        bta: BtaTables,
+        residual: ResidualTables,
+    ) -> Self {
+        Self {
+            program,
+            diagnostics,
+            sema,
+            mono,
+            ct,
+            bta,
             residual,
         }
+    }
+
+    pub fn program(&self) -> &CoreProgram {
+        &self.program
+    }
+
+    pub fn diagnostics(&self) -> &DiagnosticBag {
+        &self.diagnostics
+    }
+
+    pub(crate) fn program_and_diagnostics_mut(&mut self) -> (&CoreProgram, &mut DiagnosticBag) {
+        (&self.program, &mut self.diagnostics)
+    }
+
+    pub fn sema(&self) -> &SemanticTables {
+        &self.sema
+    }
+
+    pub fn mono(&self) -> &MonomorphizationSummary {
+        &self.mono
+    }
+
+    pub fn ct(&self) -> &CtPropagationTables {
+        &self.ct
+    }
+
+    pub fn bta(&self) -> &BtaTables {
+        &self.bta
+    }
+
+    pub fn residual(&self) -> &ResidualTables {
+        &self.residual
     }
 }

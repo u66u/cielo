@@ -25,9 +25,9 @@ use crate::pipeline::phases::{BtaClassified, BtaTables, CtPropagated, Reason, St
 pub fn run(ct: CtPropagated) -> BtaClassified {
     let mut bta = BtaTables::default();
 
-    for idx in 0..ct.program.exprs().len() {
+    for idx in 0..ct.program().exprs().len() {
         let expr_id = ExprId::new(idx);
-        if ct.ct.ct_cache.contains_key(&expr_id) {
+        if ct.ct().ct_cache.contains_key(&expr_id) {
             bta.stage_of_expr.insert(expr_id, Stage::Ct);
         } else {
             bta.stage_of_expr
@@ -36,8 +36,8 @@ pub fn run(ct: CtPropagated) -> BtaClassified {
     }
 
     let mut visited = HashSet::new();
-    for function in ct.program.functions() {
-        apply_stage_directives(&ct.program, function.body, None, &mut bta, &mut visited);
+    for function in ct.program().functions() {
+        apply_stage_directives(ct.program(), function.body, None, &mut bta, &mut visited);
     }
 
     ct.into_bta_classified(bta)

@@ -70,24 +70,18 @@ impl Compiler {
 
     pub fn bootstrap_core(&self, program: CoreProgram) -> CoreBuilt {
         let _ = self.config;
-        CoreBuilt {
-            program,
-            diagnostics: DiagnosticBag::default(),
-        }
+        CoreBuilt::new(program, DiagnosticBag::default())
     }
 
     pub fn parse(&self, source: &str, source_id: SourceId, interner: &mut Interner) -> Parsed {
         let _ = self.config;
         let parsed = parse_source(source, source_id, interner);
-        Parsed {
-            ast: parsed.program,
-            diagnostics: parsed.diagnostics,
-        }
+        Parsed::new(parsed.program, parsed.diagnostics)
     }
 
     pub fn lower_parsed_to_core(&self, parsed: Parsed) -> CoreBuilt {
         let _ = self.config;
-        let lowered = lower_program(&parsed.ast, LowerConfig::default());
+        let lowered = lower_program(parsed.ast(), LowerConfig::default());
         parsed.into_core_built(lowered.program, lowered.diagnostics)
     }
 
@@ -97,7 +91,7 @@ impl Compiler {
         config: LowerConfig,
     ) -> CoreBuilt {
         let _ = self.config;
-        let lowered = lower_program(&parsed.ast, config);
+        let lowered = lower_program(parsed.ast(), config);
         parsed.into_core_built(lowered.program, lowered.diagnostics)
     }
 
@@ -147,13 +141,9 @@ impl Compiler {
     }
 
     fn typecheck(&self, built: CoreBuilt) -> Typed {
-        let mut diagnostics = built.diagnostics;
-        let sema = typecheck_core(&built.program, &mut diagnostics);
-        Typed {
-            program: built.program,
-            diagnostics,
-            sema,
-        }
+        let (program, mut diagnostics) = built.into_parts();
+        let sema = typecheck_core(&program, &mut diagnostics);
+        Typed::new(program, diagnostics, sema)
     }
 
     fn monomorphize(&self, typed: Typed) -> Monomorphized {

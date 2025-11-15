@@ -87,10 +87,10 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
     let parsed = compiler.parse(&source, SourceId::from_u32(0), &mut interner);
 
     if should_dump(cli, DumpKind::Ast) {
-        println!("=== AST ===\n{:#?}", parsed.ast);
+        println!("=== AST ===\n{:#?}", parsed.ast());
     }
     if should_dump(cli, DumpKind::Effects) {
-        dump_effects_from_ast(&parsed.ast, &interner);
+        dump_effects_from_ast(&parsed.ast(), &interner);
     }
 
     let main_symbol = interner.intern("main");
@@ -98,10 +98,10 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
         .lower_parsed_to_core_with_config(parsed, LowerConfig::with_entrypoint(main_symbol));
 
     if should_dump(cli, DumpKind::Core) {
-        println!("=== Core IR ===\n{:#?}", core.program);
+        println!("=== Core IR ===\n{:#?}", core.program());
     }
     if should_dump(cli, DumpKind::Functions) {
-        dump_functions_from_core(&core.program, &interner);
+        dump_functions_from_core(&core.program(), &interner);
     }
 
     let residual = compiler.run_v0_core_pipeline(core);
@@ -121,7 +121,7 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
         || should_dump(cli, DumpKind::Linear)
         || should_dump(cli, DumpKind::C);
 
-    if residual.diagnostics.has_errors() {
+    if residual.diagnostics().has_errors() {
         if need_c_backend {
             eprintln!("skipping C backend because diagnostics contain errors");
         }
@@ -264,32 +264,32 @@ fn dump_functions_from_core(program: &CoreProgram, interner: &Interner) {
 
 fn dump_sema_summary(residual: &Residualized) {
     let typed_exprs = residual
-        .sema
+        .sema()
         .type_of_expr
         .iter()
         .filter(|slot| slot.is_some())
         .count();
     let effectful_stmts = residual
-        .sema
+        .sema()
         .effects_of_stmt
         .iter()
         .filter(|row| !row.is_empty())
         .count();
     let ct_exprs = residual
-        .bta
+        .bta()
         .stage_of_expr
         .values()
         .filter(|stage| matches!(stage, Stage::Ct))
         .count();
-    let rt_exprs = residual.bta.stage_of_expr.len().saturating_sub(ct_exprs);
+    let rt_exprs = residual.bta().stage_of_expr.len().saturating_sub(ct_exprs);
     println!("=== Sema/BTA Summary ===");
     println!(
         "typed_exprs={typed_exprs}/{}",
-        residual.program.exprs().len()
+        residual.program().exprs().len()
     );
     println!(
         "effectful_stmts={effectful_stmts}/{}",
-        residual.program.stmts().len()
+        residual.program().stmts().len()
     );
     println!("stage ct={ct_exprs}, rt={rt_exprs}");
 }
@@ -372,7 +372,7 @@ fn main() -> Int {
         let residual = compiler.compile_source_v0(source, SourceId::new(idx), &mut interner);
         let source_name = format!("smoke/{name}.cielo");
         print_case_summary(name, &source_name, source, &residual);
-        if residual.diagnostics.has_errors() {
+        if residual.diagnostics().has_errors() {
             failures += 1;
         }
     }
@@ -385,22 +385,22 @@ fn main() -> Int {
 
 fn print_case_summary(name: &str, source_name: &str, source: &str, residual: &Residualized) {
     let ct_exprs = residual
-        .bta
+        .bta()
         .stage_of_expr
         .values()
         .filter(|stage| matches!(stage, Stage::Ct))
         .count();
-    let rt_exprs = residual.bta.stage_of_expr.len().saturating_sub(ct_exprs);
+    let rt_exprs = residual.bta().stage_of_expr.len().saturating_sub(ct_exprs);
     println!(
         "[{name}] funcs={}, exprs={}, ct={}, rt={}, diags={}",
-        residual.program.functions().len(),
-        residual.program.exprs().len(),
+        residual.program().functions().len(),
+        residual.program().exprs().len(),
         ct_exprs,
         rt_exprs,
-        residual.diagnostics.entries().len()
+        residual.diagnostics().entries().len()
     );
 
-    for diag in residual.diagnostics.entries() {
+    for diag in residual.diagnostics().entries() {
         let rendered = render_diagnostic(diag, source_name, source);
         if rendered.trim().is_empty() {
             println!(

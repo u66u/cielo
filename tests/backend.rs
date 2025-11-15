@@ -20,7 +20,7 @@ fn main() -> Int {
     assert_eq!(compiled.linear.functions.len(), 1);
     assert!(compiled.c_source.contains("cv_add("));
     assert!(compiled.c_source.contains("int main(void)"));
-    assert!(compiled.residual.diagnostics.entries().is_empty());
+    assert!(compiled.residual.diagnostics().entries().is_empty());
 }
 
 #[test]

@@ -25,12 +25,12 @@ use crate::pipeline::phases::{CtPropagated, CtPropagationTables, Monomorphized};
 
 pub fn run(mono: Monomorphized) -> CtPropagated {
     let mut ct = CtPropagationTables::default();
-    let limit = mono.program.exprs().len().saturating_add(1).max(1);
+    let limit = mono.program().exprs().len().saturating_add(1).max(1);
     ct.ct_cache = fixpoint(
         HashMap::new(),
         |cache| {
             let mut next = cache.clone();
-            for (idx, expr) in mono.program.exprs().iter().enumerate() {
+            for (idx, expr) in mono.program().exprs().iter().enumerate() {
                 let expr_id = ExprId::new(idx);
                 if next.contains_key(&expr_id) {
                     continue;

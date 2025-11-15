@@ -17,10 +17,10 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
 
-    assert!(!residual.ct.ct_cache.is_empty());
+    assert!(!residual.ct().ct_cache.is_empty());
     assert!(
         residual
-            .bta
+            .bta()
             .stage_of_expr
             .values()
             .any(|stage| matches!(stage, Stage::Ct))
@@ -39,14 +39,14 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
 
-    let main = residual.program.functions().first().expect("main");
+    let main = residual.program().functions().first().expect("main");
     let mut cursor = main.body;
     let mut stage_body = None;
-    while let Some(stmt) = residual.program.stmt(cursor) {
+    while let Some(stmt) = residual.program().stmt(cursor) {
         match &stmt.kind {
             StmtKind::Val { value, next, .. } => {
                 if let Some(StmtKind::Stage { body, .. }) =
-                    residual.program.stmt(*value).map(|n| &n.kind)
+                    residual.program().stmt(*value).map(|n| &n.kind)
                 {
                     stage_body = Some(*body);
                     break;
@@ -60,13 +60,13 @@ fn main() -> Int {
     }
 
     let stage_body = stage_body.expect("expected stage body");
-    let staged_return_expr = match residual.program.stmt(stage_body).map(|n| &n.kind) {
+    let staged_return_expr = match residual.program().stmt(stage_body).map(|n| &n.kind) {
         Some(StmtKind::Return(expr)) => *expr,
         _ => panic!("expected return in stage body"),
     };
 
     assert!(matches!(
-        residual.bta.stage_of_expr.get(&staged_return_expr),
+        residual.bta().stage_of_expr.get(&staged_return_expr),
         Some(Stage::Rt(_))
     ));
 }
@@ -84,14 +84,14 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
 
-    let main = residual.program.functions().first().expect("main");
+    let main = residual.program().functions().first().expect("main");
     let mut cursor = main.body;
     let mut stage_body = None;
-    while let Some(stmt) = residual.program.stmt(cursor) {
+    while let Some(stmt) = residual.program().stmt(cursor) {
         match &stmt.kind {
             StmtKind::Val { value, next, .. } => {
                 if let Some(StmtKind::Stage { body, .. }) =
-                    residual.program.stmt(*value).map(|n| &n.kind)
+                    residual.program().stmt(*value).map(|n| &n.kind)
                 {
                     stage_body = Some(*body);
                     break;
@@ -105,17 +105,17 @@ fn main() -> Int {
     }
 
     let stage_body = stage_body.expect("expected stage body");
-    let staged_return_expr = match residual.program.stmt(stage_body).map(|n| &n.kind) {
+    let staged_return_expr = match residual.program().stmt(stage_body).map(|n| &n.kind) {
         Some(StmtKind::Return(expr)) => *expr,
         _ => panic!("expected return in stage body"),
     };
 
     assert!(matches!(
-        residual.program.expr(staged_return_expr).map(|e| &e.kind),
+        residual.program().expr(staged_return_expr).map(|e| &e.kind),
         Some(ExprKind::Var(_))
     ));
     assert!(matches!(
-        residual.bta.stage_of_expr.get(&staged_return_expr),
+        residual.bta().stage_of_expr.get(&staged_return_expr),
         Some(Stage::Ct)
     ));
 }
@@ -135,19 +135,19 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
 
-    let main = residual.program.functions().first().expect("main");
+    let main = residual.program().functions().first().expect("main");
     assert_eq!(
-        residual.sema.effects_of_stmt[main.body.index()],
+        residual.sema().effects_of_stmt[main.body.index()],
         SortedEffectRow::empty()
     );
 
     let mut cursor = main.body;
     let mut stage_body = None;
-    while let Some(stmt) = residual.program.stmt(cursor) {
+    while let Some(stmt) = residual.program().stmt(cursor) {
         match &stmt.kind {
             StmtKind::Val { value, next, .. } => {
                 if let Some(StmtKind::Stage { body, .. }) =
-                    residual.program.stmt(*value).map(|n| &n.kind)
+                    residual.program().stmt(*value).map(|n| &n.kind)
                 {
                     stage_body = Some(*body);
                     break;
@@ -163,17 +163,17 @@ fn main() -> Int {
     let mut stack = vec![stage_body];
     let mut saw_runtime_expr = false;
     while let Some(stmt_id) = stack.pop() {
-        let Some(stmt) = residual.program.stmt(stmt_id) else {
+        let Some(stmt) = residual.program().stmt(stmt_id) else {
             continue;
         };
         match &stmt.kind {
             StmtKind::Return(expr) => {
-                if matches!(residual.bta.stage_of_expr.get(expr), Some(Stage::Rt(_))) {
+                if matches!(residual.bta().stage_of_expr.get(expr), Some(Stage::Rt(_))) {
                     saw_runtime_expr = true;
                 }
             }
             StmtKind::Let { value, next, .. } => {
-                if matches!(residual.bta.stage_of_expr.get(value), Some(Stage::Rt(_))) {
+                if matches!(residual.bta().stage_of_expr.get(value), Some(Stage::Rt(_))) {
                     saw_runtime_expr = true;
                 }
                 stack.push(*next);
@@ -185,7 +185,7 @@ fn main() -> Int {
             StmtKind::Call { args, next, .. } => {
                 if args
                     .iter()
-                    .any(|arg| matches!(residual.bta.stage_of_expr.get(arg), Some(Stage::Rt(_))))
+                    .any(|arg| matches!(residual.bta().stage_of_expr.get(arg), Some(Stage::Rt(_))))
                 {
                     saw_runtime_expr = true;
                 }
@@ -194,7 +194,7 @@ fn main() -> Int {
             StmtKind::Perform { args, next, .. } => {
                 if args
                     .iter()
-                    .any(|arg| matches!(residual.bta.stage_of_expr.get(arg), Some(Stage::Rt(_))))
+                    .any(|arg| matches!(residual.bta().stage_of_expr.get(arg), Some(Stage::Rt(_))))
                 {
                     saw_runtime_expr = true;
                 }
@@ -205,7 +205,7 @@ fn main() -> Int {
                 then_branch,
                 else_branch,
             } => {
-                if matches!(residual.bta.stage_of_expr.get(cond), Some(Stage::Rt(_))) {
+                if matches!(residual.bta().stage_of_expr.get(cond), Some(Stage::Rt(_))) {
                     saw_runtime_expr = true;
                 }
                 stack.push(*then_branch);
@@ -216,7 +216,7 @@ fn main() -> Int {
                 arms,
                 default,
             } => {
-                if matches!(residual.bta.stage_of_expr.get(scrutinee), Some(Stage::Rt(_))) {
+                if matches!(residual.bta().stage_of_expr.get(scrutinee), Some(Stage::Rt(_))) {
                     saw_runtime_expr = true;
                 }
                 for arm in arms {

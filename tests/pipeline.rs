@@ -17,8 +17,8 @@ fn main() -> Int {
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
     let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
-    assert_eq!(residual.program.functions().len(), 2);
-    assert_eq!(residual.program.entrypoints().len(), 1);
+    assert_eq!(residual.program().functions().len(), 2);
+    assert_eq!(residual.program().entrypoints().len(), 1);
 }
 
 #[test]
@@ -35,10 +35,10 @@ fn main() -> Int {
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
     let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
-    assert_eq!(residual.program.handlers().len(), 1);
-    let main_body = residual.program.functions()[0].body;
+    assert_eq!(residual.program().handlers().len(), 1);
+    let main_body = residual.program().functions()[0].body;
     assert_eq!(
-        residual.sema.effects_of_stmt[main_body.index()],
+        residual.sema().effects_of_stmt[main_body.index()],
         SortedEffectRow::empty()
     );
 }
@@ -57,9 +57,9 @@ fn main() -> Int {
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
     let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
-    assert_eq!(residual.program.structs().len(), 1);
-    assert_eq!(residual.program.enums().len(), 1);
-    assert!(residual.diagnostics.entries().is_empty());
+    assert_eq!(residual.program().structs().len(), 1);
+    assert_eq!(residual.program().enums().len(), 1);
+    assert!(residual.diagnostics().entries().is_empty());
 }
 
 #[test]
@@ -79,7 +79,7 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
 
-    for function in residual.program.functions() {
+    for function in residual.program().functions() {
         assert!(
             function.declared_effects.is_empty(),
             "residual function effects should be erased"
@@ -87,21 +87,21 @@ fn main() -> Int {
     }
 
     let ping_id = residual
-        .program
+        .program()
         .functions()
         .iter()
         .enumerate()
         .find_map(|(idx, function)| (interner.resolve(function.name) == Some("ping")).then_some(idx))
         .expect("ping function must exist");
     let ping_effects = residual
-        .residual
+        .residual()
         .function_effect_summary
         .get(&cielo::common::ids::FuncId::new(ping_id))
         .expect("ping summary must exist");
     assert!(ping_effects.contains(EffectLabelId::from_u32(0)));
 
     let main_body = residual
-        .program
+        .program()
         .functions()
         .iter()
         .find(|f| interner.resolve(f.name) == Some("main"))
@@ -110,7 +110,7 @@ fn main() -> Int {
     let mut stack = vec![main_body];
     let mut saw_call = false;
     while let Some(stmt_id) = stack.pop() {
-        let stmt = residual.program.stmt(stmt_id).expect("reachable stmt");
+        let stmt = residual.program().stmt(stmt_id).expect("reachable stmt");
         match &stmt.kind {
             StmtKind::Call { effects, .. } => {
                 assert!(effects.contains(EffectLabelId::from_u32(0)));

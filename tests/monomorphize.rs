@@ -17,6 +17,6 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
 
-    assert_eq!(residual.program.functions().len(), 2);
-    assert_eq!(residual.mono.source_to_mono.len(), 2);
+    assert_eq!(residual.program().functions().len(), 2);
+    assert_eq!(residual.mono().source_to_mono.len(), 2);
 }

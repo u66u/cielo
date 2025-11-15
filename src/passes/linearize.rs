@@ -26,7 +26,10 @@ use crate::ir::linear::{LinearExpr, LinearFunction, LinearMatchArm, LinearProgra
 use crate::pipeline::phases::Residualized;
 
 pub fn run(mut residual: Residualized) -> Linearized {
-    let linear = lower_program(&residual.program, &mut residual.diagnostics);
+    let linear = {
+        let (program, diagnostics) = residual.program_and_diagnostics_mut();
+        lower_program(program, diagnostics)
+    };
     Linearized { residual, linear }
 }
 
