@@ -26,7 +26,7 @@ use crate::common::ids::{
     EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, TypeId, VarId,
 };
 use crate::ir::core::{
-    BinaryOp, CoreProgram, CoreTypeRef, ExprKind, Literal, PrimitiveTypeRef, UnaryOp,
+    BinaryOp, CoreProgram, CoreTypeRef, ExprKind, Literal, OpCategory, PrimitiveTypeRef, UnaryOp,
 };
 use crate::pipeline::phases::SemanticTables;
 use crate::sema::effect::SortedEffectRow;
@@ -472,8 +472,8 @@ fn infer_binary(
     let left = expr_types[lhs.index()];
     let right = expr_types[rhs.index()];
 
-    match op {
-        BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
+    match op.category() {
+        OpCategory::Arithmetic => {
             let inferred = match (left, right) {
                 (Some(ty), _) if ty == prim.int || ty == prim.float => Some(ty),
                 (_, Some(ty)) if ty == prim.int || ty == prim.float => Some(ty),
@@ -489,7 +489,7 @@ fn infer_binary(
                 }
             }
         }
-        BinaryOp::Eq | BinaryOp::Ne => {
+        OpCategory::Equality => {
             match (left, right) {
                 (Some(ty), None) => {
                     changed |= set_expr_type(program, rhs, ty, expr_types, var_types)
@@ -505,7 +505,7 @@ fn infer_binary(
                 }
             }
         }
-        BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
+        OpCategory::Comparison => {
             let inferred = match (left, right) {
                 (Some(ty), _) if ty == prim.int || ty == prim.float => Some(ty),
                 (_, Some(ty)) if ty == prim.int || ty == prim.float => Some(ty),
@@ -521,7 +521,7 @@ fn infer_binary(
                 }
             }
         }
-        BinaryOp::And | BinaryOp::Or => {
+        OpCategory::Logical => {
             changed |= set_expr_type(program, lhs, prim.bool_, expr_types, var_types);
             changed |= set_expr_type(program, rhs, prim.bool_, expr_types, var_types);
             if expr_types[lhs.index()] == Some(prim.bool_)

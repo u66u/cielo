@@ -22,7 +22,7 @@ use std::fmt::Write;
 
 use crate::common::ids::{LinearExprId, LinearStmtId, SymbolId, VarId};
 use crate::common::symbols::Interner;
-use crate::ir::core::{BinaryOp, Literal, UnaryOp};
+use crate::ir::core::Literal;
 use crate::ir::linear::{LinearExpr, LinearFunction, LinearProgram, LinearStmt};
 use crate::passes::linearize::Linearized;
 
@@ -361,28 +361,11 @@ fn emit_expr(expr_id: LinearExprId, cx: &EmitCx<'_>) -> String {
     match &expr.kind {
         LinearExpr::Var(var) => format!("v{}", var.as_u32()),
         LinearExpr::Literal(lit) => emit_literal(lit),
-        LinearExpr::Unary { op, expr } => match op {
-            UnaryOp::Neg => format!("cv_neg({})", emit_expr(*expr, cx)),
-            UnaryOp::Not => format!("cv_not({})", emit_expr(*expr, cx)),
-        },
+        LinearExpr::Unary { op, expr } => format!("{}({})", op.c_func(), emit_expr(*expr, cx)),
         LinearExpr::Binary { op, lhs, rhs } => {
             let lhs = emit_expr(*lhs, cx);
             let rhs = emit_expr(*rhs, cx);
-            match op {
-                BinaryOp::Add => format!("cv_add({}, {})", lhs, rhs),
-                BinaryOp::Sub => format!("cv_sub({}, {})", lhs, rhs),
-                BinaryOp::Mul => format!("cv_mul({}, {})", lhs, rhs),
-                BinaryOp::Div => format!("cv_div({}, {})", lhs, rhs),
-                BinaryOp::Mod => format!("cv_mod({}, {})", lhs, rhs),
-                BinaryOp::Eq => format!("cv_eq({}, {})", lhs, rhs),
-                BinaryOp::Ne => format!("cv_ne({}, {})", lhs, rhs),
-                BinaryOp::Lt => format!("cv_lt({}, {})", lhs, rhs),
-                BinaryOp::Le => format!("cv_le({}, {})", lhs, rhs),
-                BinaryOp::Gt => format!("cv_gt({}, {})", lhs, rhs),
-                BinaryOp::Ge => format!("cv_ge({}, {})", lhs, rhs),
-                BinaryOp::And => format!("cv_and({}, {})", lhs, rhs),
-                BinaryOp::Or => format!("cv_or({}, {})", lhs, rhs),
-            }
+            format!("{}({}, {})", op.c_func(), lhs, rhs)
         }
         LinearExpr::PureCall { callee, args } => {
             let callee_name = cx
@@ -468,80 +451,39 @@ fn collect_stmt_vars(
     let Some(stmt) = program.stmt(stmt_id) else {
         return;
     };
+
     match &stmt.kind {
-        LinearStmt::Return(expr) => collect_expr_vars(program, *expr, out, &mut HashSet::new()),
-        LinearStmt::Let {
-            binding,
-            value,
-            next,
-        } => {
+        LinearStmt::Let { binding, .. } | LinearStmt::Val { binding, .. } => {
             out.insert(*binding);
-            collect_expr_vars(program, *value, out, &mut HashSet::new());
-            collect_stmt_vars(program, *next, out, seen_stmts);
         }
-        LinearStmt::Val {
-            binding,
-            value,
-            next,
-        } => {
-            out.insert(*binding);
-            collect_stmt_vars(program, *value, out, seen_stmts);
-            collect_stmt_vars(program, *next, out, seen_stmts);
-        }
-        LinearStmt::Call {
-            result, args, next, ..
-        } => {
+        LinearStmt::Call { result, .. } => {
             out.insert(*result);
-            let mut seen_exprs = HashSet::new();
-            for arg in args {
-                collect_expr_vars(program, *arg, out, &mut seen_exprs);
+        }
+        LinearStmt::Perform { result, .. } => {
+            if let Some(result) = result {
+                out.insert(*result);
             }
-            collect_stmt_vars(program, *next, out, seen_stmts);
         }
-        LinearStmt::If {
-            cond,
-            then_branch,
-            else_branch,
-        } => {
-            collect_expr_vars(program, *cond, out, &mut HashSet::new());
-            collect_stmt_vars(program, *then_branch, out, seen_stmts);
-            collect_stmt_vars(program, *else_branch, out, seen_stmts);
-        }
-        LinearStmt::Match {
-            scrutinee,
-            arms,
-            default,
-        } => {
-            collect_expr_vars(program, *scrutinee, out, &mut HashSet::new());
+        LinearStmt::Match { arms, .. } => {
             for arm in arms {
                 for binder in &arm.binders {
                     out.insert(*binder);
                 }
-                collect_stmt_vars(program, arm.body, out, seen_stmts);
-            }
-            if let Some(default_stmt) = default {
-                collect_stmt_vars(program, *default_stmt, out, seen_stmts);
             }
         }
-        LinearStmt::Perform {
-            result, args, next, ..
-        } => {
-            if let Some(result) = result {
-                out.insert(*result);
-            }
-            let mut seen_exprs = HashSet::new();
-            for arg in args {
-                collect_expr_vars(program, *arg, out, &mut seen_exprs);
-            }
-            collect_stmt_vars(program, *next, out, seen_stmts);
-        }
-        LinearStmt::Handle { body, next, .. } | LinearStmt::Stage { body, next, .. } => {
-            collect_stmt_vars(program, *body, out, seen_stmts);
-            if let Some(next_stmt) = next {
-                collect_stmt_vars(program, *next_stmt, out, seen_stmts);
-            }
-        }
-        LinearStmt::Hole | LinearStmt::Error => {}
+        LinearStmt::Return(_)
+        | LinearStmt::If { .. }
+        | LinearStmt::Handle { .. }
+        | LinearStmt::Stage { .. }
+        | LinearStmt::Hole
+        | LinearStmt::Error => {}
+    }
+
+    for expr in stmt.child_exprs() {
+        collect_expr_vars(program, expr, out, &mut HashSet::new());
+    }
+    for child in stmt.child_stmts() {
+        collect_stmt_vars(program, child, out, seen_stmts);
     }
 }
 

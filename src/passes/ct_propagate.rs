@@ -20,7 +20,7 @@ use std::collections::HashMap;
 
 use crate::common::fixpoint::fixpoint;
 use crate::common::ids::ExprId;
-use crate::ir::core::{BinaryOp, ExprKind, Literal, UnaryOp};
+use crate::ir::core::{BinaryOp, ExprKind, Literal, OpCategory, UnaryOp};
 use crate::pipeline::phases::{CtPropagated, CtPropagationTables, Monomorphized};
 
 pub fn run(mono: Monomorphized) -> CtPropagated {
@@ -79,20 +79,41 @@ fn eval_unary(op: UnaryOp, value: &Literal) -> Option<Literal> {
 }
 
 fn eval_binary(op: BinaryOp, left: &Literal, right: &Literal) -> Option<Literal> {
-    match (op, left, right) {
-        (BinaryOp::Add, Literal::Int(a), Literal::Int(b)) => Some(Literal::Int(a + b)),
-        (BinaryOp::Sub, Literal::Int(a), Literal::Int(b)) => Some(Literal::Int(a - b)),
-        (BinaryOp::Mul, Literal::Int(a), Literal::Int(b)) => Some(Literal::Int(a * b)),
-        (BinaryOp::Div, Literal::Int(a), Literal::Int(b)) if *b != 0 => Some(Literal::Int(a / b)),
-        (BinaryOp::Mod, Literal::Int(a), Literal::Int(b)) if *b != 0 => Some(Literal::Int(a % b)),
-        (BinaryOp::Eq, Literal::Int(a), Literal::Int(b)) => Some(Literal::Bool(a == b)),
-        (BinaryOp::Ne, Literal::Int(a), Literal::Int(b)) => Some(Literal::Bool(a != b)),
-        (BinaryOp::Lt, Literal::Int(a), Literal::Int(b)) => Some(Literal::Bool(a < b)),
-        (BinaryOp::Le, Literal::Int(a), Literal::Int(b)) => Some(Literal::Bool(a <= b)),
-        (BinaryOp::Gt, Literal::Int(a), Literal::Int(b)) => Some(Literal::Bool(a > b)),
-        (BinaryOp::Ge, Literal::Int(a), Literal::Int(b)) => Some(Literal::Bool(a >= b)),
-        (BinaryOp::And, Literal::Bool(a), Literal::Bool(b)) => Some(Literal::Bool(*a && *b)),
-        (BinaryOp::Or, Literal::Bool(a), Literal::Bool(b)) => Some(Literal::Bool(*a || *b)),
+    match (op.category(), left, right) {
+        (OpCategory::Arithmetic, Literal::Int(a), Literal::Int(b)) => match op {
+            BinaryOp::Add => Some(Literal::Int(a + b)),
+            BinaryOp::Sub => Some(Literal::Int(a - b)),
+            BinaryOp::Mul => Some(Literal::Int(a * b)),
+            BinaryOp::Div if *b != 0 => Some(Literal::Int(a / b)),
+            BinaryOp::Mod if *b != 0 => Some(Literal::Int(a % b)),
+            _ => None,
+        },
+        (OpCategory::Comparison, Literal::Int(a), Literal::Int(b)) => {
+            let value = match op {
+                BinaryOp::Lt => a < b,
+                BinaryOp::Le => a <= b,
+                BinaryOp::Gt => a > b,
+                BinaryOp::Ge => a >= b,
+                _ => return None,
+            };
+            Some(Literal::Bool(value))
+        }
+        (OpCategory::Equality, Literal::Int(a), Literal::Int(b)) => {
+            let value = match op {
+                BinaryOp::Eq => a == b,
+                BinaryOp::Ne => a != b,
+                _ => return None,
+            };
+            Some(Literal::Bool(value))
+        }
+        (OpCategory::Logical, Literal::Bool(a), Literal::Bool(b)) => {
+            let value = match op {
+                BinaryOp::And => *a && *b,
+                BinaryOp::Or => *a || *b,
+                _ => return None,
+            };
+            Some(Literal::Bool(value))
+        }
         _ => None,
     }
 }
