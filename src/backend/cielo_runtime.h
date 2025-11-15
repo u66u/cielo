@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 typedef enum {
@@ -10,10 +11,20 @@ typedef enum {
     CV_INT = 2,
     CV_FLOAT = 3,
     CV_CHAR = 4,
-    CV_STRING = 5
+    CV_STRING = 5,
+    CV_CTOR = 6
 } CieloTag;
 
+typedef struct CieloValue CieloValue;
+
 typedef struct {
+    const char* ty;
+    const char* variant;
+    size_t argc;
+    CieloValue* fields;
+} CieloCtor;
+
+struct CieloValue {
     CieloTag tag;
     union {
         bool b;
@@ -21,8 +32,17 @@ typedef struct {
         double f;
         uint32_t c;
         const char* s;
+        CieloCtor* ctor;
     } as;
-} CieloValue;
+};
+
+typedef struct {
+    uint32_t effect;
+} CieloHandlerFrame;
+
+enum { CIELO_HANDLER_STACK_MAX = 64 };
+static CieloHandlerFrame g_cielo_handlers[CIELO_HANDLER_STACK_MAX];
+static size_t g_cielo_handler_depth = 0;
 
 static inline CieloValue cv_unit(void) {
     CieloValue v = {.tag = CV_UNIT};
@@ -52,6 +72,38 @@ static inline CieloValue cv_string(const char* s) {
     CieloValue v = {.tag = CV_STRING};
     v.as.s = s;
     return v;
+}
+
+static inline bool cielo_ctor_is_variant(CieloValue value, const char* variant) {
+    if (value.tag != CV_CTOR || value.as.ctor == NULL) return false;
+    if (value.as.ctor->variant == NULL || variant == NULL) return false;
+    return strcmp(value.as.ctor->variant, variant) == 0;
+}
+
+static inline CieloValue cielo_ctor_field(CieloValue value, size_t index) {
+    if (value.tag != CV_CTOR || value.as.ctor == NULL) return cv_unit();
+    if (index >= value.as.ctor->argc || value.as.ctor->fields == NULL) return cv_unit();
+    return value.as.ctor->fields[index];
+}
+
+static inline void cielo_handler_push(uint32_t effect) {
+    if (g_cielo_handler_depth >= CIELO_HANDLER_STACK_MAX) return;
+    g_cielo_handlers[g_cielo_handler_depth].effect = effect;
+    g_cielo_handler_depth++;
+}
+
+static inline void cielo_handler_pop(uint32_t effect) {
+    while (g_cielo_handler_depth > 0) {
+        g_cielo_handler_depth--;
+        if (g_cielo_handlers[g_cielo_handler_depth].effect == effect) return;
+    }
+}
+
+static inline bool cielo_handler_active(uint32_t effect) {
+    for (size_t i = g_cielo_handler_depth; i > 0; i--) {
+        if (g_cielo_handlers[i - 1].effect == effect) return true;
+    }
+    return false;
 }
 
 static inline bool cv_truthy(CieloValue v) {
@@ -147,6 +199,18 @@ static inline void cv_print(CieloValue v) {
         case CV_STRING:
             printf("%s\n", v.as.s ? v.as.s : "");
             break;
+        case CV_CTOR:
+            if (v.as.ctor != NULL) {
+                printf(
+                    "<%s.%s/%zu>\n",
+                    v.as.ctor->ty ? v.as.ctor->ty : "",
+                    v.as.ctor->variant ? v.as.ctor->variant : "",
+                    v.as.ctor->argc
+                );
+            } else {
+                printf("<ctor>\n");
+            }
+            break;
         default:
             printf("<value>\n");
             break;
@@ -156,7 +220,9 @@ static inline void cv_print(CieloValue v) {
 static CieloValue cielo_perform(
     uint32_t effect, const char* op, size_t argc, const CieloValue* args
 ) {
-    (void)effect;
+    if (cielo_handler_active(effect)) {
+        return cv_unit();
+    }
     if (op && strcmp(op, "print") == 0 && argc > 0 && args != NULL) {
         cv_print(args[0]);
         return cv_unit();
@@ -167,9 +233,30 @@ static CieloValue cielo_perform(
 static CieloValue cielo_make_ctor(
     const char* ty, const char* variant, size_t argc, const CieloValue* fields
 ) {
-    (void)ty;
-    (void)variant;
-    (void)argc;
-    (void)fields;
-    return cv_unit();
+    CieloCtor* ctor = (CieloCtor*)malloc(sizeof(CieloCtor));
+    if (ctor == NULL) return cv_unit();
+
+    ctor->ty = ty;
+    ctor->variant = variant;
+    ctor->argc = argc;
+    ctor->fields = NULL;
+
+    if (argc > 0) {
+        ctor->fields = (CieloValue*)malloc(sizeof(CieloValue) * argc);
+        if (ctor->fields == NULL) {
+            free(ctor);
+            return cv_unit();
+        }
+        if (fields != NULL) {
+            memcpy(ctor->fields, fields, sizeof(CieloValue) * argc);
+        } else {
+            for (size_t i = 0; i < argc; i++) {
+                ctor->fields[i] = cv_unit();
+            }
+        }
+    }
+
+    CieloValue out = {.tag = CV_CTOR};
+    out.as.ctor = ctor;
+    return out;
 }

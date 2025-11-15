@@ -114,6 +114,7 @@ fn emit_function(
         program,
         fn_name_by_symbol,
         interner,
+        next_temp: 0,
     };
     emit_stmt(function.body, EmitMode::Return, out, 1, &mut cx);
     out.push_str("}\n");
@@ -161,7 +162,7 @@ fn emit_stmt(
             value,
             next,
         } => {
-            emit_stmt(*value, EmitMode::Assign(*binding), out, indent, cx);
+            emit_stmt(*value, EmitMode::AssignVar(*binding), out, indent, cx);
             emit_stmt(*next, mode, out, indent, cx);
         }
         LinearStmt::Call {
@@ -195,7 +196,7 @@ fn emit_stmt(
             emit_indent(out, indent);
             writeln!(out, "if (cv_truthy({})) {{", emit_expr(*cond, cx))
                 .expect("in-memory write should not fail");
-            emit_stmt(*then_branch, mode, out, indent + 1, cx);
+            emit_stmt(*then_branch, mode.clone(), out, indent + 1, cx);
             emit_indent(out, indent);
             out.push_str("} else {\n");
             emit_stmt(*else_branch, mode, out, indent + 1, cx);
@@ -207,17 +208,48 @@ fn emit_stmt(
             arms,
             default,
         } => {
+            let match_value = cx.fresh_temp("match");
             emit_indent(out, indent);
-            writeln!(out, "(void){};", emit_expr(*scrutinee, cx))
+            writeln!(out, "CieloValue {match_value} = {};", emit_expr(*scrutinee, cx))
                 .expect("in-memory write should not fail");
-            emit_indent(out, indent);
-            out.push_str(
-                "/* TODO(v0): real match lowering in backend; selecting default/first arm */\n",
-            );
+            for (idx, arm) in arms.iter().enumerate() {
+                let prefix = if idx == 0 { "if" } else { "else if" };
+                emit_indent(out, indent);
+                writeln!(
+                    out,
+                    "{} (cielo_ctor_is_variant({}, \"{}\")) {{",
+                    prefix,
+                    match_value,
+                    escape_c_string(symbol_text(cx.interner, arm.tag).as_str())
+                )
+                .expect("in-memory write should not fail");
+                for (field_idx, binder) in arm.binders.iter().enumerate() {
+                    emit_indent(out, indent + 1);
+                    writeln!(
+                        out,
+                        "v{} = cielo_ctor_field({}, {});",
+                        binder.as_u32(),
+                        match_value,
+                        field_idx
+                    )
+                    .expect("in-memory write should not fail");
+                }
+                emit_stmt(arm.body, mode.clone(), out, indent + 1, cx);
+                emit_indent(out, indent);
+                out.push_str("}\n");
+            }
             if let Some(default_stmt) = default {
-                emit_stmt(*default_stmt, mode, out, indent, cx);
-            } else if let Some(first) = arms.first() {
-                emit_stmt(first.body, mode, out, indent, cx);
+                emit_indent(out, indent);
+                out.push_str("else {\n");
+                emit_stmt(*default_stmt, mode.clone(), out, indent + 1, cx);
+                emit_indent(out, indent);
+                out.push_str("}\n");
+            } else if !arms.is_empty() {
+                emit_indent(out, indent);
+                out.push_str("else {\n");
+                emit_leaf(mode, "cv_unit()".to_owned(), out, indent + 1);
+                emit_indent(out, indent);
+                out.push_str("}\n");
             } else {
                 emit_leaf(mode, "cv_unit()".to_owned(), out, indent);
             }
@@ -260,18 +292,27 @@ fn emit_stmt(
             emit_stmt(*next, mode, out, indent, cx);
         }
         LinearStmt::Handle { effect, body, next } => {
+            let handle_result = cx.fresh_temp("handle");
             emit_indent(out, indent);
-            writeln!(
+            writeln!(out, "CieloValue {handle_result} = cv_unit();")
+                .expect("in-memory write should not fail");
+            emit_indent(out, indent);
+            writeln!(out, "cielo_handler_push({});", effect.as_u32())
+                .expect("in-memory write should not fail");
+            emit_stmt(
+                *body,
+                EmitMode::AssignTemp(handle_result.clone()),
                 out,
-                "/* TODO(v0): handler runtime lowering for effect {} */",
-                effect.as_u32()
-            )
-            .expect("in-memory write should not fail");
+                indent,
+                cx,
+            );
+            emit_indent(out, indent);
+            writeln!(out, "cielo_handler_pop({});", effect.as_u32())
+                .expect("in-memory write should not fail");
             if let Some(next_stmt) = next {
-                emit_stmt(*body, EmitMode::Discard, out, indent, cx);
                 emit_stmt(*next_stmt, mode, out, indent, cx);
             } else {
-                emit_stmt(*body, mode, out, indent, cx);
+                emit_leaf(mode, handle_result, out, indent);
             }
         }
         LinearStmt::Stage { stage, body, next } => {
@@ -299,9 +340,12 @@ fn emit_leaf(mode: EmitMode, value_expr: String, out: &mut String, indent: usize
         EmitMode::Return => {
             writeln!(out, "return {};", value_expr).expect("in-memory write should not fail");
         }
-        EmitMode::Assign(var) => {
+        EmitMode::AssignVar(var) => {
             writeln!(out, "v{} = {};", var.as_u32(), value_expr)
                 .expect("in-memory write should not fail");
+        }
+        EmitMode::AssignTemp(name) => {
+            writeln!(out, "{} = {};", name, value_expr).expect("in-memory write should not fail");
         }
         EmitMode::Discard => {
             writeln!(out, "(void){};", value_expr).expect("in-memory write should not fail");
@@ -612,11 +656,21 @@ struct EmitCx<'a> {
     program: &'a LinearProgram,
     fn_name_by_symbol: &'a HashMap<SymbolId, String>,
     interner: &'a Interner,
+    next_temp: u32,
 }
 
-#[derive(Clone, Copy)]
+impl EmitCx<'_> {
+    fn fresh_temp(&mut self, prefix: &str) -> String {
+        let id = self.next_temp;
+        self.next_temp += 1;
+        format!("__cielo_{}_{}", prefix, id)
+    }
+}
+
+#[derive(Clone)]
 enum EmitMode {
     Return,
-    Assign(VarId),
+    AssignVar(VarId),
+    AssignTemp(String),
     Discard,
 }
