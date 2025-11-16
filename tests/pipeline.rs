@@ -91,7 +91,9 @@ fn main() -> Int {
         .functions()
         .iter()
         .enumerate()
-        .find_map(|(idx, function)| (interner.resolve(function.name) == Some("ping")).then_some(idx))
+        .find_map(|(idx, function)| {
+            (interner.resolve(function.name) == Some("ping")).then_some(idx)
+        })
         .expect("ping function must exist");
     let ping_effects = residual
         .residual()

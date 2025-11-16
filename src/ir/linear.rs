@@ -85,7 +85,10 @@ impl LinearStmtNode {
         match &self.kind {
             LinearStmt::Return(expr) => smallvec![*expr],
             LinearStmt::Let { value, .. } => smallvec![*value],
-            LinearStmt::If { cond, .. } | LinearStmt::Match { scrutinee: cond, .. } => {
+            LinearStmt::If { cond, .. }
+            | LinearStmt::Match {
+                scrutinee: cond, ..
+            } => {
                 smallvec![*cond]
             }
             LinearStmt::Call { args, .. } | LinearStmt::Perform { args, .. } => {

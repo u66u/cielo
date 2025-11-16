@@ -210,8 +210,12 @@ fn emit_stmt(
         } => {
             let match_value = cx.fresh_temp("match");
             emit_indent(out, indent);
-            writeln!(out, "CieloValue {match_value} = {};", emit_expr(*scrutinee, cx))
-                .expect("in-memory write should not fail");
+            writeln!(
+                out,
+                "CieloValue {match_value} = {};",
+                emit_expr(*scrutinee, cx)
+            )
+            .expect("in-memory write should not fail");
             for (idx, arm) in arms.iter().enumerate() {
                 let prefix = if idx == 0 { "if" } else { "else if" };
                 emit_indent(out, indent);

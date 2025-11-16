@@ -294,7 +294,13 @@ impl CtPropagated {
         MonomorphizationSummary,
         CtPropagationTables,
     ) {
-        (self.program, self.diagnostics, self.sema, self.mono, self.ct)
+        (
+            self.program,
+            self.diagnostics,
+            self.sema,
+            self.mono,
+            self.ct,
+        )
     }
 
     pub fn into_bta_classified(self, bta: BtaTables) -> BtaClassified {

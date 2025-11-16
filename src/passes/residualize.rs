@@ -52,13 +52,19 @@ fn collect_function_effect_summary(
         .collect()
 }
 
-fn rewrite_call_effect_rows(program: &mut CoreProgram, summaries: &HashMap<FuncId, SortedEffectRow>) {
+fn rewrite_call_effect_rows(
+    program: &mut CoreProgram,
+    summaries: &HashMap<FuncId, SortedEffectRow>,
+) {
     let reachable = collect_reachable_stmts(program);
     for stmt_id in reachable {
         let Some(stmt) = program.stmt_mut(stmt_id) else {
             continue;
         };
-        if let StmtKind::Call { callee, effects, .. } = &mut stmt.kind {
+        if let StmtKind::Call {
+            callee, effects, ..
+        } = &mut stmt.kind
+        {
             *effects = summaries
                 .get(callee)
                 .cloned()
@@ -76,7 +82,11 @@ fn erase_function_effect_annotations(program: &mut CoreProgram) {
 fn collect_reachable_stmts(program: &CoreProgram) -> Vec<StmtId> {
     let mut seen_stmts = HashSet::new();
     let mut seen_handlers = HashSet::new();
-    let mut stack = program.functions().iter().map(|f| f.body).collect::<Vec<_>>();
+    let mut stack = program
+        .functions()
+        .iter()
+        .map(|f| f.body)
+        .collect::<Vec<_>>();
 
     while let Some(stmt_id) = stack.pop() {
         if !seen_stmts.insert(stmt_id) {

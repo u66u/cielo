@@ -4,8 +4,8 @@ use crate::common::span::Span;
 use crate::common::symbols::Interner;
 use crate::frontend::ast::{
     BinOp, BlockExpr, BuiltinType, EffectDecl, EffectOperationDecl, EnumDecl, EnumVariantDecl,
-    Expr, ExprKind, FieldDecl, FunctionDecl, HandleClause, Item, Param, Program, StageMarker,
-    Stmt, StructDecl, TypeExpr, TypeExprKind, UnaryOp,
+    Expr, ExprKind, FieldDecl, FunctionDecl, HandleClause, Item, Param, Program, StageMarker, Stmt,
+    StructDecl, TypeExpr, TypeExprKind, UnaryOp,
 };
 use crate::frontend::lexer::{Keyword, Token, TokenKind, lex};
 
@@ -286,7 +286,9 @@ impl Parser {
             );
         }
 
-        if args.is_empty() && let Some(builtin) = self.builtins.resolve(name) {
+        if args.is_empty()
+            && let Some(builtin) = self.builtins.resolve(name)
+        {
             return TypeExpr {
                 kind: TypeExprKind::Builtin(builtin),
                 span: span_join(start, self.prev_span()),

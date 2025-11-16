@@ -167,10 +167,12 @@ fn main() -> Int {
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
     let _ = typecheck_core(&lowered.program, &mut diagnostics);
-    assert!(diagnostics
-        .entries()
-        .iter()
-        .any(|d| d.code == "TYPE_EFFECT_ARG_MISMATCH"));
+    assert!(
+        diagnostics
+            .entries()
+            .iter()
+            .any(|d| d.code == "TYPE_EFFECT_ARG_MISMATCH")
+    );
 }
 
 #[test]
@@ -187,10 +189,12 @@ fn main() -> Int {
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
     let _ = typecheck_core(&lowered.program, &mut diagnostics);
-    assert!(diagnostics
-        .entries()
-        .iter()
-        .any(|d| d.code == "TYPE_UNKNOWN_EFFECT_OP"));
+    assert!(
+        diagnostics
+            .entries()
+            .iter()
+            .any(|d| d.code == "TYPE_UNKNOWN_EFFECT_OP")
+    );
 }
 
 #[test]
@@ -209,8 +213,10 @@ fn main() -> Int {
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
     let _ = typecheck_core(&lowered.program, &mut diagnostics);
-    assert!(diagnostics
-        .entries()
-        .iter()
-        .any(|d| d.code == "TYPE_BAD_HANDLER_CLAUSE_ARITY"));
+    assert!(
+        diagnostics
+            .entries()
+            .iter()
+            .any(|d| d.code == "TYPE_BAD_HANDLER_CLAUSE_ARITY")
+    );
 }

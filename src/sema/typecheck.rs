@@ -922,54 +922,60 @@ fn infer_stmt_effects(program: &CoreProgram, out: &mut [SortedEffectRow]) {
     let mut visiting = HashSet::new();
     for idx in 0..program.stmts().len() {
         let stmt_id = StmtId::new(idx);
-        let _ = program.fold_stmts(stmt_id, &mut memo, &mut visiting, &mut |stmt, children| {
-            match &stmt.kind {
-                crate::ir::core::StmtKind::Return(_) => SortedEffectRow::empty(),
-                crate::ir::core::StmtKind::Let { .. } => {
-                    children.first().cloned().unwrap_or_default()
-                }
-                crate::ir::core::StmtKind::Val { .. } => children
-                    .first()
-                    .cloned()
-                    .unwrap_or_default()
-                    .union(&children.get(1).cloned().unwrap_or_default()),
-                crate::ir::core::StmtKind::Call { effects, .. } => effects
-                    .union(&children.first().cloned().unwrap_or_default()),
-                crate::ir::core::StmtKind::Perform { effect, .. } => {
-                    SortedEffectRow::singleton(*effect)
-                        .union(&children.first().cloned().unwrap_or_default())
-                }
-                crate::ir::core::StmtKind::If { .. } => children
-                    .first()
-                    .cloned()
-                    .unwrap_or_default()
-                    .union(&children.get(1).cloned().unwrap_or_default()),
-                crate::ir::core::StmtKind::Match { .. } => children
-                    .iter()
-                    .cloned()
-                    .fold(SortedEffectRow::empty(), |acc, row| acc.union(&row)),
-                crate::ir::core::StmtKind::Handle { handler, next, .. } => {
-                    let mut row = children.first().cloned().unwrap_or_default();
-                    if let Some(effect) = program.handlers().get(handler.index()).map(|h| h.effect) {
-                        row = row.subtract(&SortedEffectRow::singleton(effect));
+        let _ =
+            program.fold_stmts(
+                stmt_id,
+                &mut memo,
+                &mut visiting,
+                &mut |stmt, children| match &stmt.kind {
+                    crate::ir::core::StmtKind::Return(_) => SortedEffectRow::empty(),
+                    crate::ir::core::StmtKind::Let { .. } => {
+                        children.first().cloned().unwrap_or_default()
                     }
-                    if next.is_some() {
-                        row = row.union(&children.get(1).cloned().unwrap_or_default());
+                    crate::ir::core::StmtKind::Val { .. } => children
+                        .first()
+                        .cloned()
+                        .unwrap_or_default()
+                        .union(&children.get(1).cloned().unwrap_or_default()),
+                    crate::ir::core::StmtKind::Call { effects, .. } => {
+                        effects.union(&children.first().cloned().unwrap_or_default())
                     }
-                    row
-                }
-                crate::ir::core::StmtKind::Stage { next, .. } => {
-                    let mut row = children.first().cloned().unwrap_or_default();
-                    if next.is_some() {
-                        row = row.union(&children.get(1).cloned().unwrap_or_default());
+                    crate::ir::core::StmtKind::Perform { effect, .. } => {
+                        SortedEffectRow::singleton(*effect)
+                            .union(&children.first().cloned().unwrap_or_default())
                     }
-                    row
-                }
-                crate::ir::core::StmtKind::Hole { .. } | crate::ir::core::StmtKind::Error(_) => {
-                    SortedEffectRow::empty()
-                }
-            }
-        });
+                    crate::ir::core::StmtKind::If { .. } => children
+                        .first()
+                        .cloned()
+                        .unwrap_or_default()
+                        .union(&children.get(1).cloned().unwrap_or_default()),
+                    crate::ir::core::StmtKind::Match { .. } => children
+                        .iter()
+                        .cloned()
+                        .fold(SortedEffectRow::empty(), |acc, row| acc.union(&row)),
+                    crate::ir::core::StmtKind::Handle { handler, next, .. } => {
+                        let mut row = children.first().cloned().unwrap_or_default();
+                        if let Some(effect) =
+                            program.handlers().get(handler.index()).map(|h| h.effect)
+                        {
+                            row = row.subtract(&SortedEffectRow::singleton(effect));
+                        }
+                        if next.is_some() {
+                            row = row.union(&children.get(1).cloned().unwrap_or_default());
+                        }
+                        row
+                    }
+                    crate::ir::core::StmtKind::Stage { next, .. } => {
+                        let mut row = children.first().cloned().unwrap_or_default();
+                        if next.is_some() {
+                            row = row.union(&children.get(1).cloned().unwrap_or_default());
+                        }
+                        row
+                    }
+                    crate::ir::core::StmtKind::Hole { .. }
+                    | crate::ir::core::StmtKind::Error(_) => SortedEffectRow::empty(),
+                },
+            );
     }
 
     for (idx, row) in memo.into_iter().enumerate() {

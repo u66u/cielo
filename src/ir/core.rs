@@ -184,7 +184,10 @@ impl StmtNode {
         match &self.kind {
             StmtKind::Return(expr) => smallvec![*expr],
             StmtKind::Let { value, .. } => smallvec![*value],
-            StmtKind::If { cond, .. } | StmtKind::Match { scrutinee: cond, .. } => {
+            StmtKind::If { cond, .. }
+            | StmtKind::Match {
+                scrutinee: cond, ..
+            } => {
                 smallvec![*cond]
             }
             StmtKind::Call { args, .. } | StmtKind::Perform { args, .. } => {

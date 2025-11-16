@@ -216,7 +216,10 @@ fn main() -> Int {
                 arms,
                 default,
             } => {
-                if matches!(residual.bta().stage_of_expr.get(scrutinee), Some(Stage::Rt(_))) {
+                if matches!(
+                    residual.bta().stage_of_expr.get(scrutinee),
+                    Some(Stage::Rt(_))
+                ) {
                     saw_runtime_expr = true;
                 }
                 for arm in arms {
