@@ -244,3 +244,50 @@ fn main() -> Int {
         "expected at least one runtime-classified expr in runtime stage block"
     );
 }
+
+#[test]
+fn ct_only_function_rejects_runtime_arguments() {
+    let src = r#"
+@comptime fn add1(x: Int) -> Int {
+  x + 1
+}
+fn main() -> Int {
+  let y = @runtime { 1 + 2 };
+  add1(y)
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
+
+    assert!(
+        residual
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|diag| diag.code == "BTA_CT_ONLY_RUNTIME_ARG")
+    );
+}
+
+#[test]
+fn ct_only_function_accepts_compile_time_arguments() {
+    let src = r#"
+@comptime fn add1(x: Int) -> Int {
+  x + 1
+}
+fn main() -> Int {
+  add1(2)
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
+
+    assert!(
+        !residual
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|diag| diag.code == "BTA_CT_ONLY_RUNTIME_ARG")
+    );
+}

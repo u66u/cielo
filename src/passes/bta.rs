@@ -11,23 +11,24 @@
 // - CT cache membership implies CT stage in v0
 //
 // Diagnostics:
-// - None in v0
+// - `BTA_CT_ONLY_RUNTIME_ARG` errors when ct-only calls receive runtime args
 //
 // Complexity:
-// - O(expr_count)
+// - O(expr_count + stmt_count)
 
 use std::collections::HashSet;
 
 use crate::common::ids::{ExprId, StmtId};
-use crate::ir::core::{CoreProgram, StageDirective, StmtKind};
+use crate::ir::core::{CoreProgram, ExprKind, StageDirective, StmtKind};
 use crate::pipeline::phases::{BtaClassified, BtaTables, CtPropagated, Reason, Stage};
 
 pub fn run(ct: CtPropagated) -> BtaClassified {
+    let (program, mut diagnostics, sema, mono, ct_tables) = ct.into_parts();
     let mut bta = BtaTables::default();
 
-    for idx in 0..ct.program().exprs().len() {
+    for idx in 0..program.exprs().len() {
         let expr_id = ExprId::new(idx);
-        if ct.ct().ct_cache.contains_key(&expr_id) {
+        if ct_tables.ct_cache.contains_key(&expr_id) {
             bta.stage_of_expr.insert(expr_id, Stage::Ct);
         } else {
             bta.stage_of_expr
@@ -36,11 +37,13 @@ pub fn run(ct: CtPropagated) -> BtaClassified {
     }
 
     let mut visited = HashSet::new();
-    for function in ct.program().functions() {
-        apply_stage_directives(ct.program(), function.body, None, &mut bta, &mut visited);
+    for function in program.functions() {
+        apply_stage_directives(&program, function.body, None, &mut bta, &mut visited);
     }
 
-    ct.into_bta_classified(bta)
+    enforce_ct_only_calls(&program, &mut bta, &mut diagnostics);
+
+    BtaClassified::new(program, diagnostics, sema, mono, ct_tables, bta)
 }
 
 #[derive(Clone, Copy)]
@@ -146,5 +149,69 @@ fn apply_forced_expr(expr_id: ExprId, forced: Option<ForcedStage>, bta: &mut Bta
                 .insert(expr_id, Stage::Rt(Reason::UserForcedRuntime));
         }
         None => {}
+    }
+}
+
+fn is_runtime_expr(expr_id: ExprId, bta: &BtaTables) -> bool {
+    !matches!(bta.stage_of_expr.get(&expr_id), Some(Stage::Ct))
+}
+
+fn enforce_ct_only_calls(
+    program: &CoreProgram,
+    bta: &mut BtaTables,
+    diagnostics: &mut crate::common::diagnostics::DiagnosticBag,
+) {
+    for (idx, expr) in program.exprs().iter().enumerate() {
+        let ExprKind::PureCall { callee, args } = &expr.kind else {
+            continue;
+        };
+        let is_ct_only = program
+            .function(*callee)
+            .is_some_and(|function| function.ct_only);
+        if !is_ct_only || !args.iter().copied().any(|arg| is_runtime_expr(arg, bta)) {
+            continue;
+        }
+
+        let expr_id = ExprId::new(idx);
+        bta.stage_of_expr
+            .insert(expr_id, Stage::Rt(Reason::CtOnlyWithRuntimeArgs(*callee)));
+        diagnostics.error(
+            "BTA_CT_ONLY_RUNTIME_ARG",
+            format!(
+                "ct-only function call f{} has runtime arguments; this call cannot be residualized",
+                callee.as_u32()
+            ),
+            expr.span,
+        );
+    }
+
+    for stmt in program.stmts() {
+        let StmtKind::Call {
+            result,
+            callee,
+            args,
+            ..
+        } = &stmt.kind
+        else {
+            continue;
+        };
+
+        let is_ct_only = program
+            .function(*callee)
+            .is_some_and(|function| function.ct_only);
+        if !is_ct_only || !args.iter().copied().any(|arg| is_runtime_expr(arg, bta)) {
+            continue;
+        }
+
+        bta.stage_of_var
+            .insert(*result, Stage::Rt(Reason::CtOnlyWithRuntimeArgs(*callee)));
+        diagnostics.error(
+            "BTA_CT_ONLY_RUNTIME_ARG",
+            format!(
+                "ct-only function call f{} has runtime arguments; this call cannot be residualized",
+                callee.as_u32()
+            ),
+            stmt.span,
+        );
     }
 }
