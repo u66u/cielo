@@ -191,7 +191,7 @@ impl Lowerer {
                     return_type: TypeId::INVALID,
                     declared_effects: SortedEffectRow::new(declared_effects),
                     body: dummy,
-                    ct_only: false,
+                    ct_only: function.ct_only,
                     span: function.span,
                 });
                 self.functions_by_name.insert(function.name, func_id);

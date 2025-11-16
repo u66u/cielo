@@ -45,6 +45,29 @@ fn add(a: Int, b: Int) -> Int {
 }
 
 #[test]
+fn parse_comptime_function_annotation() {
+    let src = r#"
+@comptime fn fold() -> Int {
+  7
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let function = parsed
+        .program
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Function(function) => Some(function),
+            _ => None,
+        })
+        .expect("expected function");
+
+    assert!(function.ct_only);
+    assert!(!parsed.diagnostics.has_errors());
+}
+
+#[test]
 fn parse_struct_enum_effect() {
     let src = r#"
 struct Point { x: Int, y: Int }

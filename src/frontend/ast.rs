@@ -22,6 +22,7 @@ pub struct FunctionDecl {
     pub params: Vec<Param>,
     pub return_type: Option<TypeExpr>,
     pub effects: Vec<SymbolId>,
+    pub ct_only: bool,
     pub body: BlockExpr,
     pub span: Span,
 }

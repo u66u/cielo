@@ -59,8 +59,32 @@ impl Parser {
                 break;
             }
 
+            if self.check_kind(TokenKind::At) {
+                let at_span = self.expect_kind(TokenKind::At, "Expected `@`").span;
+                if self.consume_keyword(Keyword::Comptime).is_none() {
+                    self.diagnostics.error(
+                        "PARSE_TOPLEVEL_ANNOT",
+                        "Only `@comptime fn ...` is supported at top level in v1",
+                        at_span,
+                    );
+                    self.recover_item();
+                    continue;
+                }
+                if !self.check_keyword(Keyword::Fn) {
+                    self.diagnostics.error(
+                        "PARSE_TOPLEVEL_ANNOT_TARGET",
+                        "`@comptime` can only annotate a function declaration",
+                        at_span,
+                    );
+                    self.recover_item();
+                    continue;
+                }
+                items.push(Item::Function(self.parse_function(true)));
+                continue;
+            }
+
             if self.check_keyword(Keyword::Fn) {
-                items.push(Item::Function(self.parse_function()));
+                items.push(Item::Function(self.parse_function(false)));
                 continue;
             }
             if self.check_keyword(Keyword::Struct) {
@@ -88,7 +112,7 @@ impl Parser {
         Program { items }
     }
 
-    fn parse_function(&mut self) -> FunctionDecl {
+    fn parse_function(&mut self, ct_only: bool) -> FunctionDecl {
         let start = self.expect_keyword(Keyword::Fn).span;
         let name = self.expect_identifier("Expected function name after `fn`");
         self.expect_kind(TokenKind::LParen, "Expected `(` after function name");
@@ -118,6 +142,7 @@ impl Parser {
             params,
             return_type,
             effects,
+            ct_only,
             body,
             span,
         }
