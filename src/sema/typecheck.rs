@@ -32,14 +32,28 @@ use crate::pipeline::phases::SemanticTables;
 use crate::sema::effect::SortedEffectRow;
 use crate::sema::ty::{EnumVariant, PrimitiveType, StructField, TypeKind, TypeStore};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct PrimitiveTypeIds {
-    pub unit: TypeId,
-    pub bool_: TypeId,
-    pub int: TypeId,
-    pub float: TypeId,
-    pub char_: TypeId,
-    pub string: TypeId,
+macro_rules! define_primitive_type_ids {
+    ($($field:ident => $primitive:ident),* $(,)?) => {
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        pub struct PrimitiveTypeIds {
+            $(pub $field: TypeId,)*
+        }
+
+        fn intern_primitives(store: &mut TypeStore) -> PrimitiveTypeIds {
+            PrimitiveTypeIds {
+                $($field: store.intern(TypeKind::Primitive(PrimitiveType::$primitive)),)*
+            }
+        }
+    };
+}
+
+define_primitive_type_ids! {
+    unit => Unit,
+    bool_ => Bool,
+    int => Int,
+    float => Float,
+    char_ => Char,
+    string => String,
 }
 
 struct TypeCheckerContext<'a> {
@@ -991,16 +1005,5 @@ fn type_for_literal(lit: &Literal, prim: PrimitiveTypeIds) -> TypeId {
         Literal::Float(_) => prim.float,
         Literal::Char(_) => prim.char_,
         Literal::String(_) => prim.string,
-    }
-}
-
-fn intern_primitives(store: &mut TypeStore) -> PrimitiveTypeIds {
-    PrimitiveTypeIds {
-        unit: store.intern(TypeKind::Primitive(PrimitiveType::Unit)),
-        bool_: store.intern(TypeKind::Primitive(PrimitiveType::Bool)),
-        int: store.intern(TypeKind::Primitive(PrimitiveType::Int)),
-        float: store.intern(TypeKind::Primitive(PrimitiveType::Float)),
-        char_: store.intern(TypeKind::Primitive(PrimitiveType::Char)),
-        string: store.intern(TypeKind::Primitive(PrimitiveType::String)),
     }
 }

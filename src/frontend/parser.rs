@@ -827,42 +827,34 @@ fn span_join(left: Span, right: Span) -> Span {
     )
 }
 
-#[derive(Clone, Copy)]
-struct BuiltinTypeSymbols {
-    bool_: SymbolId,
-    int: SymbolId,
-    float: SymbolId,
-    char_: SymbolId,
-    string: SymbolId,
+macro_rules! define_builtin_type_symbols {
+    ($($field:ident => $name:literal => $variant:ident),* $(,)?) => {
+        #[derive(Clone, Copy)]
+        struct BuiltinTypeSymbols {
+            $($field: SymbolId,)*
+        }
+
+        impl BuiltinTypeSymbols {
+            fn intern(interner: &mut Interner) -> Self {
+                Self {
+                    $($field: interner.intern($name),)*
+                }
+            }
+
+            fn resolve(self, symbol: SymbolId) -> Option<BuiltinType> {
+                match symbol {
+                    $(sym if sym == self.$field => Some(BuiltinType::$variant),)*
+                    _ => None,
+                }
+            }
+        }
+    };
 }
 
-impl BuiltinTypeSymbols {
-    fn intern(interner: &mut Interner) -> Self {
-        Self {
-            bool_: interner.intern("Bool"),
-            int: interner.intern("Int"),
-            float: interner.intern("Float"),
-            char_: interner.intern("Char"),
-            string: interner.intern("String"),
-        }
-    }
-
-    fn resolve(self, symbol: SymbolId) -> Option<BuiltinType> {
-        if symbol == self.bool_ {
-            return Some(BuiltinType::Bool);
-        }
-        if symbol == self.int {
-            return Some(BuiltinType::Int);
-        }
-        if symbol == self.float {
-            return Some(BuiltinType::Float);
-        }
-        if symbol == self.char_ {
-            return Some(BuiltinType::Char);
-        }
-        if symbol == self.string {
-            return Some(BuiltinType::String);
-        }
-        None
-    }
+define_builtin_type_symbols! {
+    bool_ => "Bool" => Bool,
+    int => "Int" => Int,
+    float => "Float" => Float,
+    char_ => "Char" => Char,
+    string => "String" => String,
 }
