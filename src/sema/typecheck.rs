@@ -632,74 +632,44 @@ fn set_slot(slot: Option<&mut Option<TypeId>>, ty: TypeId) -> bool {
 
 fn precompute_stmt_returns(program: &CoreProgram) -> Vec<Vec<ExprId>> {
     let mut memo: Vec<Option<Vec<ExprId>>> = vec![None; program.stmts().len()];
+    let mut visiting = HashSet::new();
     for idx in 0..program.stmts().len() {
         let stmt_id = StmtId::new(idx);
-        let mut visiting = HashSet::new();
-        let returns = collect_stmt_returns(program, stmt_id, &mut memo, &mut visiting);
-        memo[idx] = Some(returns);
+        let _ = program.fold_stmts(stmt_id, &mut memo, &mut visiting, &mut |stmt, children| {
+            let mut out = match &stmt.kind {
+                crate::ir::core::StmtKind::Return(expr) => vec![*expr],
+                crate::ir::core::StmtKind::Let { .. }
+                | crate::ir::core::StmtKind::Call { .. }
+                | crate::ir::core::StmtKind::Perform { .. } => {
+                    children.first().cloned().unwrap_or_default()
+                }
+                crate::ir::core::StmtKind::Val { .. }
+                | crate::ir::core::StmtKind::If { .. }
+                | crate::ir::core::StmtKind::Match { .. } => children
+                    .iter()
+                    .flat_map(|ret_set| ret_set.iter().copied())
+                    .collect(),
+                crate::ir::core::StmtKind::Handle { next, .. }
+                | crate::ir::core::StmtKind::Stage { next, .. } => {
+                    if next.is_some() {
+                        children.get(1).cloned().unwrap_or_default()
+                    } else {
+                        children.first().cloned().unwrap_or_default()
+                    }
+                }
+                crate::ir::core::StmtKind::Hole { .. } | crate::ir::core::StmtKind::Error(_) => {
+                    Vec::new()
+                }
+            };
+
+            let mut dedup = HashSet::new();
+            out.retain(|expr| dedup.insert(*expr));
+            out
+        });
     }
     memo.into_iter()
         .map(|entry| entry.unwrap_or_default())
         .collect()
-}
-
-fn collect_stmt_returns(
-    program: &CoreProgram,
-    stmt_id: StmtId,
-    memo: &mut [Option<Vec<ExprId>>],
-    visiting: &mut HashSet<StmtId>,
-) -> Vec<ExprId> {
-    if let Some(cached) = memo.get(stmt_id.index()).and_then(Clone::clone) {
-        return cached;
-    }
-    if !visiting.insert(stmt_id) {
-        return Vec::new();
-    }
-
-    let mut out = Vec::new();
-    match program.stmt(stmt_id).map(|node| &node.kind) {
-        Some(crate::ir::core::StmtKind::Return(expr)) => out.push(*expr),
-        Some(crate::ir::core::StmtKind::Let { next, .. })
-        | Some(crate::ir::core::StmtKind::Val { next, .. })
-        | Some(crate::ir::core::StmtKind::Call { next, .. })
-        | Some(crate::ir::core::StmtKind::Perform { next, .. }) => {
-            out.extend(collect_stmt_returns(program, *next, memo, visiting));
-        }
-        Some(crate::ir::core::StmtKind::If {
-            then_branch,
-            else_branch,
-            ..
-        }) => {
-            out.extend(collect_stmt_returns(program, *then_branch, memo, visiting));
-            out.extend(collect_stmt_returns(program, *else_branch, memo, visiting));
-        }
-        Some(crate::ir::core::StmtKind::Match { arms, default, .. }) => {
-            for arm in arms {
-                out.extend(collect_stmt_returns(program, arm.body, memo, visiting));
-            }
-            if let Some(default_stmt) = default {
-                out.extend(collect_stmt_returns(program, *default_stmt, memo, visiting));
-            }
-        }
-        Some(crate::ir::core::StmtKind::Handle { body, next, .. })
-        | Some(crate::ir::core::StmtKind::Stage { body, next, .. }) => {
-            if let Some(next_stmt) = next {
-                out.extend(collect_stmt_returns(program, *next_stmt, memo, visiting));
-            } else {
-                out.extend(collect_stmt_returns(program, *body, memo, visiting));
-            }
-        }
-        Some(crate::ir::core::StmtKind::Hole { .. })
-        | Some(crate::ir::core::StmtKind::Error(_))
-        | None => {}
-    }
-
-    visiting.remove(&stmt_id);
-
-    let mut dedup = HashSet::new();
-    out.retain(|expr| dedup.insert(*expr));
-    memo[stmt_id.index()] = Some(out.clone());
-    out
 }
 
 fn intern_program_adts(program: &CoreProgram, store: &mut TypeStore) -> HashMap<SymbolId, TypeId> {
@@ -949,84 +919,62 @@ fn validate_handler_signature(
 
 fn infer_stmt_effects(program: &CoreProgram, out: &mut [SortedEffectRow]) {
     let mut memo: Vec<Option<SortedEffectRow>> = vec![None; out.len()];
+    let mut visiting = HashSet::new();
     for idx in 0..program.stmts().len() {
         let stmt_id = StmtId::new(idx);
-        let row = infer_stmt_effect(program, stmt_id, &mut memo);
-        out[idx] = row;
+        let _ = program.fold_stmts(stmt_id, &mut memo, &mut visiting, &mut |stmt, children| {
+            match &stmt.kind {
+                crate::ir::core::StmtKind::Return(_) => SortedEffectRow::empty(),
+                crate::ir::core::StmtKind::Let { .. } => {
+                    children.first().cloned().unwrap_or_default()
+                }
+                crate::ir::core::StmtKind::Val { .. } => children
+                    .first()
+                    .cloned()
+                    .unwrap_or_default()
+                    .union(&children.get(1).cloned().unwrap_or_default()),
+                crate::ir::core::StmtKind::Call { effects, .. } => effects
+                    .union(&children.first().cloned().unwrap_or_default()),
+                crate::ir::core::StmtKind::Perform { effect, .. } => {
+                    SortedEffectRow::singleton(*effect)
+                        .union(&children.first().cloned().unwrap_or_default())
+                }
+                crate::ir::core::StmtKind::If { .. } => children
+                    .first()
+                    .cloned()
+                    .unwrap_or_default()
+                    .union(&children.get(1).cloned().unwrap_or_default()),
+                crate::ir::core::StmtKind::Match { .. } => children
+                    .iter()
+                    .cloned()
+                    .fold(SortedEffectRow::empty(), |acc, row| acc.union(&row)),
+                crate::ir::core::StmtKind::Handle { handler, next, .. } => {
+                    let mut row = children.first().cloned().unwrap_or_default();
+                    if let Some(effect) = program.handlers().get(handler.index()).map(|h| h.effect) {
+                        row = row.subtract(&SortedEffectRow::singleton(effect));
+                    }
+                    if next.is_some() {
+                        row = row.union(&children.get(1).cloned().unwrap_or_default());
+                    }
+                    row
+                }
+                crate::ir::core::StmtKind::Stage { next, .. } => {
+                    let mut row = children.first().cloned().unwrap_or_default();
+                    if next.is_some() {
+                        row = row.union(&children.get(1).cloned().unwrap_or_default());
+                    }
+                    row
+                }
+                crate::ir::core::StmtKind::Hole { .. } | crate::ir::core::StmtKind::Error(_) => {
+                    SortedEffectRow::empty()
+                }
+            }
+        });
     }
-}
 
-fn infer_stmt_effect(
-    program: &CoreProgram,
-    stmt_id: StmtId,
-    memo: &mut [Option<SortedEffectRow>],
-) -> SortedEffectRow {
-    if let Some(row) = memo.get(stmt_id.index()).and_then(Clone::clone) {
-        return row;
+    for (idx, row) in memo.into_iter().enumerate() {
+        out[idx] = row.unwrap_or_default();
     }
-
-    let row = match program.stmt(stmt_id).map(|node| &node.kind) {
-        Some(crate::ir::core::StmtKind::Return(_)) => SortedEffectRow::empty(),
-        Some(crate::ir::core::StmtKind::Let { next, .. }) => {
-            infer_stmt_effect(program, *next, memo)
-        }
-        Some(crate::ir::core::StmtKind::Val { value, next, .. }) => {
-            infer_stmt_effect(program, *value, memo).union(&infer_stmt_effect(program, *next, memo))
-        }
-        Some(crate::ir::core::StmtKind::Call { effects, next, .. }) => {
-            effects.union(&infer_stmt_effect(program, *next, memo))
-        }
-        Some(crate::ir::core::StmtKind::Perform { effect, next, .. }) => {
-            SortedEffectRow::singleton(*effect).union(&infer_stmt_effect(program, *next, memo))
-        }
-        Some(crate::ir::core::StmtKind::If {
-            then_branch,
-            else_branch,
-            ..
-        }) => infer_stmt_effect(program, *then_branch, memo).union(&infer_stmt_effect(
-            program,
-            *else_branch,
-            memo,
-        )),
-        Some(crate::ir::core::StmtKind::Match { arms, default, .. }) => {
-            let mut row = SortedEffectRow::empty();
-            for arm in arms {
-                row = row.union(&infer_stmt_effect(program, arm.body, memo));
-            }
-            if let Some(default_stmt) = default {
-                row = row.union(&infer_stmt_effect(program, *default_stmt, memo));
-            }
-            row
-        }
-        Some(crate::ir::core::StmtKind::Handle {
-            handler,
-            body,
-            next,
-        }) => {
-            let mut row = infer_stmt_effect(program, *body, memo);
-            let handled_effect = program.handlers().get(handler.index()).map(|h| h.effect);
-            if let Some(effect) = handled_effect {
-                row = row.subtract(&SortedEffectRow::singleton(effect));
-            }
-            if let Some(next_stmt) = next {
-                row = row.union(&infer_stmt_effect(program, *next_stmt, memo));
-            }
-            row
-        }
-        Some(crate::ir::core::StmtKind::Stage { body, next, .. }) => {
-            let mut row = infer_stmt_effect(program, *body, memo);
-            if let Some(next_stmt) = next {
-                row = row.union(&infer_stmt_effect(program, *next_stmt, memo));
-            }
-            row
-        }
-        Some(crate::ir::core::StmtKind::Hole { .. })
-        | Some(crate::ir::core::StmtKind::Error(_))
-        | None => SortedEffectRow::empty(),
-    };
-
-    memo[stmt_id.index()] = Some(row.clone());
-    row
 }
 
 fn type_for_literal(lit: &Literal, prim: PrimitiveTypeIds) -> TypeId {
