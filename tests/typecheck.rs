@@ -5,6 +5,7 @@ use cielo::common::symbols::Interner;
 use cielo::frontend::parser::parse_source;
 use cielo::ir::core::{BinaryOp, CoreProgram, ExprKind, ExprNode, Literal};
 use cielo::passes::lowering::{LowerConfig, lower_program};
+use cielo::sema::effect::{CapabilityLevel, EffectFlags, is_thunkable};
 use cielo::sema::typecheck::typecheck_core;
 
 #[test]
@@ -218,5 +219,60 @@ fn main() -> Int {
             .entries()
             .iter()
             .any(|d| d.code == "TYPE_BAD_HANDLER_CLAUSE_ARITY")
+    );
+}
+
+#[test]
+fn classifies_effect_properties_and_exposes_thunkability() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+effect SharedState { fn get() -> Int }
+effect ComptimeReadFiles { fn read(path: String) -> String }
+fn main() -> Int {
+  0
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let sema = typecheck_core(&lowered.program, &mut diagnostics);
+
+    let console = sema
+        .effect_properties
+        .get(&EffectLabelId::from_u32(0))
+        .copied()
+        .expect("console effect");
+    assert_eq!(console.level, CapabilityLevel::Io);
+    assert!(console.flags.contains(EffectFlags::OPAQUE_FOR_STAGING));
+
+    let shared = sema
+        .effect_properties
+        .get(&EffectLabelId::from_u32(1))
+        .copied()
+        .expect("shared-state effect");
+    assert_eq!(shared.level, CapabilityLevel::SharedState);
+    assert!(shared.flags.contains(EffectFlags::SHARED_STATE));
+
+    let ct_files = sema
+        .effect_properties
+        .get(&EffectLabelId::from_u32(2))
+        .copied()
+        .expect("ct-files effect");
+    assert!(ct_files.flags.contains(EffectFlags::CT_ONLY));
+
+    assert!(
+        !is_thunkable(
+            &cielo::sema::effect::SortedEffectRow::singleton(EffectLabelId::from_u32(0)),
+            &sema.effect_properties
+        ),
+        "IO effects should not be thunkable"
+    );
+    assert!(
+        is_thunkable(
+            &cielo::sema::effect::SortedEffectRow::singleton(EffectLabelId::from_u32(2)),
+            &sema.effect_properties
+        ),
+        "ComptimeReadFiles should stay thunkable for staging decisions"
     );
 }

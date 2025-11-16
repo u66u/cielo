@@ -3,9 +3,10 @@ use crate::common::ids::{SourceId, SymbolId};
 use crate::common::span::Span;
 use crate::common::symbols::Interner;
 use crate::frontend::ast::{
-    BinOp, BlockExpr, BuiltinType, EffectDecl, EffectOperationDecl, EnumDecl, EnumVariantDecl,
-    Expr, ExprKind, FieldDecl, FunctionDecl, HandleClause, Item, Param, Program, StageMarker, Stmt,
-    StructDecl, TypeExpr, TypeExprKind, UnaryOp,
+    BinOp, BlockExpr, BuiltinType, EffectCapabilityHint, EffectDecl, EffectOperationDecl,
+    EffectPropertyHint, EnumDecl, EnumVariantDecl, Expr, ExprKind, FieldDecl, FunctionDecl,
+    HandleClause, Item, Param, Program, StageMarker, Stmt, StructDecl, TypeExpr, TypeExprKind,
+    UnaryOp,
 };
 use crate::frontend::lexer::{Keyword, Token, TokenKind, lex};
 
@@ -26,8 +27,9 @@ pub struct ParseOutput {
 
 pub fn parse_source(source: &str, source_id: SourceId, interner: &mut Interner) -> ParseOutput {
     let builtins = BuiltinTypeSymbols::intern(interner);
+    let effect_builtins = BuiltinEffectSymbols::intern(interner);
     let lexed = lex(source, source_id, interner);
-    let mut parser = Parser::new(lexed.tokens, lexed.diagnostics, builtins);
+    let mut parser = Parser::new(lexed.tokens, lexed.diagnostics, builtins, effect_builtins);
     let program = parser.parse_program();
     ParseOutput {
         program,
@@ -40,15 +42,22 @@ struct Parser {
     index: usize,
     diagnostics: DiagnosticBag,
     builtins: BuiltinTypeSymbols,
+    effect_builtins: BuiltinEffectSymbols,
 }
 
 impl Parser {
-    fn new(tokens: Vec<Token>, diagnostics: DiagnosticBag, builtins: BuiltinTypeSymbols) -> Self {
+    fn new(
+        tokens: Vec<Token>,
+        diagnostics: DiagnosticBag,
+        builtins: BuiltinTypeSymbols,
+        effect_builtins: BuiltinEffectSymbols,
+    ) -> Self {
         Self {
             tokens,
             index: 0,
             diagnostics,
             builtins,
+            effect_builtins,
         }
     }
 
@@ -258,6 +267,7 @@ impl Parser {
             .span;
         EffectDecl {
             name,
+            properties: self.effect_builtins.classify(name),
             operations,
             span: span_join(start, end),
         }
@@ -882,4 +892,61 @@ define_builtin_type_symbols! {
     float => "Float" => Float,
     char_ => "Char" => Char,
     string => "String" => String,
+}
+
+const fn effect_hint(
+    capability: EffectCapabilityHint,
+    discardable: bool,
+    commutative: bool,
+    opaque_for_staging: bool,
+    ct_only: bool,
+) -> EffectPropertyHint {
+    EffectPropertyHint {
+        capability,
+        discardable,
+        commutative,
+        opaque_for_staging,
+        ct_only,
+    }
+}
+
+macro_rules! define_builtin_effect_symbols {
+    ($($field:ident => $name:literal => $hint:expr),* $(,)?) => {
+        #[derive(Clone, Copy)]
+        struct BuiltinEffectSymbols {
+            $($field: SymbolId,)*
+        }
+
+        impl BuiltinEffectSymbols {
+            fn intern(interner: &mut Interner) -> Self {
+                Self {
+                    $($field: interner.intern($name),)*
+                }
+            }
+
+            fn classify(self, symbol: SymbolId) -> EffectPropertyHint {
+                match symbol {
+                    $(sym if sym == self.$field => $hint,)*
+                    _ => EffectPropertyHint::default(),
+                }
+            }
+        }
+    };
+}
+
+define_builtin_effect_symbols! {
+    pure => "Pure" => effect_hint(EffectCapabilityHint::Pure, true, true, false, false),
+    diverge => "Diverge" => effect_hint(EffectCapabilityHint::Diverge, false, false, false, false),
+    alloc => "Alloc" => effect_hint(EffectCapabilityHint::Alloc, false, false, false, false),
+    state => "State" => effect_hint(EffectCapabilityHint::LocalState, false, false, false, false),
+    local_state => "LocalState" => effect_hint(EffectCapabilityHint::LocalState, false, false, false, false),
+    shared_state => "SharedState" => effect_hint(EffectCapabilityHint::SharedState, false, false, true, false),
+    atomic_state => "AtomicState" => effect_hint(EffectCapabilityHint::SharedState, false, false, true, false),
+    atomic => "Atomic" => effect_hint(EffectCapabilityHint::SharedState, false, false, true, false),
+    io => "IO" => effect_hint(EffectCapabilityHint::Io, false, false, true, false),
+    console => "Console" => effect_hint(EffectCapabilityHint::Io, false, false, true, false),
+    system => "System" => effect_hint(EffectCapabilityHint::Io, false, false, true, false),
+    ffi => "FFI" => effect_hint(EffectCapabilityHint::Ffi, false, false, true, false),
+    comptime_read_files => "ComptimeReadFiles" => effect_hint(EffectCapabilityHint::LocalState, false, false, false, true),
+    build_fs => "BuildFS" => effect_hint(EffectCapabilityHint::LocalState, false, false, false, true),
 }

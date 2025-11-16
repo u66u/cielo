@@ -26,14 +26,15 @@ use crate::common::diagnostics::DiagnosticBag;
 use crate::common::ids::{EffectLabelId, FuncId, SymbolId, TypeId, VarId};
 use crate::common::span::Span;
 use crate::frontend::ast::{
-    self, BuiltinType, ExprKind as AstExprKind, Item, Stmt as AstStmt, TypeExpr, TypeExprKind,
+    self, BuiltinType, EffectCapabilityHint, EffectPropertyHint, ExprKind as AstExprKind, Item,
+    Stmt as AstStmt, TypeExpr, TypeExprKind,
 };
 use crate::ir::core::{
     AdtEnumDecl, AdtEnumVariantDecl, AdtStructDecl, BinaryOp, CoreProgram, CoreTypeRef, EffectDecl,
     EffectOperationDecl, ExprKind, ExprNode, FunctionDecl, HandlerClause, HandlerDef, Literal,
     PrimitiveTypeRef, StageDirective, StmtKind, StmtNode, UnaryOp,
 };
-use crate::sema::effect::SortedEffectRow;
+use crate::sema::effect::{CapabilityLevel, EffectFlags, EffectProperties, SortedEffectRow};
 
 #[derive(Clone, Debug)]
 pub struct LowerOutput {
@@ -132,6 +133,7 @@ impl Lowerer {
                     self.program.add_effect(EffectDecl {
                         label: effect_id,
                         name: effect.name,
+                        properties: map_effect_property_hint(effect.properties),
                         operations,
                         span: effect.span,
                     });
@@ -742,6 +744,46 @@ fn lower_type_ref(ty: &TypeExpr) -> CoreTypeRef {
         TypeExprKind::Path { name, .. } => CoreTypeRef::Named(*name),
         TypeExprKind::Error(_) => CoreTypeRef::Unknown,
     }
+}
+
+fn map_effect_property_hint(hint: EffectPropertyHint) -> EffectProperties {
+    let mut flags = EffectFlags::empty();
+    if hint.discardable {
+        flags = flags | EffectFlags::DISCARDABLE;
+    }
+    if hint.commutative {
+        flags = flags | EffectFlags::COMMUTATIVE;
+    }
+    if hint.opaque_for_staging {
+        flags = flags | EffectFlags::OPAQUE_FOR_STAGING;
+    }
+    if hint.ct_only {
+        flags = flags | EffectFlags::CT_ONLY;
+    }
+
+    let level = match hint.capability {
+        EffectCapabilityHint::Pure => CapabilityLevel::Pure,
+        EffectCapabilityHint::Diverge => CapabilityLevel::Diverge,
+        EffectCapabilityHint::Alloc => CapabilityLevel::Alloc,
+        EffectCapabilityHint::LocalState => {
+            flags = flags | EffectFlags::LOCAL_STATE;
+            CapabilityLevel::LocalState
+        }
+        EffectCapabilityHint::SharedState => {
+            flags = flags | EffectFlags::SHARED_STATE | EffectFlags::OPAQUE_FOR_STAGING;
+            CapabilityLevel::SharedState
+        }
+        EffectCapabilityHint::Io => {
+            flags = flags | EffectFlags::OPAQUE_FOR_STAGING;
+            CapabilityLevel::Io
+        }
+        EffectCapabilityHint::Ffi => {
+            flags = flags | EffectFlags::OPAQUE_FOR_STAGING;
+            CapabilityLevel::Ffi
+        }
+    };
+
+    EffectProperties::new(level, flags)
 }
 
 fn map_builtin_type(ty: BuiltinType) -> PrimitiveTypeRef {

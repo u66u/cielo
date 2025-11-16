@@ -65,6 +65,7 @@ pub struct FieldDecl {
 #[derive(Clone, Debug)]
 pub struct EffectDecl {
     pub name: SymbolId,
+    pub properties: EffectPropertyHint,
     pub operations: Vec<EffectOperationDecl>,
     pub span: Span,
 }
@@ -75,6 +76,38 @@ pub struct EffectOperationDecl {
     pub params: Vec<Param>,
     pub return_type: Option<TypeExpr>,
     pub span: Span,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EffectCapabilityHint {
+    Pure,
+    Diverge,
+    Alloc,
+    LocalState,
+    SharedState,
+    Io,
+    Ffi,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct EffectPropertyHint {
+    pub capability: EffectCapabilityHint,
+    pub discardable: bool,
+    pub commutative: bool,
+    pub opaque_for_staging: bool,
+    pub ct_only: bool,
+}
+
+impl Default for EffectPropertyHint {
+    fn default() -> Self {
+        Self {
+            capability: EffectCapabilityHint::LocalState,
+            discardable: false,
+            commutative: false,
+            opaque_for_staging: false,
+            ct_only: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

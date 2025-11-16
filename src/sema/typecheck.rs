@@ -122,6 +122,11 @@ pub fn typecheck_core(program: &CoreProgram, diagnostics: &mut DiagnosticBag) ->
 
     let mut sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
     sema.effects_of_expr = vec![SortedEffectRow::empty(); program.exprs().len()];
+    sema.effect_properties = program
+        .effects()
+        .iter()
+        .map(|effect| (effect.label, effect.properties))
+        .collect();
 
     let mut var_types: Vec<Option<TypeId>> = Vec::new();
     let mut func_returns: Vec<Option<TypeId>> = program

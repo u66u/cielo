@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ops::Deref;
 
 use crate::common::ids::EffectLabelId;
@@ -155,4 +156,43 @@ impl IntoIterator for SortedEffectRow {
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
     }
+}
+
+pub fn capability_of_row(
+    row: &SortedEffectRow,
+    properties: &HashMap<EffectLabelId, EffectProperties>,
+) -> CapabilityLevel {
+    let mut level = CapabilityLevel::Pure;
+    for effect in row.iter() {
+        let effect_level = properties
+            .get(&effect)
+            .map(|props| props.level)
+            .unwrap_or(CapabilityLevel::Ffi);
+        if effect_level > level {
+            level = effect_level;
+        }
+    }
+    level
+}
+
+pub fn first_non_thunkable_effect(
+    row: &SortedEffectRow,
+    properties: &HashMap<EffectLabelId, EffectProperties>,
+) -> Option<EffectLabelId> {
+    row.iter().find(|effect| {
+        let Some(props) = properties.get(effect).copied() else {
+            return true;
+        };
+        !props.is_ct_eligible()
+            || props.flags.contains(EffectFlags::SHARED_STATE)
+            || props.flags.contains(EffectFlags::OPAQUE_FOR_STAGING)
+    })
+}
+
+pub fn is_thunkable(
+    row: &SortedEffectRow,
+    properties: &HashMap<EffectLabelId, EffectProperties>,
+) -> bool {
+    first_non_thunkable_effect(row, properties).is_none()
+        && capability_of_row(row, properties) < CapabilityLevel::Io
 }

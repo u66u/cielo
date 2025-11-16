@@ -3,7 +3,7 @@ use crate::common::ids::{
     EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, TypeId, VarId,
 };
 use crate::common::span::Span;
-use crate::sema::effect::SortedEffectRow;
+use crate::sema::effect::{EffectProperties, SortedEffectRow};
 use smallvec::{SmallVec, smallvec};
 use std::collections::HashSet;
 
@@ -284,6 +284,7 @@ pub struct EffectOperationDecl {
 pub struct EffectDecl {
     pub label: EffectLabelId,
     pub name: SymbolId,
+    pub properties: EffectProperties,
     pub operations: Vec<EffectOperationDecl>,
     pub span: Span,
 }
