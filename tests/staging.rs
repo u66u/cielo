@@ -291,3 +291,52 @@ fn main() -> Int {
             .any(|diag| diag.code == "BTA_CT_ONLY_RUNTIME_ARG")
     );
 }
+
+#[test]
+fn ct_only_effect_marks_function_as_ct_only_for_runtime_arg_checks() {
+    let src = r#"
+effect ComptimeReadFiles { fn read(path: String) -> String }
+fn load(path: String) -> String with ComptimeReadFiles {
+  path
+}
+fn main() -> Int {
+  let path = @runtime { "config.toml" };
+  let _value = load(path);
+  0
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
+
+    assert!(
+        residual
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|diag| diag.code == "BTA_CT_ONLY_RUNTIME_ARG")
+    );
+}
+
+#[test]
+fn non_thunkable_effects_mark_call_result_runtime() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+fn ping() -> Int with Console {
+  do Console.print("x");
+  7
+}
+fn main() -> Int {
+  let y = ping();
+  y
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
+
+    assert!(residual.bta().stage_of_var.values().any(|stage| matches!(
+        stage,
+        Stage::Rt(cielo::pipeline::phases::Reason::EffectNotDischarged(_))
+    )));
+}

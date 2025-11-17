@@ -18,9 +18,14 @@
 
 use std::collections::HashSet;
 
-use crate::common::ids::{ExprId, StmtId};
+use crate::common::ids::{EffectLabelId, ExprId, StmtId};
 use crate::ir::core::{CoreProgram, ExprKind, StageDirective, StmtKind};
-use crate::pipeline::phases::{BtaClassified, BtaTables, CtPropagated, Reason, Stage};
+use crate::pipeline::phases::{
+    BtaClassified, BtaTables, CtPropagated, Reason, SemanticTables, Stage,
+};
+use crate::sema::effect::{
+    EffectFlags, EffectProperties, SortedEffectRow, first_non_thunkable_effect, is_thunkable,
+};
 
 pub fn run(ct: CtPropagated) -> BtaClassified {
     let (program, mut diagnostics, sema, mono, ct_tables) = ct.into_parts();
@@ -41,7 +46,8 @@ pub fn run(ct: CtPropagated) -> BtaClassified {
         apply_stage_directives(&program, function.body, None, &mut bta, &mut visited);
     }
 
-    enforce_ct_only_calls(&program, &mut bta, &mut diagnostics);
+    classify_non_thunkable_effects(&program, &sema, &mut bta);
+    enforce_ct_only_calls(&program, &sema, &mut bta, &mut diagnostics);
 
     BtaClassified::new(program, diagnostics, sema, mono, ct_tables, bta)
 }
@@ -158,6 +164,7 @@ fn is_runtime_expr(expr_id: ExprId, bta: &BtaTables) -> bool {
 
 fn enforce_ct_only_calls(
     program: &CoreProgram,
+    sema: &SemanticTables,
     bta: &mut BtaTables,
     diagnostics: &mut crate::common::diagnostics::DiagnosticBag,
 ) {
@@ -167,7 +174,7 @@ fn enforce_ct_only_calls(
         };
         let is_ct_only = program
             .function(*callee)
-            .is_some_and(|function| function.ct_only);
+            .is_some_and(|function| is_ct_only_function(function, sema));
         if !is_ct_only || !args.iter().copied().any(|arg| is_runtime_expr(arg, bta)) {
             continue;
         }
@@ -198,7 +205,7 @@ fn enforce_ct_only_calls(
 
         let is_ct_only = program
             .function(*callee)
-            .is_some_and(|function| function.ct_only);
+            .is_some_and(|function| is_ct_only_function(function, sema));
         if !is_ct_only || !args.iter().copied().any(|arg| is_runtime_expr(arg, bta)) {
             continue;
         }
@@ -214,4 +221,53 @@ fn enforce_ct_only_calls(
             stmt.span,
         );
     }
+}
+
+fn is_ct_only_function(function: &crate::ir::core::FunctionDecl, sema: &SemanticTables) -> bool {
+    function.ct_only
+        || function.declared_effects.iter().any(|effect| {
+            sema.effect_properties
+                .get(&effect)
+                .is_some_and(|props| props.flags.contains(EffectFlags::CT_ONLY))
+        })
+}
+
+fn classify_non_thunkable_effects(
+    program: &CoreProgram,
+    sema: &SemanticTables,
+    bta: &mut BtaTables,
+) {
+    for stmt in program.stmts() {
+        match &stmt.kind {
+            StmtKind::Call {
+                result, effects, ..
+            } => {
+                if let Some(effect) = blocking_effect(effects, &sema.effect_properties) {
+                    bta.stage_of_var
+                        .insert(*result, Stage::Rt(Reason::EffectNotDischarged(effect)));
+                }
+            }
+            StmtKind::Perform { result, effect, .. } => {
+                let Some(result) = result else {
+                    continue;
+                };
+                let row = SortedEffectRow::singleton(*effect);
+                if let Some(blocking) = blocking_effect(&row, &sema.effect_properties) {
+                    bta.stage_of_var
+                        .insert(*result, Stage::Rt(Reason::EffectNotDischarged(blocking)));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn blocking_effect(
+    row: &SortedEffectRow,
+    effect_props: &std::collections::HashMap<EffectLabelId, EffectProperties>,
+) -> Option<EffectLabelId> {
+    if is_thunkable(row, effect_props) {
+        return None;
+    }
+    first_non_thunkable_effect(row, effect_props)
 }
