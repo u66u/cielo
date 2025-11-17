@@ -44,6 +44,10 @@ enum { CIELO_HANDLER_STACK_MAX = 64 };
 static CieloHandlerFrame g_cielo_handlers[CIELO_HANDLER_STACK_MAX];
 static size_t g_cielo_handler_depth = 0;
 
+#define CIELO_CALL_PURE(expr) (expr)
+#define CIELO_CALL_DIRECT(expr) (expr)
+#define CIELO_CALL_CONTROL(expr) (expr)
+
 static inline CieloValue cv_unit(void) {
     CieloValue v = {.tag = CV_UNIT};
     return v;

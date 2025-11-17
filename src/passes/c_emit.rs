@@ -23,7 +23,7 @@ use std::fmt::Write;
 use crate::common::ids::{LinearExprId, LinearStmtId, SymbolId, VarId};
 use crate::common::symbols::Interner;
 use crate::ir::core::Literal;
-use crate::ir::linear::{LinearExpr, LinearFunction, LinearProgram, LinearStmt};
+use crate::ir::linear::{CallConvention, LinearExpr, LinearFunction, LinearProgram, LinearStmt};
 use crate::passes::linearize::Linearized;
 
 const C_RUNTIME_HEADER: &str = include_str!("../backend/cielo_runtime.h");
@@ -168,7 +168,7 @@ fn emit_stmt(
         LinearStmt::Call {
             result,
             callee,
-            convention: _,
+            convention,
             args,
             next,
         } => {
@@ -177,16 +177,15 @@ fn emit_stmt(
                 .get(callee)
                 .cloned()
                 .unwrap_or_else(|| "cielo_fn_unknown".to_owned());
-            emit_indent(out, indent);
-            write!(out, "v{} = {}(", result.as_u32(), callee_name)
-                .expect("in-memory write should not fail");
-            for (idx, arg) in args.iter().enumerate() {
-                if idx > 0 {
-                    out.push_str(", ");
-                }
-                out.push_str(&emit_expr(*arg, cx));
+            let wrapper = call_wrapper(*convention);
+            let call_expr = format_callee_call(callee_name.as_str(), args, cx);
+            if matches!(convention, CallConvention::Control) {
+                emit_indent(out, indent);
+                out.push_str("/* control-call convention: selective CPS hook */\n");
             }
-            out.push_str(");\n");
+            emit_indent(out, indent);
+            writeln!(out, "v{} = {}({});", result.as_u32(), wrapper, call_expr)
+                .expect("in-memory write should not fail");
             emit_stmt(*next, mode, out, indent, cx);
         }
         LinearStmt::If {
@@ -378,12 +377,8 @@ fn emit_expr(expr_id: LinearExprId, cx: &EmitCx<'_>) -> String {
                 .get(callee)
                 .cloned()
                 .unwrap_or_else(|| "cielo_fn_unknown".to_owned());
-            let args = args
-                .iter()
-                .map(|arg| emit_expr(*arg, cx))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("{}({})", callee_name, args)
+            let call_expr = format_callee_call(callee_name.as_str(), args, cx);
+            format!("{}({call_expr})", call_wrapper(CallConvention::Pure))
         }
         LinearExpr::MakeStruct { ty, fields } => {
             let ty_name = escape_c_string(symbol_text(cx.interner, *ty).as_str());
@@ -400,6 +395,23 @@ fn emit_expr(expr_id: LinearExprId, cx: &EmitCx<'_>) -> String {
         }
         LinearExpr::Error => "cv_unit()".to_owned(),
     }
+}
+
+fn call_wrapper(convention: CallConvention) -> &'static str {
+    match convention {
+        CallConvention::Pure => "CIELO_CALL_PURE",
+        CallConvention::Direct => "CIELO_CALL_DIRECT",
+        CallConvention::Control => "CIELO_CALL_CONTROL",
+    }
+}
+
+fn format_callee_call(callee_name: &str, args: &[LinearExprId], cx: &EmitCx<'_>) -> String {
+    let args = args
+        .iter()
+        .map(|arg| emit_expr(*arg, cx))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{callee_name}({args})")
 }
 
 fn format_ctor_call(
