@@ -2,6 +2,13 @@ use crate::common::ids::{EffectLabelId, FuncId, LinearExprId, LinearStmtId, Symb
 use crate::ir::core::{BinaryOp, Literal, StageDirective, UnaryOp};
 use smallvec::{SmallVec, smallvec};
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CallConvention {
+    Pure,
+    Direct,
+    Control,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct LinearProgram {
     pub functions: Vec<LinearFunction>,
@@ -163,6 +170,7 @@ pub enum LinearStmt {
     Call {
         result: VarId,
         callee: SymbolId,
+        convention: CallConvention,
         args: Vec<LinearExprId>,
         next: LinearStmtId,
     },

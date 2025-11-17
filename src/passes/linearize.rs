@@ -22,13 +22,17 @@ use std::collections::HashMap;
 use crate::common::diagnostics::DiagnosticBag;
 use crate::common::ids::{ExprId, FuncId, LinearExprId, LinearStmtId, StmtId, SymbolId};
 use crate::ir::core::{CoreProgram, ExprKind, StmtKind};
-use crate::ir::linear::{LinearExpr, LinearFunction, LinearMatchArm, LinearProgram, LinearStmt};
-use crate::pipeline::phases::Residualized;
+use crate::ir::linear::{
+    CallConvention, LinearExpr, LinearFunction, LinearMatchArm, LinearProgram, LinearStmt,
+};
+use crate::pipeline::phases::{Residualized, SemanticTables};
+use crate::sema::effect::is_thunkable;
 
 pub fn run(mut residual: Residualized) -> Linearized {
+    let sema = residual.sema().clone();
     let linear = {
         let (program, diagnostics) = residual.program_and_diagnostics_mut();
-        lower_program(program, diagnostics)
+        lower_program(program, &sema, diagnostics)
     };
     Linearized { residual, linear }
 }
@@ -39,7 +43,11 @@ pub struct Linearized {
     pub linear: LinearProgram,
 }
 
-fn lower_program(program: &CoreProgram, diagnostics: &mut DiagnosticBag) -> LinearProgram {
+fn lower_program(
+    program: &CoreProgram,
+    sema: &SemanticTables,
+    diagnostics: &mut DiagnosticBag,
+) -> LinearProgram {
     let fn_names: HashMap<FuncId, SymbolId> = program
         .functions()
         .iter()
@@ -56,6 +64,7 @@ fn lower_program(program: &CoreProgram, diagnostics: &mut DiagnosticBag) -> Line
             program,
             function.body,
             &fn_names,
+            sema,
             diagnostics,
             &mut linear,
             &mut expr_map,
@@ -77,6 +86,7 @@ fn lower_stmt(
     program: &CoreProgram,
     stmt_id: StmtId,
     fn_names: &HashMap<FuncId, SymbolId>,
+    sema: &SemanticTables,
     diagnostics: &mut DiagnosticBag,
     linear: &mut LinearProgram,
     expr_map: &mut [Option<LinearExprId>],
@@ -107,6 +117,7 @@ fn lower_stmt(
                 program,
                 *next,
                 fn_names,
+                sema,
                 diagnostics,
                 linear,
                 expr_map,
@@ -123,6 +134,7 @@ fn lower_stmt(
                 program,
                 *value,
                 fn_names,
+                sema,
                 diagnostics,
                 linear,
                 expr_map,
@@ -132,6 +144,7 @@ fn lower_stmt(
                 program,
                 *next,
                 fn_names,
+                sema,
                 diagnostics,
                 linear,
                 expr_map,
@@ -142,6 +155,7 @@ fn lower_stmt(
             result,
             callee,
             args,
+            effects,
             next,
             ..
         } => {
@@ -156,6 +170,7 @@ fn lower_stmt(
             LinearStmt::Call {
                 result: *result,
                 callee: callee_name,
+                convention: classify_call_convention(effects, sema),
                 args: args
                     .iter()
                     .copied()
@@ -165,6 +180,7 @@ fn lower_stmt(
                     program,
                     *next,
                     fn_names,
+                    sema,
                     diagnostics,
                     linear,
                     expr_map,
@@ -182,6 +198,7 @@ fn lower_stmt(
                 program,
                 *then_branch,
                 fn_names,
+                sema,
                 diagnostics,
                 linear,
                 expr_map,
@@ -191,6 +208,7 @@ fn lower_stmt(
                 program,
                 *else_branch,
                 fn_names,
+                sema,
                 diagnostics,
                 linear,
                 expr_map,
@@ -212,6 +230,7 @@ fn lower_stmt(
                         program,
                         arm.body,
                         fn_names,
+                        sema,
                         diagnostics,
                         linear,
                         expr_map,
@@ -224,6 +243,7 @@ fn lower_stmt(
                     program,
                     default_stmt,
                     fn_names,
+                    sema,
                     diagnostics,
                     linear,
                     expr_map,
@@ -250,6 +270,7 @@ fn lower_stmt(
                 program,
                 *next,
                 fn_names,
+                sema,
                 diagnostics,
                 linear,
                 expr_map,
@@ -276,6 +297,7 @@ fn lower_stmt(
                     program,
                     *body,
                     fn_names,
+                    sema,
                     diagnostics,
                     linear,
                     expr_map,
@@ -286,6 +308,7 @@ fn lower_stmt(
                         program,
                         next_stmt,
                         fn_names,
+                        sema,
                         diagnostics,
                         linear,
                         expr_map,
@@ -300,6 +323,7 @@ fn lower_stmt(
                 program,
                 *body,
                 fn_names,
+                sema,
                 diagnostics,
                 linear,
                 expr_map,
@@ -310,6 +334,7 @@ fn lower_stmt(
                     program,
                     next_stmt,
                     fn_names,
+                    sema,
                     diagnostics,
                     linear,
                     expr_map,
@@ -390,4 +415,18 @@ fn lower_expr(
     let id = linear.push_expr(kind);
     expr_map[expr_id.index()] = Some(id);
     id
+}
+
+fn classify_call_convention(
+    effects: &crate::sema::effect::SortedEffectRow,
+    sema: &SemanticTables,
+) -> CallConvention {
+    if effects.is_empty() {
+        return CallConvention::Pure;
+    }
+    if is_thunkable(effects, &sema.effect_properties) {
+        CallConvention::Direct
+    } else {
+        CallConvention::Control
+    }
 }

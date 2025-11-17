@@ -168,6 +168,7 @@ fn emit_stmt(
         LinearStmt::Call {
             result,
             callee,
+            convention: _,
             args,
             next,
         } => {
