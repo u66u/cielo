@@ -4,7 +4,7 @@ use std::process::Command;
 
 use clap::{Parser, ValueEnum};
 
-use cielo::common::ids::{SourceId, SymbolId};
+use cielo::common::ids::{ExprId, SourceId, SymbolId};
 use cielo::common::reporting::render_diagnostic;
 use cielo::common::symbols::Interner;
 use cielo::frontend::ast::{Item, Program};
@@ -12,6 +12,7 @@ use cielo::ir::core::CoreProgram;
 use cielo::passes::lowering::LowerConfig;
 use cielo::passes::{c_emit, linearize};
 use cielo::pipeline::phases::{Residualized, Stage};
+use cielo::pipeline::provenance::runtime_provenance_lines;
 use cielo::{Compiler, CompilerConfig};
 
 const RUNTIME_HEADER: &str = include_str!("backend/cielo_runtime.h");
@@ -292,6 +293,31 @@ fn dump_sema_summary(residual: &Residualized) {
         residual.program().stmts().len()
     );
     println!("stage ct={ct_exprs}, rt={rt_exprs}");
+
+    if rt_exprs == 0 {
+        return;
+    }
+
+    println!("runtime provenance (sample):");
+    let mut shown = 0usize;
+    for idx in 0..residual.program().exprs().len() {
+        let expr_id = ExprId::new(idx);
+        if !matches!(residual.bta().stage_of_expr.get(&expr_id), Some(Stage::Rt(_))) {
+            continue;
+        }
+        let chain = runtime_provenance_lines(residual.program(), residual.bta(), expr_id, 5);
+        if chain.is_empty() {
+            continue;
+        }
+        println!("  e{}:", expr_id.as_u32());
+        for line in chain {
+            println!("    {line}");
+        }
+        shown += 1;
+        if shown >= 3 {
+            break;
+        }
+    }
 }
 
 fn symbol_name(interner: &Interner, symbol: SymbolId) -> String {

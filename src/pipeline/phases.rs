@@ -15,6 +15,7 @@ pub enum Stage {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Reason {
+    UnclassifiedRuntime,
     Parameter { func: FuncId, index: u16 },
     DependsOnVar(VarId),
     EffectNotDischarged(EffectLabelId),

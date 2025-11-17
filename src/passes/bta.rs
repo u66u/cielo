@@ -37,7 +37,7 @@ pub fn run(ct: CtPropagated) -> BtaClassified {
             bta.stage_of_expr.insert(expr_id, Stage::Ct);
         } else {
             bta.stage_of_expr
-                .insert(expr_id, Stage::Rt(Reason::UserForcedRuntime));
+                .insert(expr_id, Stage::Rt(Reason::UnclassifiedRuntime));
         }
     }
 
@@ -45,6 +45,7 @@ pub fn run(ct: CtPropagated) -> BtaClassified {
     for function in program.functions() {
         apply_stage_directives(&program, function.body, None, &mut bta, &mut visited);
     }
+    propagate_runtime_reasons(&program, &mut bta);
 
     classify_non_thunkable_effects(&program, &sema, &mut bta);
     enforce_ct_only_calls(&program, &sema, &mut bta, &mut diagnostics);
@@ -155,6 +156,212 @@ fn apply_forced_expr(expr_id: ExprId, forced: Option<ForcedStage>, bta: &mut Bta
                 .insert(expr_id, Stage::Rt(Reason::UserForcedRuntime));
         }
         None => {}
+    }
+}
+
+fn propagate_runtime_reasons(program: &CoreProgram, bta: &mut BtaTables) {
+    let limit = program.exprs().len().saturating_add(program.stmts().len()).max(1);
+    for _ in 0..limit {
+        let mut changed = false;
+        changed |= propagate_var_reasons(program, bta);
+        changed |= propagate_expr_reasons(program, bta);
+        if !changed {
+            break;
+        }
+    }
+}
+
+fn propagate_var_reasons(program: &CoreProgram, bta: &mut BtaTables) -> bool {
+    let mut changed = false;
+    for stmt in program.stmts() {
+        match &stmt.kind {
+            StmtKind::Let { binding, value, .. } => {
+                let Some(Stage::Rt(reason)) = bta.stage_of_expr.get(value).copied() else {
+                    continue;
+                };
+                changed |= refine_var_stage(*binding, reason, bta);
+            }
+            StmtKind::Val { binding, value, .. } => {
+                let Some(reason) = find_stmt_runtime_reason(program, bta, *value) else {
+                    continue;
+                };
+                changed |= refine_var_stage(*binding, reason, bta);
+            }
+            StmtKind::Call { result, args, .. } | StmtKind::Perform {
+                result: Some(result),
+                args,
+                ..
+            } => {
+                let Some(reason) = args.iter().find_map(|arg| {
+                    bta.stage_of_expr.get(arg).and_then(|stage| match stage {
+                        Stage::Rt(reason) => Some(*reason),
+                        Stage::Ct => None,
+                    })
+                }) else {
+                    continue;
+                };
+                changed |= refine_var_stage(*result, reason, bta);
+            }
+            StmtKind::Return(_)
+            | StmtKind::If { .. }
+            | StmtKind::Match { .. }
+            | StmtKind::Perform { result: None, .. }
+            | StmtKind::Handle { .. }
+            | StmtKind::Stage { .. }
+            | StmtKind::Hole { .. }
+            | StmtKind::Error(_) => {}
+        }
+    }
+    changed
+}
+
+fn propagate_expr_reasons(program: &CoreProgram, bta: &mut BtaTables) -> bool {
+    let mut changed = false;
+    for (idx, expr) in program.exprs().iter().enumerate() {
+        let expr_id = ExprId::new(idx);
+        if matches!(bta.stage_of_expr.get(&expr_id), Some(Stage::Ct)) {
+            continue;
+        }
+        let Some(reason) = infer_expr_runtime_reason(program, bta, expr_id, &expr.kind) else {
+            continue;
+        };
+        changed |= refine_expr_stage(expr_id, reason, bta);
+    }
+    changed
+}
+
+fn infer_expr_runtime_reason(
+    _program: &CoreProgram,
+    bta: &BtaTables,
+    _expr_id: ExprId,
+    kind: &ExprKind,
+) -> Option<Reason> {
+    match kind {
+        ExprKind::Var(var) => {
+            if matches!(bta.stage_of_var.get(var), Some(Stage::Rt(_))) {
+                Some(Reason::DependsOnVar(*var))
+            } else {
+                None
+            }
+        }
+        ExprKind::Unary { expr, .. } => stage_reason_of_expr(bta, *expr),
+        ExprKind::Binary { lhs, rhs, .. } => {
+            stage_reason_of_expr(bta, *lhs).or_else(|| stage_reason_of_expr(bta, *rhs))
+        }
+        ExprKind::PureCall { args, .. } => args
+            .iter()
+            .find_map(|arg| stage_reason_of_expr(bta, *arg)),
+        ExprKind::MakeStruct { fields, .. } | ExprKind::MakeEnum { fields, .. } => fields
+            .iter()
+            .find_map(|field| stage_reason_of_expr(bta, *field)),
+        ExprKind::Literal(_) | ExprKind::Error(_) => None,
+    }
+}
+
+fn stage_reason_of_expr(bta: &BtaTables, expr: ExprId) -> Option<Reason> {
+    bta.stage_of_expr.get(&expr).and_then(|stage| match stage {
+        Stage::Ct => None,
+        Stage::Rt(reason) => Some(*reason),
+    })
+}
+
+fn find_stmt_runtime_reason(program: &CoreProgram, bta: &BtaTables, root: StmtId) -> Option<Reason> {
+    let mut stack = vec![root];
+    let mut seen = HashSet::new();
+    while let Some(stmt_id) = stack.pop() {
+        if !seen.insert(stmt_id) {
+            continue;
+        }
+        let Some(stmt) = program.stmt(stmt_id) else {
+            continue;
+        };
+        match &stmt.kind {
+            StmtKind::Return(expr) => {
+                if let Some(reason) = stage_reason_of_expr(bta, *expr) {
+                    return Some(reason);
+                }
+            }
+            StmtKind::Let { value, next, .. } => {
+                if let Some(reason) = stage_reason_of_expr(bta, *value) {
+                    return Some(reason);
+                }
+                stack.push(*next);
+            }
+            StmtKind::Val { value, next, .. } => {
+                stack.push(*next);
+                stack.push(*value);
+            }
+            StmtKind::Call { args, next, .. } | StmtKind::Perform { args, next, .. } => {
+                if let Some(reason) = args.iter().find_map(|arg| stage_reason_of_expr(bta, *arg)) {
+                    return Some(reason);
+                }
+                stack.push(*next);
+            }
+            StmtKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                if stage_reason_of_expr(bta, *cond).is_some() {
+                    return Some(Reason::BranchOnRuntime(*cond));
+                }
+                stack.push(*else_branch);
+                stack.push(*then_branch);
+            }
+            StmtKind::Match {
+                scrutinee,
+                arms,
+                default,
+            } => {
+                if let Some(reason) = stage_reason_of_expr(bta, *scrutinee) {
+                    return Some(reason);
+                }
+                if let Some(default_stmt) = default {
+                    stack.push(*default_stmt);
+                }
+                for arm in arms {
+                    stack.push(arm.body);
+                }
+            }
+            StmtKind::Handle { body, next, .. } | StmtKind::Stage { body, next, .. } => {
+                if let Some(next_stmt) = next {
+                    stack.push(*next_stmt);
+                }
+                stack.push(*body);
+            }
+            StmtKind::Hole { .. } | StmtKind::Error(_) => {}
+        }
+    }
+    None
+}
+
+fn refine_expr_stage(expr_id: ExprId, reason: Reason, bta: &mut BtaTables) -> bool {
+    match bta.stage_of_expr.get(&expr_id).copied() {
+        Some(Stage::Ct) => false,
+        Some(Stage::Rt(Reason::UnclassifiedRuntime)) => {
+            bta.stage_of_expr.insert(expr_id, Stage::Rt(reason));
+            true
+        }
+        Some(Stage::Rt(_)) => false,
+        None => {
+            bta.stage_of_expr.insert(expr_id, Stage::Rt(reason));
+            true
+        }
+    }
+}
+
+fn refine_var_stage(var_id: crate::common::ids::VarId, reason: Reason, bta: &mut BtaTables) -> bool {
+    match bta.stage_of_var.get(&var_id).copied() {
+        Some(Stage::Ct) => false,
+        Some(Stage::Rt(Reason::UnclassifiedRuntime)) => {
+            bta.stage_of_var.insert(var_id, Stage::Rt(reason));
+            true
+        }
+        Some(Stage::Rt(_)) => false,
+        None => {
+            bta.stage_of_var.insert(var_id, Stage::Rt(reason));
+            true
+        }
     }
 }
 
