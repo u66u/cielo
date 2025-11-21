@@ -456,4 +456,26 @@ impl Residualized {
     pub fn residual(&self) -> &ResidualTables {
         &self.residual
     }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        CoreProgram,
+        DiagnosticBag,
+        SemanticTables,
+        MonomorphizationSummary,
+        CtPropagationTables,
+        BtaTables,
+        ResidualTables,
+    ) {
+        (
+            self.program,
+            self.diagnostics,
+            self.sema,
+            self.mono,
+            self.ct,
+            self.bta,
+            self.residual,
+        )
+    }
 }

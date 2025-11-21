@@ -6,6 +6,7 @@ use crate::ir::core::CoreProgram;
 use crate::passes::bta;
 use crate::passes::c_emit;
 use crate::passes::ct_propagate;
+use crate::passes::handler_specialize;
 use crate::passes::linearize;
 use crate::passes::lowering::{LowerConfig, lower_program};
 use crate::passes::monomorphize;
@@ -123,7 +124,8 @@ impl Compiler {
         interner: &mut Interner,
     ) -> CompiledC {
         let residual = self.compile_source_v0(source, source_id, interner);
-        let linearized = linearize::run(residual);
+        let specialized = handler_specialize::run(residual);
+        let linearized = linearize::run(specialized);
         let emitted = c_emit::run(linearized, interner);
         CompiledC {
             residual: emitted.linearized.residual,
