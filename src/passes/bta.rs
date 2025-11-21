@@ -160,7 +160,11 @@ fn apply_forced_expr(expr_id: ExprId, forced: Option<ForcedStage>, bta: &mut Bta
 }
 
 fn propagate_runtime_reasons(program: &CoreProgram, bta: &mut BtaTables) {
-    let limit = program.exprs().len().saturating_add(program.stmts().len()).max(1);
+    let limit = program
+        .exprs()
+        .len()
+        .saturating_add(program.stmts().len())
+        .max(1);
     for _ in 0..limit {
         let mut changed = false;
         changed |= propagate_var_reasons(program, bta);
@@ -187,7 +191,8 @@ fn propagate_var_reasons(program: &CoreProgram, bta: &mut BtaTables) -> bool {
                 };
                 changed |= refine_var_stage(*binding, reason, bta);
             }
-            StmtKind::Call { result, args, .. } | StmtKind::Perform {
+            StmtKind::Call { result, args, .. }
+            | StmtKind::Perform {
                 result: Some(result),
                 args,
                 ..
@@ -248,9 +253,9 @@ fn infer_expr_runtime_reason(
         ExprKind::Binary { lhs, rhs, .. } => {
             stage_reason_of_expr(bta, *lhs).or_else(|| stage_reason_of_expr(bta, *rhs))
         }
-        ExprKind::PureCall { args, .. } => args
-            .iter()
-            .find_map(|arg| stage_reason_of_expr(bta, *arg)),
+        ExprKind::PureCall { args, .. } => {
+            args.iter().find_map(|arg| stage_reason_of_expr(bta, *arg))
+        }
         ExprKind::MakeStruct { fields, .. } | ExprKind::MakeEnum { fields, .. } => fields
             .iter()
             .find_map(|field| stage_reason_of_expr(bta, *field)),
@@ -265,7 +270,11 @@ fn stage_reason_of_expr(bta: &BtaTables, expr: ExprId) -> Option<Reason> {
     })
 }
 
-fn find_stmt_runtime_reason(program: &CoreProgram, bta: &BtaTables, root: StmtId) -> Option<Reason> {
+fn find_stmt_runtime_reason(
+    program: &CoreProgram,
+    bta: &BtaTables,
+    root: StmtId,
+) -> Option<Reason> {
     let mut stack = vec![root];
     let mut seen = HashSet::new();
     while let Some(stmt_id) = stack.pop() {
@@ -350,7 +359,11 @@ fn refine_expr_stage(expr_id: ExprId, reason: Reason, bta: &mut BtaTables) -> bo
     }
 }
 
-fn refine_var_stage(var_id: crate::common::ids::VarId, reason: Reason, bta: &mut BtaTables) -> bool {
+fn refine_var_stage(
+    var_id: crate::common::ids::VarId,
+    reason: Reason,
+    bta: &mut BtaTables,
+) -> bool {
     match bta.stage_of_var.get(&var_id).copied() {
         Some(Stage::Ct) => false,
         Some(Stage::Rt(Reason::UnclassifiedRuntime)) => {

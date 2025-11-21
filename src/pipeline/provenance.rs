@@ -61,10 +61,7 @@ pub fn runtime_provenance_lines(
                     break;
                 };
                 match source {
-                    VarSource::Param {
-                        func,
-                        param_index,
-                    } => {
+                    VarSource::Param { func, param_index } => {
                         lines.push(format!(
                             "{:>2}. v{}: parameter #{} of f{} is runtime",
                             step + 1,
@@ -78,7 +75,8 @@ pub fn runtime_provenance_lines(
                         cursor = Cursor::Expr(expr_id);
                     }
                     VarSource::Stmt(stmt_id) => {
-                        let Some(expr_id) = first_runtime_expr_in_stmt(program, bta, stmt_id) else {
+                        let Some(expr_id) = first_runtime_expr_in_stmt(program, bta, stmt_id)
+                        else {
                             break;
                         };
                         cursor = Cursor::Expr(expr_id);
@@ -147,7 +145,11 @@ fn is_runtime_expr(expr_id: ExprId, bta: &BtaTables) -> bool {
     matches!(bta.stage_of_expr.get(&expr_id), Some(Stage::Rt(_)))
 }
 
-fn first_runtime_expr_in_stmt(program: &CoreProgram, bta: &BtaTables, root: StmtId) -> Option<ExprId> {
+fn first_runtime_expr_in_stmt(
+    program: &CoreProgram,
+    bta: &BtaTables,
+    root: StmtId,
+) -> Option<ExprId> {
     let mut stack = vec![root];
     let mut seen = HashSet::new();
 
@@ -237,7 +239,10 @@ fn reason_text(reason: Reason) -> String {
         Reason::NotPersistable(ty) => format!("type t{} is not persistable", ty.as_u32()),
         Reason::UserForcedRuntime => "explicitly marked @runtime".to_owned(),
         Reason::CtOnlyWithRuntimeArgs(func) => {
-            format!("ct-only function f{} was called with runtime args", func.as_u32())
+            format!(
+                "ct-only function f{} was called with runtime args",
+                func.as_u32()
+            )
         }
     }
 }

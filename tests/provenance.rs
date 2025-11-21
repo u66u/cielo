@@ -19,7 +19,11 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
 
-    let main = residual.program().functions().first().expect("main function");
+    let main = residual
+        .program()
+        .functions()
+        .first()
+        .expect("main function");
     let ret_expr = first_return_expr(residual.program(), main.body).expect("main return expr");
     let lines = runtime_provenance_lines(residual.program(), residual.bta(), ret_expr, 6);
 
@@ -78,10 +82,9 @@ fn first_return_expr(program: &CoreProgram, root: StmtId) -> Option<ExprId> {
         let stmt = program.stmt(stmt_id)?;
         match &stmt.kind {
             StmtKind::Return(expr) => return Some(*expr),
-            StmtKind::Let { next, .. } | StmtKind::Call { next, .. } | StmtKind::Perform {
-                next,
-                ..
-            } => stack.push(*next),
+            StmtKind::Let { next, .. }
+            | StmtKind::Call { next, .. }
+            | StmtKind::Perform { next, .. } => stack.push(*next),
             StmtKind::Val { value, next, .. } => {
                 stack.push(*next);
                 stack.push(*value);

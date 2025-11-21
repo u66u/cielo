@@ -302,7 +302,10 @@ fn dump_sema_summary(residual: &Residualized) {
     let mut shown = 0usize;
     for idx in 0..residual.program().exprs().len() {
         let expr_id = ExprId::new(idx);
-        if !matches!(residual.bta().stage_of_expr.get(&expr_id), Some(Stage::Rt(_))) {
+        if !matches!(
+            residual.bta().stage_of_expr.get(&expr_id),
+            Some(Stage::Rt(_))
+        ) {
             continue;
         }
         let chain = runtime_provenance_lines(residual.program(), residual.bta(), expr_id, 5);
