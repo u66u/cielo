@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use cielo::common::ids::{FuncId, SourceId, StmtId};
+use cielo::common::ids::{FuncId, HandlerId, SourceId, StmtId};
 use cielo::common::symbols::Interner;
 use cielo::ir::core::{CoreProgram, StmtKind};
 use cielo::{Compiler, CompilerConfig};
@@ -63,12 +63,39 @@ fn main() -> Int {
         .program()
         .function(specialized_id)
         .expect("specialized function");
+    let specialized_handler =
+        first_handle_handler(compiled.residual.program(), specialized.body).expect("specialized handle");
+    assert_eq!(
+        specialized_handler,
+        HandlerId::new(0),
+        "specialized function should embed the handler from the callsite"
+    );
     let recursive_callee = first_call_callee(compiled.residual.program(), specialized.body)
         .expect("recursive call in specialized body");
     assert_eq!(
         recursive_callee, specialized_id,
         "specialized recursive edge should retarget to specialized copy"
     );
+}
+
+fn first_handle_handler(program: &CoreProgram, root: StmtId) -> Option<HandlerId> {
+    let mut stack = vec![root];
+    let mut seen = HashSet::new();
+    while let Some(stmt_id) = stack.pop() {
+        if !seen.insert(stmt_id) {
+            continue;
+        }
+        let stmt = program.stmt(stmt_id)?;
+        match &stmt.kind {
+            StmtKind::Handle { handler, .. } => return Some(*handler),
+            _ => {
+                for child in stmt.child_stmts() {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn first_handle_body_call_callee(program: &CoreProgram, root: StmtId) -> Option<FuncId> {

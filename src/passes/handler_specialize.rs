@@ -126,9 +126,17 @@ fn ensure_specialized(
         &mut expr_map,
         &mut stmt_map,
     );
+    let wrapped_body = program.push_stmt(StmtNode {
+        span: source_decl.span,
+        kind: StmtKind::Handle {
+            handler: candidate.handler,
+            body: cloned_body,
+            next: None,
+        },
+    });
 
     if let Some(function) = program.function_mut(specialized_id) {
-        function.body = cloned_body;
+        function.body = wrapped_body;
     }
 
     specialized.insert((candidate.callee, candidate.handler), specialized_id);
