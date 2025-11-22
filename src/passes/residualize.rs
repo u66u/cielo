@@ -1,4 +1,4 @@
-// Pass 6/8: residualize (stage-erasure + residual metadata)
+// Pass 6/9: residualize (stage-erasure + residual metadata)
 //
 // Inputs:
 // - BTA-classified program

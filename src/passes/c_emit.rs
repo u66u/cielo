@@ -1,4 +1,4 @@
-// Pass 8/8: c_emit (linear runtime IR -> C source)
+// Pass 9/9: c_emit (linear runtime IR -> C source)
 //
 // Inputs:
 // - LinearProgram

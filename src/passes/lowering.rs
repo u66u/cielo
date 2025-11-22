@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-// Pass 1/8: lowering (AST -> Core)
+// Pass 1/9: lowering (AST -> Core)
 //
 // Inputs:
 // - Parsed AST (`frontend::ast::Program`)

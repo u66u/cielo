@@ -1,4 +1,4 @@
-// Pass 6.5/8: handler_specialize (bounded handler-call specialization groundwork)
+// Pass 7/9: handler_specialize (bounded handler-call specialization groundwork)
 //
 // Inputs:
 // - Residualized Core program

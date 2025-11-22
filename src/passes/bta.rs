@@ -1,4 +1,4 @@
-// Pass 5/8: bta (binding-time analysis, v0 classifier)
+// Pass 5/9: bta (binding-time analysis, v0 classifier)
 //
 // Inputs:
 // - Ct-propagated program + ct literal cache

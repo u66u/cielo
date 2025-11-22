@@ -1,4 +1,4 @@
-// Pass 7/8: linearize (Residual Core -> linear runtime IR)
+// Pass 8/9: linearize (Residual Core -> linear runtime IR)
 //
 // Inputs:
 // - Residualized Core program
