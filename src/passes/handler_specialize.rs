@@ -7,7 +7,7 @@
 // - Residualized Core program with specialized function copies for handle-wrapped calls
 //
 // Invariants:
-// - A pair (callee, handler) specializes at most once
+// - A pair (callee, handler-shape) specializes at most once
 // - Specialized functions preserve signatures and clone the original body graph
 // - Recursive calls in specialized copies are retargeted to the specialized function id
 //
@@ -16,8 +16,10 @@
 
 use std::collections::HashMap;
 
-use crate::common::ids::{ExprId, FuncId, HandlerId, StmtId};
-use crate::ir::core::{CoreProgram, ExprKind, ExprNode, FunctionDecl, StmtKind, StmtNode};
+use crate::common::ids::{EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, VarId};
+use crate::ir::core::{
+    CoreProgram, ExprKind, ExprNode, FunctionDecl, HandlerDef, Literal, StmtKind, StmtNode,
+};
 use crate::pipeline::phases::Residualized;
 
 pub fn run(residual: Residualized) -> Residualized {
@@ -26,19 +28,20 @@ pub fn run(residual: Residualized) -> Residualized {
     Residualized::new(program, diagnostics, sema, mono, ct, bta, residual_tables)
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct SpecializeCandidate {
     handler: HandlerId,
+    shape: HandlerShapeKey,
     call_stmt: StmtId,
     callee: FuncId,
 }
 
 fn specialize_handle_wrapped_calls(program: &mut CoreProgram) {
     let candidates = collect_specialize_candidates(program);
-    let mut specialized: HashMap<(FuncId, HandlerId), FuncId> = HashMap::new();
+    let mut specialized: HashMap<(FuncId, HandlerShapeKey), FuncId> = HashMap::new();
 
     for candidate in candidates {
-        let specialized_callee = ensure_specialized(program, candidate, &mut specialized);
+        let specialized_callee = ensure_specialized(program, &candidate, &mut specialized);
         if specialized_callee == candidate.callee {
             continue;
         }
@@ -52,6 +55,7 @@ fn specialize_handle_wrapped_calls(program: &mut CoreProgram) {
 
 fn collect_specialize_candidates(program: &CoreProgram) -> Vec<SpecializeCandidate> {
     let mut out = Vec::new();
+    let shapes = collect_handler_shapes(program);
     for stmt_idx in 0..program.stmts().len() {
         let stmt_id = StmtId::new(stmt_idx);
         let Some(stmt) = program.stmt(stmt_id) else {
@@ -69,13 +73,25 @@ fn collect_specialize_candidates(program: &CoreProgram) -> Vec<SpecializeCandida
         let StmtKind::Call { callee, .. } = body_stmt.kind else {
             continue;
         };
+        let Some(shape) = shapes.get(handler.index()).cloned() else {
+            continue;
+        };
         out.push(SpecializeCandidate {
             handler: *handler,
+            shape,
             call_stmt,
             callee,
         });
     }
     out
+}
+
+fn collect_handler_shapes(program: &CoreProgram) -> Vec<HandlerShapeKey> {
+    program
+        .handlers()
+        .iter()
+        .map(|handler| HandlerShapeKey::build(program, handler))
+        .collect()
 }
 
 fn first_call_stmt(program: &CoreProgram, root: StmtId) -> Option<StmtId> {
@@ -98,10 +114,11 @@ fn first_call_stmt(program: &CoreProgram, root: StmtId) -> Option<StmtId> {
 
 fn ensure_specialized(
     program: &mut CoreProgram,
-    candidate: SpecializeCandidate,
-    specialized: &mut HashMap<(FuncId, HandlerId), FuncId>,
+    candidate: &SpecializeCandidate,
+    specialized: &mut HashMap<(FuncId, HandlerShapeKey), FuncId>,
 ) -> FuncId {
-    if let Some(existing) = specialized.get(&(candidate.callee, candidate.handler)).copied() {
+    let key = (candidate.callee, candidate.shape.clone());
+    if let Some(existing) = specialized.get(&key).copied() {
         return existing;
     }
 
@@ -139,8 +156,284 @@ fn ensure_specialized(
         function.body = wrapped_body;
     }
 
-    specialized.insert((candidate.callee, candidate.handler), specialized_id);
+    specialized.insert(key, specialized_id);
     specialized_id
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct HandlerShapeKey {
+    effect: EffectLabelId,
+    return_body: String,
+    clauses: Vec<ClauseShapeKey>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ClauseShapeKey {
+    operation: SymbolId,
+    param_count: usize,
+    has_resume: bool,
+    body: String,
+}
+
+impl HandlerShapeKey {
+    fn build(program: &CoreProgram, handler: &HandlerDef) -> Self {
+        let mut ret_scope = ScopeCanon::default();
+        let _ = ret_scope.bind(handler.return_param);
+        let return_body = stmt_shape_text(program, handler.return_body, &mut ret_scope);
+
+        let clauses = handler
+            .clauses
+            .iter()
+            .map(|clause| {
+                let mut clause_scope = ScopeCanon::default();
+                for param in &clause.params {
+                    let _ = clause_scope.bind(*param);
+                }
+                if let Some(resume) = clause.resume_param {
+                    let _ = clause_scope.bind(resume);
+                }
+                ClauseShapeKey {
+                    operation: clause.operation,
+                    param_count: clause.params.len(),
+                    has_resume: clause.resume_param.is_some(),
+                    body: stmt_shape_text(program, clause.body, &mut clause_scope),
+                }
+            })
+            .collect();
+
+        Self {
+            effect: handler.effect,
+            return_body,
+            clauses,
+        }
+    }
+}
+
+#[derive(Default)]
+struct ScopeCanon {
+    map: HashMap<VarId, u32>,
+    next: u32,
+}
+
+impl ScopeCanon {
+    fn bind(&mut self, var: VarId) -> u32 {
+        if let Some(existing) = self.map.get(&var).copied() {
+            return existing;
+        }
+        let id = self.next;
+        self.next += 1;
+        self.map.insert(var, id);
+        id
+    }
+
+    fn render_var(&self, var: VarId) -> String {
+        if let Some(bound) = self.map.get(&var).copied() {
+            return format!("b{bound}");
+        }
+        format!("f{}", var.as_u32())
+    }
+}
+
+fn stmt_shape_text(program: &CoreProgram, stmt_id: StmtId, scope: &mut ScopeCanon) -> String {
+    let Some(stmt) = program.stmt(stmt_id) else {
+        return "stmt:missing".to_owned();
+    };
+
+    match &stmt.kind {
+        StmtKind::Return(expr) => format!("ret({})", expr_shape_text(program, *expr, scope)),
+        StmtKind::Let {
+            binding,
+            value,
+            next,
+        } => {
+            let value_repr = expr_shape_text(program, *value, scope);
+            let bind = scope.bind(*binding);
+            let next_repr = stmt_shape_text(program, *next, scope);
+            format!("let(b{bind},{value_repr},{next_repr})")
+        }
+        StmtKind::Val {
+            binding,
+            value,
+            next,
+        } => {
+            let value_repr = stmt_shape_text(program, *value, scope);
+            let bind = scope.bind(*binding);
+            let next_repr = stmt_shape_text(program, *next, scope);
+            format!("val(b{bind},{value_repr},{next_repr})")
+        }
+        StmtKind::Call {
+            result,
+            callee,
+            args,
+            effects,
+            next,
+        } => {
+            let args_repr = args
+                .iter()
+                .map(|arg| expr_shape_text(program, *arg, scope))
+                .collect::<Vec<_>>()
+                .join(",");
+            let effects_repr = effects
+                .iter()
+                .map(|effect| effect.as_u32().to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let result_id = scope.bind(*result);
+            let next_repr = stmt_shape_text(program, *next, scope);
+            format!(
+                "call(f{},b{result_id},[{args_repr}],[{effects_repr}],{next_repr})",
+                callee.as_u32()
+            )
+        }
+        StmtKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            let cond_repr = expr_shape_text(program, *cond, scope);
+            let then_repr = stmt_shape_text(program, *then_branch, scope);
+            let else_repr = stmt_shape_text(program, *else_branch, scope);
+            format!("if({cond_repr},{then_repr},{else_repr})")
+        }
+        StmtKind::Match {
+            scrutinee,
+            arms,
+            default,
+        } => {
+            let scrutinee_repr = expr_shape_text(program, *scrutinee, scope);
+            let arms_repr = arms
+                .iter()
+                .map(|arm| {
+                    let mut arm_scope = ScopeCanon {
+                        map: scope.map.clone(),
+                        next: scope.next,
+                    };
+                    let binders = arm
+                        .binders
+                        .iter()
+                        .map(|var| {
+                            let id = arm_scope.bind(*var);
+                            format!("b{id}")
+                        })
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    let body = stmt_shape_text(program, arm.body, &mut arm_scope);
+                    format!("arm(t{},[{binders}],{body})", arm.tag.as_u32())
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            let default_repr = default
+                .map(|stmt| stmt_shape_text(program, stmt, scope))
+                .unwrap_or_else(|| "none".to_owned());
+            format!("match({scrutinee_repr},[{arms_repr}],{default_repr})")
+        }
+        StmtKind::Perform {
+            result,
+            effect,
+            operation,
+            args,
+            next,
+        } => {
+            let result_repr = result
+                .map(|var| format!("b{}", scope.bind(var)))
+                .unwrap_or_else(|| "none".to_owned());
+            let args_repr = args
+                .iter()
+                .map(|arg| expr_shape_text(program, *arg, scope))
+                .collect::<Vec<_>>()
+                .join(",");
+            let next_repr = stmt_shape_text(program, *next, scope);
+            format!(
+                "perform(e{},op{}, {result_repr},[{args_repr}],{next_repr})",
+                effect.as_u32(),
+                operation.as_u32()
+            )
+        }
+        StmtKind::Handle {
+            handler,
+            body,
+            next,
+        } => {
+            let body_repr = stmt_shape_text(program, *body, scope);
+            let next_repr = next
+                .map(|stmt| stmt_shape_text(program, stmt, scope))
+                .unwrap_or_else(|| "none".to_owned());
+            format!("handle(h{}, {body_repr}, {next_repr})", handler.as_u32())
+        }
+        StmtKind::Stage { stage, body, next } => {
+            let body_repr = stmt_shape_text(program, *body, scope);
+            let next_repr = next
+                .map(|stmt| stmt_shape_text(program, stmt, scope))
+                .unwrap_or_else(|| "none".to_owned());
+            format!("stage({stage:?}, {body_repr}, {next_repr})")
+        }
+        StmtKind::Hole { ty } => format!("hole(t{})", ty.as_u32()),
+        StmtKind::Error(_) => "stmt:error".to_owned(),
+    }
+}
+
+fn expr_shape_text(program: &CoreProgram, expr_id: ExprId, scope: &ScopeCanon) -> String {
+    let Some(expr) = program.expr(expr_id) else {
+        return "expr:missing".to_owned();
+    };
+
+    match &expr.kind {
+        ExprKind::Var(var) => format!("var({})", scope.render_var(*var)),
+        ExprKind::Literal(literal) => format!("lit({})", literal_shape_text(literal)),
+        ExprKind::Unary { op, expr } => {
+            let nested = expr_shape_text(program, *expr, scope);
+            format!("un({op:?},{nested})")
+        }
+        ExprKind::Binary { op, lhs, rhs } => {
+            let lhs_repr = expr_shape_text(program, *lhs, scope);
+            let rhs_repr = expr_shape_text(program, *rhs, scope);
+            format!("bin({op:?},{lhs_repr},{rhs_repr})")
+        }
+        ExprKind::PureCall { callee, args } => {
+            let args_repr = args
+                .iter()
+                .map(|arg| expr_shape_text(program, *arg, scope))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("pcall(f{},[{args_repr}])", callee.as_u32())
+        }
+        ExprKind::MakeStruct { ty, fields } => {
+            let fields_repr = fields
+                .iter()
+                .map(|field| expr_shape_text(program, *field, scope))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("mkstruct(t{},[{fields_repr}])", ty.as_u32())
+        }
+        ExprKind::MakeEnum {
+            ty,
+            variant,
+            fields,
+        } => {
+            let fields_repr = fields
+                .iter()
+                .map(|field| expr_shape_text(program, *field, scope))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "mkenum(t{},v{},[{fields_repr}])",
+                ty.as_u32(),
+                variant.as_u32()
+            )
+        }
+        ExprKind::Error(_) => "expr:error".to_owned(),
+    }
+}
+
+fn literal_shape_text(literal: &Literal) -> String {
+    match literal {
+        Literal::Unit => "unit".to_owned(),
+        Literal::Bool(value) => format!("bool({value})"),
+        Literal::Int(value) => format!("int({value})"),
+        Literal::Float(value) => format!("float({value})"),
+        Literal::Char(value) => format!("char({value})"),
+        Literal::String(value) => format!("str({value})"),
+    }
 }
 
 fn clone_stmt_graph(
