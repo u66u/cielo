@@ -370,6 +370,7 @@ fn constrain_stmt(
                     );
                 }
                 for clause in &handler_def.clauses {
+                    let mut clause_return_ty = None;
                     if let Some(signature) =
                         effect_signatures.get(&(handler_def.effect, clause.operation))
                     {
@@ -379,15 +380,23 @@ fn constrain_stmt(
                                 changed |= set_var_type(*param, *expected_ty, var_types);
                             }
                         }
+                        clause_return_ty = Some(signature.return_type.unwrap_or(prim.unit));
                     }
                     for clause_ret in &stmt_returns[clause.body.index()] {
-                        changed |= unify_expr_with_var(
-                            program,
-                            *clause_ret,
-                            handler_def.return_param,
-                            expr_types,
-                            var_types,
-                        );
+                        if clause.resume_param.is_some() {
+                            if let Some(return_ty) = clause_return_ty {
+                                changed |=
+                                    set_expr_type(program, *clause_ret, return_ty, expr_types, var_types);
+                            }
+                        } else {
+                            changed |= unify_expr_with_var(
+                                program,
+                                *clause_ret,
+                                handler_def.return_param,
+                                expr_types,
+                                var_types,
+                            );
+                        }
                     }
                 }
                 for handler_ret in &stmt_returns[handler_def.return_body.index()] {

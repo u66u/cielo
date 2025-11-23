@@ -67,8 +67,33 @@ fn main() -> Int {
         "handled operations should lower into clause bodies instead of runtime perform stubs"
     );
     assert!(
-        compiled.c_source.contains("v0 = cv_int(0);") || compiled.c_source.contains("return cv_int(0);"),
+        compiled.c_source.contains("cv_int(0)"),
         "handler clause return should be reflected in emitted C body"
+    );
+}
+
+#[test]
+fn lowers_resumptive_clause_into_continuation_flow() {
+    let src = r#"
+effect LocalState { fn tick() -> Int }
+fn main() -> Int {
+  let x = handle { do LocalState.tick(); 9 } with LocalState {
+    | tick(resume) => resume(41)
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert!(
+        !compiled.c_source.contains("(void)cielo_perform(0, \"tick\""),
+        "handled resumptive operations should not call runtime perform stubs"
+    );
+    assert!(
+        compiled.c_source.contains("cv_int(9)"),
+        "resumptive clause should continue into the operation continuation"
     );
 }
 

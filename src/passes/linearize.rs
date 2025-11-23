@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 
 use crate::common::diagnostics::DiagnosticBag;
-use crate::common::ids::{ExprId, FuncId, LinearExprId, LinearStmtId, StmtId, SymbolId};
+use crate::common::ids::{ExprId, FuncId, LinearExprId, LinearStmtId, StmtId, SymbolId, VarId};
 use crate::ir::core::{CoreProgram, ExprKind, HandlerClause, HandlerDef, StmtKind};
 use crate::ir::linear::{
     CallConvention, LinearExpr, LinearFunction, LinearMatchArm, LinearProgram, LinearStmt,
@@ -429,6 +429,7 @@ fn lower_stmt_under_handler(
             })
         }
         StmtKind::Perform {
+            result,
             effect,
             operation,
             args,
@@ -444,6 +445,9 @@ fn lower_stmt_under_handler(
                     program,
                     clause,
                     args,
+                    handler,
+                    *result,
+                    *next,
                     fn_names,
                     sema,
                     diagnostics,
@@ -725,6 +729,9 @@ fn lower_matching_clause(
     program: &CoreProgram,
     clause: &HandlerClause,
     args: &[ExprId],
+    handler: &HandlerDef,
+    perform_result: Option<VarId>,
+    perform_next: StmtId,
     fn_names: &HashMap<FuncId, SymbolId>,
     sema: &SemanticTables,
     diagnostics: &mut DiagnosticBag,
@@ -732,9 +739,10 @@ fn lower_matching_clause(
     expr_map: &mut [Option<LinearExprId>],
     stmt_map: &mut [Option<LinearStmtId>],
 ) -> LinearStmtId {
-    let mut current = lower_stmt(
+    let clause_body = lower_stmt_under_handler(
         program,
         clause.body,
+        handler,
         fn_names,
         sema,
         diagnostics,
@@ -742,6 +750,31 @@ fn lower_matching_clause(
         expr_map,
         stmt_map,
     );
+    let mut current = if clause.resume_param.is_some() {
+        let continuation = lower_stmt_under_handler(
+            program,
+            perform_next,
+            handler,
+            fn_names,
+            sema,
+            diagnostics,
+            linear,
+            expr_map,
+            stmt_map,
+        );
+        let binding = perform_result.unwrap_or_else(|| {
+            clause
+                .resume_param
+                .expect("resumptive clauses must carry a resume parameter var")
+        });
+        linear.push_stmt(LinearStmt::Val {
+            binding,
+            value: clause_body,
+            next: continuation,
+        })
+    } else {
+        clause_body
+    };
 
     for (param, arg) in clause.params.iter().copied().zip(args.iter().copied()).rev() {
         let arg_expr = lower_expr(program, arg, fn_names, linear, expr_map);
