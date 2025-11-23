@@ -509,12 +509,8 @@ impl Lowerer {
         let mut seen_clause_ops = HashSet::new();
         for clause in clauses {
             let mut clause_locals = locals.clone();
-            let mut params = Vec::with_capacity(clause.params.len());
-            for param in &clause.params {
-                let var = self.fresh_var();
-                clause_locals.insert(*param, var);
-                params.push(var);
-            }
+            let mut clause_param_symbols = clause.params.clone();
+            let mut resume_symbol = None;
 
             if !seen_clause_ops.insert(clause.operation) {
                 self.diagnostics.error(
@@ -526,18 +522,22 @@ impl Lowerer {
 
             if effect_label.is_valid() {
                 match self.effect_ops.get(&(effect_label, clause.operation)) {
-                    Some(expected) if *expected != clause.params.len() => {
-                        self.diagnostics.error(
-                            "LOWER_BAD_HANDLER_CLAUSE_ARITY",
-                            format!(
-                                "Handler clause parameter count mismatch: expected {}, got {}",
-                                expected,
-                                clause.params.len()
-                            ),
-                            clause.span,
-                        );
+                    Some(expected) => {
+                        if clause_param_symbols.len() == expected + 1 {
+                            resume_symbol = clause_param_symbols.pop();
+                        } else if clause_param_symbols.len() != *expected {
+                            self.diagnostics.error(
+                                "LOWER_BAD_HANDLER_CLAUSE_ARITY",
+                                format!(
+                                    "Handler clause parameter count mismatch: expected {} or {} (with resume), got {}",
+                                    expected,
+                                    expected + 1,
+                                    clause.params.len()
+                                ),
+                                clause.span,
+                            );
+                        }
                     }
-                    Some(_) => {}
                     None => {
                         self.diagnostics.error(
                             "LOWER_UNKNOWN_HANDLER_OP",
@@ -548,11 +548,24 @@ impl Lowerer {
                 }
             }
 
-            let clause_body = self.lower_block(&clause.body, &mut clause_locals);
+            let mut params = Vec::with_capacity(clause_param_symbols.len());
+            for param in clause_param_symbols {
+                let var = self.fresh_var();
+                clause_locals.insert(param, var);
+                params.push(var);
+            }
+
+            let resume_param = resume_symbol.map(|symbol| {
+                let var = self.fresh_var();
+                clause_locals.insert(symbol, var);
+                var
+            });
+
+            let clause_body = self.lower_handler_clause_body(clause, resume_symbol, &mut clause_locals);
             core_clauses.push(HandlerClause {
                 operation: clause.operation,
                 params,
-                resume_param: None,
+                resume_param,
                 body: clause_body,
                 span: clause.span,
             });
@@ -589,6 +602,93 @@ impl Lowerer {
             expr.span,
         );
         Some(handled)
+    }
+
+    fn lower_handler_clause_body(
+        &mut self,
+        clause: &ast::HandleClause,
+        resume_symbol: Option<SymbolId>,
+        locals: &mut HashMap<SymbolId, VarId>,
+    ) -> crate::common::ids::StmtId {
+        let Some(resume_symbol) = resume_symbol else {
+            return self.lower_block(&clause.body, locals);
+        };
+
+        let Some(rewritten) = self.rewrite_resume_clause_body(&clause.body, resume_symbol) else {
+            self.diagnostics.error(
+                "LOWER_UNSUPPORTED_RESUME_USAGE",
+                "v1 supports resume only as a tail call: `resume(value)`",
+                clause.span,
+            );
+            let error = self.diagnostics.error_node(
+                "LOWER_UNSUPPORTED_RESUME_USAGE",
+                "Unsupported `resume` usage in handler clause",
+                clause.span,
+            );
+            let expr = self.push_expr(ExprKind::Error(error), clause.span);
+            return self.push_stmt(StmtKind::Return(expr), clause.span);
+        };
+
+        self.lower_block(&rewritten, locals)
+    }
+
+    fn rewrite_resume_clause_body(
+        &mut self,
+        body: &ast::BlockExpr,
+        resume_symbol: SymbolId,
+    ) -> Option<ast::BlockExpr> {
+        if let Some(tail) = &body.tail
+            && let Some(payload) = self.extract_resume_payload(tail, resume_symbol)
+        {
+            let mut rewritten = body.clone();
+            rewritten.tail = Some(Box::new(payload));
+            return Some(rewritten);
+        }
+
+        let Some(AstStmt::Expr { value, .. }) = body.statements.last() else {
+            return None;
+        };
+        let payload = self.extract_resume_payload(value, resume_symbol)?;
+        let mut rewritten = body.clone();
+        rewritten.statements.pop();
+        rewritten.tail = Some(Box::new(payload));
+        Some(rewritten)
+    }
+
+    fn extract_resume_payload(
+        &mut self,
+        expr: &ast::Expr,
+        resume_symbol: SymbolId,
+    ) -> Option<ast::Expr> {
+        let AstExprKind::Call { callee, args } = &expr.kind else {
+            return None;
+        };
+        let AstExprKind::Var(symbol) = callee.kind else {
+            return None;
+        };
+        if symbol != resume_symbol {
+            return None;
+        }
+        if args.len() != 1 {
+            self.diagnostics.error(
+                "LOWER_RESUME_ARITY",
+                format!(
+                    "`resume` expects exactly one argument in v1, got {}",
+                    args.len()
+                ),
+                expr.span,
+            );
+            let error = self.diagnostics.error_node(
+                "LOWER_RESUME_ARITY",
+                "Invalid `resume` call arity",
+                expr.span,
+            );
+            return Some(ast::Expr {
+                kind: AstExprKind::Error(error),
+                span: expr.span,
+            });
+        }
+        args.first().cloned()
     }
 
     fn lower_expr(

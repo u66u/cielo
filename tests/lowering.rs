@@ -92,6 +92,28 @@ fn main() -> Int {
 }
 
 #[test]
+fn lowers_resumptive_handler_clause_and_strips_resume_call() {
+    let src = r#"
+effect LocalState { fn tick() -> Int }
+fn main() -> Int {
+  let x = handle { do LocalState.tick(); 7 } with LocalState {
+    | tick(resume) => resume(0)
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    assert!(!lowered.diagnostics.has_errors());
+    assert_eq!(lowered.program.handlers().len(), 1);
+
+    let clause = &lowered.program.handlers()[0].clauses[0];
+    assert_eq!(clause.params.len(), 0, "tick has no value parameters");
+    assert!(clause.resume_param.is_some(), "resume binder should be captured separately");
+}
+
+#[test]
 fn lowers_effectful_function_call_to_call_stmt() {
     let src = r#"
 effect Console { fn print(s: String) -> () }

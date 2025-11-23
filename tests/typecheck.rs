@@ -204,7 +204,7 @@ fn reports_handler_clause_arity_in_typecheck() {
 effect Console { fn print(s: String) -> () }
 fn main() -> Int {
   let x = handle { do Console.print("x"); 7 } with Console {
-    | print(a, b) => 0
+    | print(a, b, c) => 0
   };
   x
 }
@@ -216,6 +216,30 @@ fn main() -> Int {
     let _ = typecheck_core(&lowered.program, &mut diagnostics);
     assert!(
         diagnostics
+            .entries()
+            .iter()
+            .any(|d| d.code == "TYPE_BAD_HANDLER_CLAUSE_ARITY")
+    );
+}
+
+#[test]
+fn accepts_resumptive_handler_clause_arity() {
+    let src = r#"
+effect LocalState { fn tick() -> Int }
+fn main() -> Int {
+  let x = handle { do LocalState.tick(); 7 } with LocalState {
+    | tick(resume) => resume(1)
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    assert!(
+        !diagnostics
             .entries()
             .iter()
             .any(|d| d.code == "TYPE_BAD_HANDLER_CLAUSE_ARITY")
