@@ -10,7 +10,7 @@ use cielo::common::symbols::Interner;
 use cielo::frontend::ast::{Item, Program};
 use cielo::ir::core::CoreProgram;
 use cielo::passes::lowering::LowerConfig;
-use cielo::passes::{c_emit, linearize};
+use cielo::passes::{c_emit, handler_specialize, linearize};
 use cielo::pipeline::phases::{Residualized, Stage};
 use cielo::pipeline::provenance::runtime_provenance_lines;
 use cielo::{Compiler, CompilerConfig};
@@ -133,7 +133,8 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
         return;
     }
 
-    let linearized = linearize::run(residual.clone());
+    let specialized = handler_specialize::run(residual.clone());
+    let linearized = linearize::run(specialized);
     if should_dump(cli, DumpKind::Linear) {
         println!("=== Linear IR ===\n{:#?}", linearized.linear);
     }

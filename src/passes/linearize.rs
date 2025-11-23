@@ -21,7 +21,7 @@ use std::collections::HashMap;
 
 use crate::common::diagnostics::DiagnosticBag;
 use crate::common::ids::{ExprId, FuncId, LinearExprId, LinearStmtId, StmtId, SymbolId};
-use crate::ir::core::{CoreProgram, ExprKind, StmtKind};
+use crate::ir::core::{CoreProgram, ExprKind, HandlerClause, HandlerDef, StmtKind};
 use crate::ir::linear::{
     CallConvention, LinearExpr, LinearFunction, LinearMatchArm, LinearProgram, LinearStmt,
 };
@@ -282,39 +282,81 @@ fn lower_stmt(
             body,
             next,
         } => {
-            let effect = program.handlers().get(handler.index()).map(|h| h.effect);
-            let effect = effect.unwrap_or_else(|| {
-                diagnostics.error(
-                    "LINEARIZE_UNKNOWN_HANDLER",
-                    "Could not resolve handler id while lowering to linear IR",
-                    stmt.span,
-                );
-                crate::common::ids::EffectLabelId::INVALID
-            });
-            LinearStmt::Handle {
-                effect,
-                body: lower_stmt(
-                    program,
-                    *body,
-                    fn_names,
-                    sema,
-                    diagnostics,
-                    linear,
-                    expr_map,
-                    stmt_map,
-                ),
-                next: next.map(|next_stmt| {
-                    lower_stmt(
+            if let Some(handler_def) = program.handlers().get(handler.index()) {
+                if next.is_none() {
+                    let lowered = lower_stmt_under_handler(
                         program,
-                        next_stmt,
+                        *body,
+                        handler_def,
                         fn_names,
                         sema,
                         diagnostics,
                         linear,
                         expr_map,
                         stmt_map,
-                    )
-                }),
+                    );
+                    stmt_map[stmt_id.index()] = Some(lowered);
+                    return lowered;
+                }
+
+                let effect = handler_def.effect;
+                LinearStmt::Handle {
+                    effect,
+                    body: lower_stmt(
+                        program,
+                        *body,
+                        fn_names,
+                        sema,
+                        diagnostics,
+                        linear,
+                        expr_map,
+                        stmt_map,
+                    ),
+                    next: next.map(|next_stmt| {
+                        lower_stmt(
+                            program,
+                            next_stmt,
+                            fn_names,
+                            sema,
+                            diagnostics,
+                            linear,
+                            expr_map,
+                            stmt_map,
+                        )
+                    }),
+                }
+            } else {
+                diagnostics.error(
+                    "LINEARIZE_UNKNOWN_HANDLER",
+                    "Could not resolve handler id while lowering to linear IR",
+                    stmt.span,
+                );
+                let effect = crate::common::ids::EffectLabelId::INVALID;
+                LinearStmt::Handle {
+                    effect,
+                    body: lower_stmt(
+                        program,
+                        *body,
+                        fn_names,
+                        sema,
+                        diagnostics,
+                        linear,
+                        expr_map,
+                        stmt_map,
+                    ),
+                    next: next.map(|next_stmt| {
+                        lower_stmt(
+                            program,
+                            next_stmt,
+                            fn_names,
+                            sema,
+                            diagnostics,
+                            linear,
+                            expr_map,
+                            stmt_map,
+                        )
+                    }),
+                }
             }
         }
         StmtKind::Stage { stage, body, next } => LinearStmt::Stage {
@@ -349,6 +391,368 @@ fn lower_stmt(
     let id = linear.push_stmt(kind);
     stmt_map[stmt_id.index()] = Some(id);
     id
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_stmt_under_handler(
+    program: &CoreProgram,
+    stmt_id: StmtId,
+    handler: &HandlerDef,
+    fn_names: &HashMap<FuncId, SymbolId>,
+    sema: &SemanticTables,
+    diagnostics: &mut DiagnosticBag,
+    linear: &mut LinearProgram,
+    expr_map: &mut [Option<LinearExprId>],
+    stmt_map: &mut [Option<LinearStmtId>],
+) -> LinearStmtId {
+    let Some(stmt) = program.stmt(stmt_id) else {
+        return linear.push_stmt(LinearStmt::Error);
+    };
+
+    match &stmt.kind {
+        StmtKind::Return(expr) => {
+            let ret_value = lower_expr(program, *expr, fn_names, linear, expr_map);
+            let lowered_return = lower_stmt(
+                program,
+                handler.return_body,
+                fn_names,
+                sema,
+                diagnostics,
+                linear,
+                expr_map,
+                stmt_map,
+            );
+            linear.push_stmt(LinearStmt::Let {
+                binding: handler.return_param,
+                value: ret_value,
+                next: lowered_return,
+            })
+        }
+        StmtKind::Perform {
+            effect,
+            operation,
+            args,
+            next,
+            ..
+        } if *effect == handler.effect => {
+            if let Some(clause) = handler
+                .clauses
+                .iter()
+                .find(|candidate| candidate.operation == *operation)
+            {
+                lower_matching_clause(
+                    program,
+                    clause,
+                    args,
+                    fn_names,
+                    sema,
+                    diagnostics,
+                    linear,
+                    expr_map,
+                    stmt_map,
+                )
+            } else {
+                diagnostics.error(
+                    "LINEARIZE_MISSING_HANDLER_CLAUSE",
+                    "Missing handler clause for performed operation",
+                    stmt.span,
+                );
+                lower_stmt_under_handler(
+                    program,
+                    *next,
+                    handler,
+                    fn_names,
+                    sema,
+                    diagnostics,
+                    linear,
+                    expr_map,
+                    stmt_map,
+                )
+            }
+        }
+        StmtKind::Let {
+            binding,
+            value,
+            next,
+        } => {
+            let lowered_next = lower_stmt_under_handler(
+                program,
+                *next,
+                handler,
+                fn_names,
+                sema,
+                diagnostics,
+                linear,
+                expr_map,
+                stmt_map,
+            );
+            let lowered_value = lower_expr(program, *value, fn_names, linear, expr_map);
+            linear.push_stmt(LinearStmt::Let {
+                binding: *binding,
+                value: lowered_value,
+                next: lowered_next,
+            })
+        }
+        StmtKind::Val {
+            binding,
+            value,
+            next,
+        } => {
+            let lowered_value = lower_stmt_under_handler(
+                program,
+                *value,
+                handler,
+                fn_names,
+                sema,
+                diagnostics,
+                linear,
+                expr_map,
+                stmt_map,
+            );
+            let lowered_next = lower_stmt_under_handler(
+                program,
+                *next,
+                handler,
+                fn_names,
+                sema,
+                diagnostics,
+                linear,
+                expr_map,
+                stmt_map,
+            );
+            linear.push_stmt(LinearStmt::Val {
+                binding: *binding,
+                value: lowered_value,
+                next: lowered_next,
+            })
+        }
+        StmtKind::Call {
+            result,
+            callee,
+            args,
+            effects,
+            next,
+            ..
+        } => {
+            let callee_name = fn_names.get(callee).copied().unwrap_or_else(|| {
+                diagnostics.error(
+                    "LINEARIZE_UNKNOWN_CALLEE",
+                    "Could not resolve function id while lowering call to linear IR",
+                    stmt.span,
+                );
+                SymbolId::INVALID
+            });
+            let lowered_next = lower_stmt_under_handler(
+                program,
+                *next,
+                handler,
+                fn_names,
+                sema,
+                diagnostics,
+                linear,
+                expr_map,
+                stmt_map,
+            );
+            let lowered_args = args
+                .iter()
+                .copied()
+                .map(|arg| lower_expr(program, arg, fn_names, linear, expr_map))
+                .collect();
+            linear.push_stmt(LinearStmt::Call {
+                result: *result,
+                callee: callee_name,
+                convention: classify_call_convention(effects, sema),
+                args: lowered_args,
+                next: lowered_next,
+            })
+        }
+        StmtKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            let then_lowered = lower_stmt_under_handler(
+                program,
+                *then_branch,
+                handler,
+                fn_names,
+                sema,
+                diagnostics,
+                linear,
+                expr_map,
+                stmt_map,
+            );
+            let else_lowered = lower_stmt_under_handler(
+                program,
+                *else_branch,
+                handler,
+                fn_names,
+                sema,
+                diagnostics,
+                linear,
+                expr_map,
+                stmt_map,
+            );
+            let lowered_cond = lower_expr(program, *cond, fn_names, linear, expr_map);
+            linear.push_stmt(LinearStmt::If {
+                cond: lowered_cond,
+                then_branch: then_lowered,
+                else_branch: else_lowered,
+            })
+        }
+        StmtKind::Match {
+            scrutinee,
+            arms,
+            default,
+        } => {
+            let lowered_arms = arms
+                .iter()
+                .map(|arm| LinearMatchArm {
+                    tag: arm.tag,
+                    binders: arm.binders.clone(),
+                    body: lower_stmt_under_handler(
+                        program,
+                        arm.body,
+                        handler,
+                        fn_names,
+                        sema,
+                        diagnostics,
+                        linear,
+                        expr_map,
+                        stmt_map,
+                    ),
+                })
+                .collect();
+            let lowered_default = default.map(|default_stmt| {
+                lower_stmt_under_handler(
+                    program,
+                    default_stmt,
+                    handler,
+                    fn_names,
+                    sema,
+                    diagnostics,
+                    linear,
+                    expr_map,
+                    stmt_map,
+                )
+            });
+            let lowered_scrutinee = lower_expr(program, *scrutinee, fn_names, linear, expr_map);
+            linear.push_stmt(LinearStmt::Match {
+                scrutinee: lowered_scrutinee,
+                arms: lowered_arms,
+                default: lowered_default,
+            })
+        }
+        StmtKind::Perform {
+            result,
+            effect,
+            operation,
+            args,
+            next,
+        } => {
+            let lowered_next = lower_stmt_under_handler(
+                program,
+                *next,
+                handler,
+                fn_names,
+                sema,
+                diagnostics,
+                linear,
+                expr_map,
+                stmt_map,
+            );
+            let lowered_args = args
+                .iter()
+                .copied()
+                .map(|arg| lower_expr(program, arg, fn_names, linear, expr_map))
+                .collect();
+            linear.push_stmt(LinearStmt::Perform {
+                result: *result,
+                effect: *effect,
+                operation: *operation,
+                args: lowered_args,
+                next: lowered_next,
+            })
+        }
+        StmtKind::Handle { .. } => lower_stmt(
+            program,
+            stmt_id,
+            fn_names,
+            sema,
+            diagnostics,
+            linear,
+            expr_map,
+            stmt_map,
+        ),
+        StmtKind::Stage { stage, body, next } => {
+            let lowered_body = lower_stmt_under_handler(
+                program,
+                *body,
+                handler,
+                fn_names,
+                sema,
+                diagnostics,
+                linear,
+                expr_map,
+                stmt_map,
+            );
+            let lowered_next = next.map(|next_stmt| {
+                lower_stmt_under_handler(
+                    program,
+                    next_stmt,
+                    handler,
+                    fn_names,
+                    sema,
+                    diagnostics,
+                    linear,
+                    expr_map,
+                    stmt_map,
+                )
+            });
+            linear.push_stmt(LinearStmt::Stage {
+                stage: *stage,
+                body: lowered_body,
+                next: lowered_next,
+            })
+        }
+        StmtKind::Hole { .. } => linear.push_stmt(LinearStmt::Hole),
+        StmtKind::Error(_) => linear.push_stmt(LinearStmt::Error),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_matching_clause(
+    program: &CoreProgram,
+    clause: &HandlerClause,
+    args: &[ExprId],
+    fn_names: &HashMap<FuncId, SymbolId>,
+    sema: &SemanticTables,
+    diagnostics: &mut DiagnosticBag,
+    linear: &mut LinearProgram,
+    expr_map: &mut [Option<LinearExprId>],
+    stmt_map: &mut [Option<LinearStmtId>],
+) -> LinearStmtId {
+    let mut current = lower_stmt(
+        program,
+        clause.body,
+        fn_names,
+        sema,
+        diagnostics,
+        linear,
+        expr_map,
+        stmt_map,
+    );
+
+    for (param, arg) in clause.params.iter().copied().zip(args.iter().copied()).rev() {
+        let arg_expr = lower_expr(program, arg, fn_names, linear, expr_map);
+        current = linear.push_stmt(LinearStmt::Let {
+            binding: param,
+            value: arg_expr,
+            next: current,
+        });
+    }
+
+    current
 }
 
 fn lower_expr(
