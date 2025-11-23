@@ -39,12 +39,12 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
 
-    assert!(compiled.c_source.contains("cielo_perform("));
+    assert!(compiled.c_source.contains("(void)cielo_perform(0, \"print\""));
     assert!(compiled.c_source.contains("print"));
 }
 
 #[test]
-fn emits_handler_scope_push_pop_for_handle() {
+fn lowers_handled_perform_into_clause_without_runtime_dispatch() {
     let src = r#"
 effect Console { fn print(s: String) -> () }
 fn main() -> Int {
@@ -58,8 +58,18 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
 
-    assert!(compiled.c_source.contains("cielo_handler_push("));
-    assert!(compiled.c_source.contains("cielo_handler_pop("));
+    assert!(
+        !compiled.c_source.contains("cielo_handler_push(0);"),
+        "handled callsites should not emit runtime handler push/pop"
+    );
+    assert!(
+        !compiled.c_source.contains("(void)cielo_perform(0, \"print\""),
+        "handled operations should lower into clause bodies instead of runtime perform stubs"
+    );
+    assert!(
+        compiled.c_source.contains("v0 = cv_int(0);") || compiled.c_source.contains("return cv_int(0);"),
+        "handler clause return should be reflected in emitted C body"
+    );
 }
 
 #[test]
