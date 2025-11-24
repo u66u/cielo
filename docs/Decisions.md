@@ -48,6 +48,7 @@ Koka's core (System Fw + Effect Rows + evidence passing)
 lexical handlers + effect capability hierarchy (refer to order semantics)
 single-shot resumptions
 monomorphize both generic types and effects
+v1 resume surface is intentionally narrow: resumptions are currently accepted only in tail form within handler clauses (`| op(..., resume) => resume(value)` or block-tail equivalent). Non-tail continuation control is deferred to a later milestone.
 Ignore the "Equality vs Preorder" math _theory_, but adopt the _mindset_ for your optimizer: "It is safe to replace X with Y if Y has fewer behaviors/effects than X."
 Do not add `thunk` to the IR. Implement `is_thunkable(effect_row)` as a helper function in your compiler. Use it to decide if you can move code during Staging.
 Distinguish `LocalState` (optimizable) from `SharedState` (volatile/opaque) in your effect definitions.

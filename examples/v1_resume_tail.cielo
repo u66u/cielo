@@ -1,0 +1,13 @@
+effect LocalState { fn tick() -> Int }
+
+fn body() -> Int with LocalState {
+  do LocalState.tick();
+  9
+}
+
+fn main() -> Int {
+  let x = handle { body() } with LocalState {
+    | tick(resume) => resume(41)
+  };
+  x + 1
+}
