@@ -84,6 +84,7 @@ fn first_return_expr(program: &CoreProgram, root: StmtId) -> Option<ExprId> {
             StmtKind::Return(expr) => return Some(*expr),
             StmtKind::Let { next, .. }
             | StmtKind::Call { next, .. }
+            | StmtKind::Resume { next, .. }
             | StmtKind::Perform { next, .. } => stack.push(*next),
             StmtKind::Val { value, next, .. } => {
                 stack.push(*next);

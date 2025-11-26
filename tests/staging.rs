@@ -200,6 +200,12 @@ fn main() -> Int {
                 }
                 stack.push(*next);
             }
+            StmtKind::Resume { arg, next, .. } => {
+                if matches!(residual.bta().stage_of_expr.get(arg), Some(Stage::Rt(_))) {
+                    saw_runtime_expr = true;
+                }
+                stack.push(*next);
+            }
             StmtKind::If {
                 cond,
                 then_branch,

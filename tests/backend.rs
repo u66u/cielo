@@ -98,6 +98,44 @@ fn main() -> Int {
 }
 
 #[test]
+fn lowers_non_tail_resume_with_control_flow_after_resumption() {
+    let src = r#"
+effect LocalState { fn tick() -> Int }
+fn main() -> Int {
+  let x = handle { do LocalState.tick(); 9 } with LocalState {
+    | tick(resume) => {
+      let y = resume(41);
+      y + 1
+    }
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let main = compiled
+        .linear
+        .functions
+        .iter()
+        .find(|function| interner.resolve(function.name) == Some("main"))
+        .expect("main function");
+
+    assert!(
+        !linear_stmt_graph_contains_perform_effect(&compiled.linear, main.body, 0),
+        "handled resumptions should not leave residual perform dispatch for handled effect"
+    );
+    assert!(
+        linear_stmt_graph_contains_literal_int(&compiled.linear, main.body, 9),
+        "continuation value should still flow from resumed branch"
+    );
+    assert!(
+        linear_stmt_graph_contains_add_rhs_int(&compiled.linear, main.body, 1),
+        "non-tail code after resume should be preserved"
+    );
+}
+
+#[test]
 fn emits_match_branches_with_ctor_runtime_helpers() {
     let mut interner = Interner::new();
     let main_name = interner.intern("main");
@@ -268,4 +306,101 @@ fn collect_call_conventions(
         }
         LinearStmt::Return(_) | LinearStmt::Hole | LinearStmt::Error => {}
     }
+}
+
+fn linear_stmt_graph_contains_perform_effect(
+    program: &LinearProgram,
+    root: cielo::common::ids::LinearStmtId,
+    effect: u32,
+) -> bool {
+    let mut stack = vec![root];
+    let mut seen = HashSet::new();
+    while let Some(stmt_id) = stack.pop() {
+        if !seen.insert(stmt_id) {
+            continue;
+        }
+        let Some(stmt) = program.stmt(stmt_id) else {
+            continue;
+        };
+        if matches!(stmt.kind, LinearStmt::Perform { effect: eff, .. } if eff.as_u32() == effect) {
+            return true;
+        }
+        for child in stmt.child_stmts() {
+            stack.push(child);
+        }
+    }
+    false
+}
+
+fn linear_stmt_graph_contains_literal_int(
+    program: &LinearProgram,
+    root: cielo::common::ids::LinearStmtId,
+    value: i64,
+) -> bool {
+    let mut stack = vec![root];
+    let mut seen = HashSet::new();
+    while let Some(stmt_id) = stack.pop() {
+        if !seen.insert(stmt_id) {
+            continue;
+        }
+        let Some(stmt) = program.stmt(stmt_id) else {
+            continue;
+        };
+        for expr_id in stmt.child_exprs() {
+            if linear_expr_is_int_literal(program, expr_id, value) {
+                return true;
+            }
+        }
+        for child in stmt.child_stmts() {
+            stack.push(child);
+        }
+    }
+    false
+}
+
+fn linear_stmt_graph_contains_add_rhs_int(
+    program: &LinearProgram,
+    root: cielo::common::ids::LinearStmtId,
+    rhs: i64,
+) -> bool {
+    let mut stack = vec![root];
+    let mut seen = HashSet::new();
+    while let Some(stmt_id) = stack.pop() {
+        if !seen.insert(stmt_id) {
+            continue;
+        }
+        let Some(stmt) = program.stmt(stmt_id) else {
+            continue;
+        };
+
+        let exprs = match &stmt.kind {
+            LinearStmt::Return(expr) => vec![*expr],
+            LinearStmt::Let { value, .. } => vec![*value],
+            _ => Vec::new(),
+        };
+        for expr_id in exprs {
+            if let Some(expr) = program.expr(expr_id)
+                && let LinearExpr::Binary { op, rhs: rhs_expr, .. } = expr.kind
+                && op == cielo::ir::core::BinaryOp::Add
+                && linear_expr_is_int_literal(program, rhs_expr, rhs)
+            {
+                return true;
+            }
+        }
+
+        for child in stmt.child_stmts() {
+            stack.push(child);
+        }
+    }
+    false
+}
+
+fn linear_expr_is_int_literal(
+    program: &LinearProgram,
+    expr_id: cielo::common::ids::LinearExprId,
+    value: i64,
+) -> bool {
+    program.expr(expr_id).is_some_and(|expr| {
+        matches!(&expr.kind, LinearExpr::Literal(Literal::Int(lit)) if *lit == value)
+    })
 }

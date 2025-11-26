@@ -92,7 +92,7 @@ fn main() -> Int {
 }
 
 #[test]
-fn lowers_resumptive_handler_clause_and_strips_resume_call() {
+fn lowers_resumptive_handler_clause_with_explicit_resume_stmt() {
     let src = r#"
 effect LocalState { fn tick() -> Int }
 fn main() -> Int {
@@ -110,7 +110,34 @@ fn main() -> Int {
 
     let clause = &lowered.program.handlers()[0].clauses[0];
     assert_eq!(clause.params.len(), 0, "tick has no value parameters");
-    assert!(clause.resume_param.is_some(), "resume binder should be captured separately");
+    assert!(
+        clause.resume_param.is_some(),
+        "resume binder should be captured separately"
+    );
+    assert!(
+        stmt_graph_contains_resume(&lowered.program, clause.body),
+        "resume call should lower into explicit Core resume stmt"
+    );
+}
+
+fn stmt_graph_contains_resume(program: &cielo::ir::core::CoreProgram, root: cielo::common::ids::StmtId) -> bool {
+    let mut stack = vec![root];
+    let mut seen = std::collections::HashSet::new();
+    while let Some(stmt_id) = stack.pop() {
+        if !seen.insert(stmt_id) {
+            continue;
+        }
+        let Some(stmt) = program.stmt(stmt_id) else {
+            continue;
+        };
+        if matches!(stmt.kind, StmtKind::Resume { .. }) {
+            return true;
+        }
+        for child in stmt.child_stmts() {
+            stack.push(child);
+        }
+    }
+    false
 }
 
 #[test]

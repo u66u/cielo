@@ -184,7 +184,10 @@ fn handle_body_call_callees(program: &CoreProgram, root: StmtId) -> Vec<FuncId> 
                     stack.push(*next_stmt);
                 }
             }
-            StmtKind::Let { next, .. } | StmtKind::Call { next, .. } | StmtKind::Perform {
+            StmtKind::Let { next, .. }
+            | StmtKind::Call { next, .. }
+            | StmtKind::Resume { next, .. }
+            | StmtKind::Perform {
                 next,
                 ..
             } => stack.push(*next),
@@ -241,7 +244,10 @@ fn first_handle_body_call_callee(program: &CoreProgram, root: StmtId) -> Option<
                     stack.push(*next_stmt);
                 }
             }
-            StmtKind::Let { next, .. } | StmtKind::Call { next, .. } | StmtKind::Perform {
+            StmtKind::Let { next, .. }
+            | StmtKind::Call { next, .. }
+            | StmtKind::Resume { next, .. }
+            | StmtKind::Perform {
                 next,
                 ..
             } => stack.push(*next),

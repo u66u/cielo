@@ -1,6 +1,8 @@
-use cielo::common::ids::{EffectLabelId, SourceId};
+use cielo::common::ids::{EffectLabelId, ExprId, SourceId};
 use cielo::common::symbols::Interner;
 use cielo::ir::core::StmtKind;
+use cielo::pipeline::phases::Stage;
+use cielo::pipeline::provenance::runtime_provenance_lines;
 use cielo::sema::effect::SortedEffectRow;
 use cielo::{Compiler, CompilerConfig};
 
@@ -118,7 +120,9 @@ fn main() -> Int {
                 assert!(effects.contains(EffectLabelId::from_u32(0)));
                 saw_call = true;
             }
-            StmtKind::Let { next, .. } | StmtKind::Perform { next, .. } => stack.push(*next),
+            StmtKind::Let { next, .. }
+            | StmtKind::Resume { next, .. }
+            | StmtKind::Perform { next, .. } => stack.push(*next),
             StmtKind::Val { value, next, .. } => {
                 stack.push(*value);
                 stack.push(*next);
@@ -149,4 +153,109 @@ fn main() -> Int {
         }
     }
     assert!(saw_call, "expected at least one call in main flow");
+}
+
+#[test]
+fn v1_example_snapshot_matches_expected_registration_and_staging_counts() {
+    let src = include_str!("../examples/v1_test.cielo");
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+
+    let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
+    assert_eq!(core.program().effects().len(), 2);
+    assert_eq!(interner.resolve(core.program().effects()[0].name), Some("Console"));
+    assert_eq!(interner.resolve(core.program().effects()[1].name), Some("LocalState"));
+    assert_eq!(core.program().effects()[0].operations.len(), 1);
+    assert_eq!(core.program().effects()[1].operations.len(), 1);
+    assert_eq!(
+        interner.resolve(core.program().effects()[0].operations[0].name),
+        Some("print")
+    );
+    assert_eq!(
+        interner.resolve(core.program().effects()[1].operations[0].name),
+        Some("tick")
+    );
+    assert_eq!(core.program().effects()[0].operations[0].param_types.len(), 1);
+    assert_eq!(core.program().effects()[1].operations[0].param_types.len(), 0);
+
+    let expected_names = ["seed", "bump", "local_step", "io_step", "main"];
+    let observed_names = core
+        .program()
+        .functions()
+        .iter()
+        .map(|function| interner.resolve(function.name).unwrap_or("<missing>"))
+        .collect::<Vec<_>>();
+    assert_eq!(observed_names, expected_names);
+    assert!(core.program().functions()[0].declared_effects.is_empty());
+    assert!(core.program().functions()[1].declared_effects.is_empty());
+    assert_eq!(
+        core.program().functions()[2].declared_effects,
+        SortedEffectRow::singleton(EffectLabelId::from_u32(1))
+    );
+    assert_eq!(
+        core.program().functions()[3].declared_effects,
+        SortedEffectRow::singleton(EffectLabelId::from_u32(0))
+    );
+    assert!(core.program().functions()[4].declared_effects.is_empty());
+
+    let residual = compiler.run_v0_core_pipeline(core);
+    let typed_exprs = residual
+        .sema()
+        .type_of_expr
+        .iter()
+        .filter(|entry| entry.is_some())
+        .count();
+    assert_eq!(typed_exprs, 39);
+    assert_eq!(residual.sema().type_of_expr.len(), 39);
+
+    let effectful_stmts = residual
+        .sema()
+        .effects_of_stmt
+        .iter()
+        .filter(|row| !row.is_empty())
+        .count();
+    assert_eq!(effectful_stmts, 6);
+    assert_eq!(residual.sema().effects_of_stmt.len(), 34);
+
+    let ct_count = residual
+        .bta()
+        .stage_of_expr
+        .values()
+        .filter(|stage| matches!(stage, Stage::Ct))
+        .count();
+    let rt_count = residual
+        .bta()
+        .stage_of_expr
+        .values()
+        .filter(|stage| matches!(stage, Stage::Rt(_)))
+        .count();
+    assert_eq!(ct_count, 15);
+    assert_eq!(rt_count, 24);
+    assert_eq!(residual.diagnostics().entries().len(), 0);
+
+    let e8 = runtime_provenance_lines(residual.program(), residual.bta(), ExprId::new(8), 5);
+    assert_eq!(
+        e8,
+        vec![
+            " 1. e8: runtime classification has not been refined yet".to_owned(),
+            " 2. v0: parameter #1 of f1 is runtime".to_owned(),
+        ]
+    );
+    let e10 = runtime_provenance_lines(residual.program(), residual.bta(), ExprId::new(10), 5);
+    assert_eq!(
+        e10,
+        vec![
+            " 1. e10: runtime classification has not been refined yet".to_owned(),
+            " 2. e8: runtime classification has not been refined yet".to_owned(),
+            " 3. v0: parameter #1 of f1 is runtime".to_owned(),
+        ]
+    );
+    let e11 = runtime_provenance_lines(residual.program(), residual.bta(), ExprId::new(11), 5);
+    assert_eq!(
+        e11,
+        vec![
+            " 1. e11: runtime classification has not been refined yet".to_owned(),
+            " 2. v1: parameter #1 of f2 is runtime".to_owned(),
+        ]
+    );
 }
