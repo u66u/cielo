@@ -98,6 +98,10 @@ fn apply_stage_directives(
             }
             apply_stage_directives(program, *next, forced, bta, visited);
         }
+        StmtKind::Resume { arg, next, .. } => {
+            apply_forced_expr(*arg, forced, bta);
+            apply_stage_directives(program, *next, forced, bta, visited);
+        }
         StmtKind::If {
             cond,
             then_branch,
@@ -207,6 +211,12 @@ fn propagate_var_reasons(program: &CoreProgram, bta: &mut BtaTables) -> bool {
                 };
                 changed |= refine_var_stage(*result, reason, bta);
             }
+            StmtKind::Resume { result, arg, .. } => {
+                let Some(Stage::Rt(reason)) = bta.stage_of_expr.get(arg).copied() else {
+                    continue;
+                };
+                changed |= refine_var_stage(*result, reason, bta);
+            }
             StmtKind::Return(_)
             | StmtKind::If { .. }
             | StmtKind::Match { .. }
@@ -302,6 +312,12 @@ fn find_stmt_runtime_reason(
             }
             StmtKind::Call { args, next, .. } | StmtKind::Perform { args, next, .. } => {
                 if let Some(reason) = args.iter().find_map(|arg| stage_reason_of_expr(bta, *arg)) {
+                    return Some(reason);
+                }
+                stack.push(*next);
+            }
+            StmtKind::Resume { arg, next, .. } => {
+                if let Some(reason) = stage_reason_of_expr(bta, *arg) {
                     return Some(reason);
                 }
                 stack.push(*next);

@@ -81,6 +81,7 @@ struct Lowerer {
     effect_ops: HashMap<(EffectLabelId, SymbolId), usize>,
     struct_ctors: HashMap<SymbolId, usize>,
     enum_ctors: HashMap<SymbolId, (SymbolId, usize)>,
+    active_resume_vars: HashSet<VarId>,
     config: LowerConfig,
 }
 
@@ -100,6 +101,7 @@ impl Lowerer {
             effect_ops: HashMap::new(),
             struct_ctors: HashMap::new(),
             enum_ctors: HashMap::new(),
+            active_resume_vars: HashSet::new(),
             config,
         }
     }
@@ -454,33 +456,71 @@ impl Lowerer {
 
         if let AstExprKind::Call { callee, args } = &expr.kind
             && let AstExprKind::Var(symbol) = callee.kind
-            && let Some(&func_id) = self.functions_by_name.get(&symbol)
         {
-            let effects = self
-                .program
-                .function(func_id)
-                .map(|f| f.declared_effects.clone())
-                .filter(|row| !row.is_empty());
-            let Some(effects) = effects else {
-                return None;
-            };
-            let result = self.fresh_var();
-            let arg_ids = args
-                .iter()
-                .map(|arg| self.lower_expr(arg, locals))
-                .collect();
-            let return_expr = self.push_expr(ExprKind::Var(result), expr.span);
-            let return_stmt = self.push_stmt(StmtKind::Return(return_expr), expr.span);
-            return Some(self.push_stmt(
-                StmtKind::Call {
-                    result,
-                    callee: func_id,
-                    args: arg_ids,
-                    effects,
-                    next: return_stmt,
-                },
-                expr.span,
-            ));
+            if let Some(resume_var) = locals
+                .get(&symbol)
+                .copied()
+                .filter(|var| self.active_resume_vars.contains(var))
+            {
+                let result = self.fresh_var();
+                let arg = if args.len() == 1 {
+                    self.lower_expr(&args[0], locals)
+                } else {
+                    self.diagnostics.error(
+                        "LOWER_RESUME_ARITY",
+                        format!(
+                            "`resume` expects exactly one argument in v1, got {}",
+                            args.len()
+                        ),
+                        expr.span,
+                    );
+                    let error = self.diagnostics.error_node(
+                        "LOWER_RESUME_ARITY",
+                        "Invalid `resume` call arity",
+                        expr.span,
+                    );
+                    self.push_expr(ExprKind::Error(error), expr.span)
+                };
+                let return_expr = self.push_expr(ExprKind::Var(result), expr.span);
+                let return_stmt = self.push_stmt(StmtKind::Return(return_expr), expr.span);
+                return Some(self.push_stmt(
+                    StmtKind::Resume {
+                        result,
+                        resume: resume_var,
+                        arg,
+                        next: return_stmt,
+                    },
+                    expr.span,
+                ));
+            }
+
+            if let Some(&func_id) = self.functions_by_name.get(&symbol) {
+                let effects = self
+                    .program
+                    .function(func_id)
+                    .map(|f| f.declared_effects.clone())
+                    .filter(|row| !row.is_empty());
+                let Some(effects) = effects else {
+                    return None;
+                };
+                let result = self.fresh_var();
+                let arg_ids = args
+                    .iter()
+                    .map(|arg| self.lower_expr(arg, locals))
+                    .collect();
+                let return_expr = self.push_expr(ExprKind::Var(result), expr.span);
+                let return_stmt = self.push_stmt(StmtKind::Return(return_expr), expr.span);
+                return Some(self.push_stmt(
+                    StmtKind::Call {
+                        result,
+                        callee: func_id,
+                        args: arg_ids,
+                        effects,
+                        next: return_stmt,
+                    },
+                    expr.span,
+                ));
+            }
         }
 
         let AstExprKind::Handle {
@@ -561,7 +601,13 @@ impl Lowerer {
                 var
             });
 
-            let clause_body = self.lower_handler_clause_body(clause, resume_symbol, &mut clause_locals);
+            let clause_body = if let Some(resume_var) = resume_param {
+                self.with_resume_var(resume_var, |lowerer| {
+                    lowerer.lower_block(&clause.body, &mut clause_locals)
+                })
+            } else {
+                self.lower_block(&clause.body, &mut clause_locals)
+            };
             core_clauses.push(HandlerClause {
                 operation: clause.operation,
                 params,
@@ -604,93 +650,6 @@ impl Lowerer {
         Some(handled)
     }
 
-    fn lower_handler_clause_body(
-        &mut self,
-        clause: &ast::HandleClause,
-        resume_symbol: Option<SymbolId>,
-        locals: &mut HashMap<SymbolId, VarId>,
-    ) -> crate::common::ids::StmtId {
-        let Some(resume_symbol) = resume_symbol else {
-            return self.lower_block(&clause.body, locals);
-        };
-
-        let Some(rewritten) = self.rewrite_resume_clause_body(&clause.body, resume_symbol) else {
-            self.diagnostics.error(
-                "LOWER_UNSUPPORTED_RESUME_USAGE",
-                "v1 supports resume only as a tail call: `resume(value)`",
-                clause.span,
-            );
-            let error = self.diagnostics.error_node(
-                "LOWER_UNSUPPORTED_RESUME_USAGE",
-                "Unsupported `resume` usage in handler clause",
-                clause.span,
-            );
-            let expr = self.push_expr(ExprKind::Error(error), clause.span);
-            return self.push_stmt(StmtKind::Return(expr), clause.span);
-        };
-
-        self.lower_block(&rewritten, locals)
-    }
-
-    fn rewrite_resume_clause_body(
-        &mut self,
-        body: &ast::BlockExpr,
-        resume_symbol: SymbolId,
-    ) -> Option<ast::BlockExpr> {
-        if let Some(tail) = &body.tail
-            && let Some(payload) = self.extract_resume_payload(tail, resume_symbol)
-        {
-            let mut rewritten = body.clone();
-            rewritten.tail = Some(Box::new(payload));
-            return Some(rewritten);
-        }
-
-        let Some(AstStmt::Expr { value, .. }) = body.statements.last() else {
-            return None;
-        };
-        let payload = self.extract_resume_payload(value, resume_symbol)?;
-        let mut rewritten = body.clone();
-        rewritten.statements.pop();
-        rewritten.tail = Some(Box::new(payload));
-        Some(rewritten)
-    }
-
-    fn extract_resume_payload(
-        &mut self,
-        expr: &ast::Expr,
-        resume_symbol: SymbolId,
-    ) -> Option<ast::Expr> {
-        let AstExprKind::Call { callee, args } = &expr.kind else {
-            return None;
-        };
-        let AstExprKind::Var(symbol) = callee.kind else {
-            return None;
-        };
-        if symbol != resume_symbol {
-            return None;
-        }
-        if args.len() != 1 {
-            self.diagnostics.error(
-                "LOWER_RESUME_ARITY",
-                format!(
-                    "`resume` expects exactly one argument in v1, got {}",
-                    args.len()
-                ),
-                expr.span,
-            );
-            let error = self.diagnostics.error_node(
-                "LOWER_RESUME_ARITY",
-                "Invalid `resume` call arity",
-                expr.span,
-            );
-            return Some(ast::Expr {
-                kind: AstExprKind::Error(error),
-                span: expr.span,
-            });
-        }
-        args.first().cloned()
-    }
-
     fn lower_expr(
         &mut self,
         expr: &ast::Expr,
@@ -723,7 +682,19 @@ impl Lowerer {
             },
             AstExprKind::Call { callee, args } => {
                 if let AstExprKind::Var(symbol) = callee.kind {
-                    if let Some(func_id) = self.functions_by_name.get(&symbol) {
+                    if locals
+                        .get(&symbol)
+                        .copied()
+                        .filter(|var| self.active_resume_vars.contains(var))
+                        .is_some()
+                    {
+                        let error = self.diagnostics.error_node(
+                            "LOWER_RESUME_PURE_CTX",
+                            "`resume(...)` is effectful and must appear in statement/binding position",
+                            expr.span,
+                        );
+                        ExprKind::Error(error)
+                    } else if let Some(func_id) = self.functions_by_name.get(&symbol) {
                         let is_effectful = self
                             .program
                             .function(*func_id)
@@ -828,6 +799,13 @@ impl Lowerer {
 
     fn push_stmt(&mut self, kind: StmtKind, span: Span) -> crate::common::ids::StmtId {
         self.program.push_stmt(StmtNode { span, kind })
+    }
+
+    fn with_resume_var<R>(&mut self, resume_var: VarId, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.active_resume_vars.insert(resume_var);
+        let out = f(self);
+        self.active_resume_vars.remove(&resume_var);
+        out
     }
 
     fn fresh_var(&mut self) -> VarId {

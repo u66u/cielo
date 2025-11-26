@@ -60,6 +60,7 @@ struct TypeCheckerContext<'a> {
     program: &'a CoreProgram,
     adt_types: &'a HashMap<SymbolId, TypeId>,
     effect_signatures: &'a EffectSignatureTable,
+    resume_signatures: &'a ResumeSignatureTable,
     prim: PrimitiveTypeIds,
     stmt_returns: &'a [Vec<ExprId>],
     expr_types: &'a mut [Option<TypeId>],
@@ -74,6 +75,14 @@ struct EffectSignature {
 }
 
 type EffectSignatureTable = HashMap<(EffectLabelId, SymbolId), EffectSignature>;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct ResumeSignature {
+    arg_type: TypeId,
+    result_var: VarId,
+}
+
+type ResumeSignatureTable = HashMap<VarId, ResumeSignature>;
 
 impl<'a> TypeCheckerContext<'a> {
     fn infer_expr_type(&mut self, expr_id: ExprId) -> bool {
@@ -94,6 +103,7 @@ impl<'a> TypeCheckerContext<'a> {
             stmt_id,
             stmt,
             self.effect_signatures,
+            self.resume_signatures,
             self.stmt_returns,
             self.prim,
             self.expr_types,
@@ -119,6 +129,7 @@ pub fn typecheck_core(program: &CoreProgram, diagnostics: &mut DiagnosticBag) ->
     let primitives = intern_primitives(&mut store);
     let adt_types = intern_program_adts(program, &mut store);
     let effect_signatures = build_effect_signatures(program, &adt_types, primitives);
+    let resume_signatures = build_resume_signatures(program, &effect_signatures, primitives);
 
     let mut sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
     sema.effects_of_expr = vec![SortedEffectRow::empty(); program.exprs().len()];
@@ -151,6 +162,7 @@ pub fn typecheck_core(program: &CoreProgram, diagnostics: &mut DiagnosticBag) ->
             program,
             adt_types: &adt_types,
             effect_signatures: &effect_signatures,
+            resume_signatures: &resume_signatures,
             prim: primitives,
             stmt_returns: &stmt_returns,
             expr_types: &mut sema.type_of_expr,
@@ -293,6 +305,7 @@ fn constrain_stmt(
     _stmt_id: StmtId,
     stmt: &crate::ir::core::StmtNode,
     effect_signatures: &EffectSignatureTable,
+    resume_signatures: &ResumeSignatureTable,
     stmt_returns: &[Vec<ExprId>],
     prim: PrimitiveTypeIds,
     expr_types: &mut [Option<TypeId>],
@@ -357,6 +370,19 @@ fn constrain_stmt(
             }
             changed
         }
+        crate::ir::core::StmtKind::Resume {
+            result,
+            resume,
+            arg,
+            ..
+        } => {
+            let mut changed = false;
+            if let Some(signature) = resume_signatures.get(resume) {
+                changed |= set_expr_type(program, *arg, signature.arg_type, expr_types, var_types);
+                changed |= unify_var_with_var(*result, signature.result_var, var_types);
+            }
+            changed
+        }
         crate::ir::core::StmtKind::Handle { handler, body, .. } => {
             let mut changed = false;
             if let Some(handler_def) = program.handlers().get(handler.index()) {
@@ -370,7 +396,6 @@ fn constrain_stmt(
                     );
                 }
                 for clause in &handler_def.clauses {
-                    let mut clause_return_ty = None;
                     if let Some(signature) =
                         effect_signatures.get(&(handler_def.effect, clause.operation))
                     {
@@ -380,23 +405,15 @@ fn constrain_stmt(
                                 changed |= set_var_type(*param, *expected_ty, var_types);
                             }
                         }
-                        clause_return_ty = Some(signature.return_type.unwrap_or(prim.unit));
                     }
                     for clause_ret in &stmt_returns[clause.body.index()] {
-                        if clause.resume_param.is_some() {
-                            if let Some(return_ty) = clause_return_ty {
-                                changed |=
-                                    set_expr_type(program, *clause_ret, return_ty, expr_types, var_types);
-                            }
-                        } else {
-                            changed |= unify_expr_with_var(
-                                program,
-                                *clause_ret,
-                                handler_def.return_param,
-                                expr_types,
-                                var_types,
-                            );
-                        }
+                        changed |= unify_expr_with_var(
+                            program,
+                            *clause_ret,
+                            handler_def.return_param,
+                            expr_types,
+                            var_types,
+                        );
                     }
                 }
                 for handler_ret in &stmt_returns[handler_def.return_body.index()] {
@@ -580,6 +597,17 @@ fn unify_expr_with_var(
     changed
 }
 
+fn unify_var_with_var(var_id: VarId, other_var: VarId, var_types: &mut Vec<Option<TypeId>>) -> bool {
+    let mut changed = false;
+    if let Some(other_ty) = get_var_type(other_var, var_types) {
+        changed |= set_var_type(var_id, other_ty, var_types);
+    }
+    if let Some(var_ty) = get_var_type(var_id, var_types) {
+        changed |= set_var_type(other_var, var_ty, var_types);
+    }
+    changed
+}
+
 fn unify_expr_with_func_return(
     program: &CoreProgram,
     expr_id: ExprId,
@@ -668,6 +696,7 @@ fn precompute_stmt_returns(program: &CoreProgram) -> Vec<Vec<ExprId>> {
                 crate::ir::core::StmtKind::Return(expr) => vec![*expr],
                 crate::ir::core::StmtKind::Let { .. }
                 | crate::ir::core::StmtKind::Call { .. }
+                | crate::ir::core::StmtKind::Resume { .. }
                 | crate::ir::core::StmtKind::Perform { .. } => {
                     children.first().cloned().unwrap_or_default()
                 }
@@ -760,6 +789,32 @@ fn build_effect_signatures(
                         .map(|ty| resolve_type_ref(ty, adt_types, prim))
                         .collect(),
                     return_type: resolve_type_ref(operation.return_type, adt_types, prim),
+                },
+            );
+        }
+    }
+    table
+}
+
+fn build_resume_signatures(
+    program: &CoreProgram,
+    effect_signatures: &EffectSignatureTable,
+    prim: PrimitiveTypeIds,
+) -> ResumeSignatureTable {
+    let mut table = ResumeSignatureTable::new();
+    for handler in program.handlers() {
+        for clause in &handler.clauses {
+            let Some(resume_var) = clause.resume_param else {
+                continue;
+            };
+            let Some(signature) = effect_signatures.get(&(handler.effect, clause.operation)) else {
+                continue;
+            };
+            table.insert(
+                resume_var,
+                ResumeSignature {
+                    arg_type: signature.return_type.unwrap_or(prim.unit),
+                    result_var: handler.return_param,
                 },
             );
         }
@@ -958,6 +1013,9 @@ fn infer_stmt_effects(program: &CoreProgram, out: &mut [SortedEffectRow]) {
                 &mut |stmt, children| match &stmt.kind {
                     crate::ir::core::StmtKind::Return(_) => SortedEffectRow::empty(),
                     crate::ir::core::StmtKind::Let { .. } => {
+                        children.first().cloned().unwrap_or_default()
+                    }
+                    crate::ir::core::StmtKind::Resume { .. } => {
                         children.first().cloned().unwrap_or_default()
                     }
                     crate::ir::core::StmtKind::Val { .. } => children

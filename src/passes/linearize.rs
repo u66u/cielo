@@ -43,6 +43,13 @@ pub struct Linearized {
     pub linear: LinearProgram,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct ResumeContext {
+    resume_var: VarId,
+    perform_result: Option<VarId>,
+    continuation: StmtId,
+}
+
 fn lower_program(
     program: &CoreProgram,
     sema: &SemanticTables,
@@ -277,6 +284,23 @@ fn lower_stmt(
                 stmt_map,
             ),
         },
+        StmtKind::Resume { next, .. } => {
+            diagnostics.error(
+                "LINEARIZE_RESUME_OUTSIDE_HANDLER",
+                "Encountered `resume` outside a handler-lowering context",
+                stmt.span,
+            );
+            return lower_stmt(
+                program,
+                *next,
+                fn_names,
+                sema,
+                diagnostics,
+                linear,
+                expr_map,
+                stmt_map,
+            );
+        }
         StmtKind::Handle {
             handler,
             body,
@@ -294,6 +318,7 @@ fn lower_stmt(
                         linear,
                         expr_map,
                         stmt_map,
+                        None,
                     );
                     stmt_map[stmt_id.index()] = Some(lowered);
                     return lowered;
@@ -404,6 +429,7 @@ fn lower_stmt_under_handler(
     linear: &mut LinearProgram,
     expr_map: &mut [Option<LinearExprId>],
     stmt_map: &mut [Option<LinearStmtId>],
+    resume_ctx: Option<ResumeContext>,
 ) -> LinearStmtId {
     let Some(stmt) = program.stmt(stmt_id) else {
         return linear.push_stmt(LinearStmt::Error);
@@ -433,7 +459,7 @@ fn lower_stmt_under_handler(
             effect,
             operation,
             args,
-            next,
+                next,
             ..
         } if *effect == handler.effect => {
             if let Some(clause) = handler
@@ -441,13 +467,20 @@ fn lower_stmt_under_handler(
                 .iter()
                 .find(|candidate| candidate.operation == *operation)
             {
+                let clause_resume_ctx =
+                    clause
+                        .resume_param
+                        .map(|resume_var| ResumeContext {
+                            resume_var,
+                            perform_result: *result,
+                            continuation: *next,
+                        });
                 lower_matching_clause(
                     program,
                     clause,
                     args,
                     handler,
-                    *result,
-                    *next,
+                    clause_resume_ctx,
                     fn_names,
                     sema,
                     diagnostics,
@@ -471,8 +504,75 @@ fn lower_stmt_under_handler(
                     linear,
                     expr_map,
                     stmt_map,
+                    resume_ctx,
                 )
             }
+        }
+        StmtKind::Resume {
+            result,
+            resume,
+            arg,
+            next,
+        } => {
+            let Some(active_ctx) = resume_ctx.filter(|ctx| *resume == ctx.resume_var) else {
+                diagnostics.error(
+                    "LINEARIZE_RESUME_OUTSIDE_CLAUSE",
+                    "`resume` used outside the active handler clause context",
+                    stmt.span,
+                );
+                return lower_stmt_under_handler(
+                    program,
+                    *next,
+                    handler,
+                    fn_names,
+                    sema,
+                    diagnostics,
+                    linear,
+                    expr_map,
+                    stmt_map,
+                    resume_ctx,
+                );
+            };
+
+            let continuation = lower_stmt_under_handler(
+                program,
+                active_ctx.continuation,
+                handler,
+                fn_names,
+                sema,
+                diagnostics,
+                linear,
+                expr_map,
+                stmt_map,
+                None,
+            );
+            let continuation = if let Some(perform_var) = active_ctx.perform_result {
+                let arg_expr = lower_expr(program, *arg, fn_names, linear, expr_map);
+                linear.push_stmt(LinearStmt::Let {
+                    binding: perform_var,
+                    value: arg_expr,
+                    next: continuation,
+                })
+            } else {
+                continuation
+            };
+            let lowered_next = lower_stmt_under_handler(
+                program,
+                *next,
+                handler,
+                fn_names,
+                sema,
+                diagnostics,
+                linear,
+                expr_map,
+                stmt_map,
+                None,
+            );
+            linear.push_stmt(LinearStmt::Val {
+                binding: *result,
+                value: continuation,
+                next: lowered_next,
+            })
         }
         StmtKind::Let {
             binding,
@@ -489,6 +589,7 @@ fn lower_stmt_under_handler(
                 linear,
                 expr_map,
                 stmt_map,
+                resume_ctx,
             );
             let lowered_value = lower_expr(program, *value, fn_names, linear, expr_map);
             linear.push_stmt(LinearStmt::Let {
@@ -512,6 +613,7 @@ fn lower_stmt_under_handler(
                 linear,
                 expr_map,
                 stmt_map,
+                resume_ctx,
             );
             let lowered_next = lower_stmt_under_handler(
                 program,
@@ -523,6 +625,7 @@ fn lower_stmt_under_handler(
                 linear,
                 expr_map,
                 stmt_map,
+                resume_ctx,
             );
             linear.push_stmt(LinearStmt::Val {
                 binding: *binding,
@@ -556,6 +659,7 @@ fn lower_stmt_under_handler(
                 linear,
                 expr_map,
                 stmt_map,
+                resume_ctx,
             );
             let lowered_args = args
                 .iter()
@@ -585,6 +689,7 @@ fn lower_stmt_under_handler(
                 linear,
                 expr_map,
                 stmt_map,
+                resume_ctx,
             );
             let else_lowered = lower_stmt_under_handler(
                 program,
@@ -596,6 +701,7 @@ fn lower_stmt_under_handler(
                 linear,
                 expr_map,
                 stmt_map,
+                resume_ctx,
             );
             let lowered_cond = lower_expr(program, *cond, fn_names, linear, expr_map);
             linear.push_stmt(LinearStmt::If {
@@ -624,6 +730,7 @@ fn lower_stmt_under_handler(
                         linear,
                         expr_map,
                         stmt_map,
+                        resume_ctx,
                     ),
                 })
                 .collect();
@@ -638,6 +745,7 @@ fn lower_stmt_under_handler(
                     linear,
                     expr_map,
                     stmt_map,
+                    resume_ctx,
                 )
             });
             let lowered_scrutinee = lower_expr(program, *scrutinee, fn_names, linear, expr_map);
@@ -664,6 +772,7 @@ fn lower_stmt_under_handler(
                 linear,
                 expr_map,
                 stmt_map,
+                resume_ctx,
             );
             let lowered_args = args
                 .iter()
@@ -699,6 +808,7 @@ fn lower_stmt_under_handler(
                 linear,
                 expr_map,
                 stmt_map,
+                resume_ctx,
             );
             let lowered_next = next.map(|next_stmt| {
                 lower_stmt_under_handler(
@@ -711,6 +821,7 @@ fn lower_stmt_under_handler(
                     linear,
                     expr_map,
                     stmt_map,
+                    resume_ctx,
                 )
             });
             linear.push_stmt(LinearStmt::Stage {
@@ -730,8 +841,7 @@ fn lower_matching_clause(
     clause: &HandlerClause,
     args: &[ExprId],
     handler: &HandlerDef,
-    perform_result: Option<VarId>,
-    perform_next: StmtId,
+    resume_ctx: Option<ResumeContext>,
     fn_names: &HashMap<FuncId, SymbolId>,
     sema: &SemanticTables,
     diagnostics: &mut DiagnosticBag,
@@ -749,32 +859,9 @@ fn lower_matching_clause(
         linear,
         expr_map,
         stmt_map,
+        resume_ctx,
     );
-    let mut current = if clause.resume_param.is_some() {
-        let continuation = lower_stmt_under_handler(
-            program,
-            perform_next,
-            handler,
-            fn_names,
-            sema,
-            diagnostics,
-            linear,
-            expr_map,
-            stmt_map,
-        );
-        let binding = perform_result.unwrap_or_else(|| {
-            clause
-                .resume_param
-                .expect("resumptive clauses must carry a resume parameter var")
-        });
-        linear.push_stmt(LinearStmt::Val {
-            binding,
-            value: clause_body,
-            next: continuation,
-        })
-    } else {
-        clause_body
-    };
+    let mut current = clause_body;
 
     for (param, arg) in clause.params.iter().copied().zip(args.iter().copied()).rev() {
         let arg_expr = lower_expr(program, arg, fn_names, linear, expr_map);

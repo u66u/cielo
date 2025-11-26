@@ -100,6 +100,7 @@ fn collect_reachable_stmts(program: &CoreProgram) -> Vec<StmtId> {
             StmtKind::Let { next, .. }
             | StmtKind::Val { next, .. }
             | StmtKind::Call { next, .. }
+            | StmtKind::Resume { next, .. }
             | StmtKind::Perform { next, .. } => stack.push(*next),
             StmtKind::If {
                 then_branch,

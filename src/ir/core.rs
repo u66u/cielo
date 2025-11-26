@@ -156,6 +156,7 @@ impl StmtNode {
             StmtKind::Return(_) | StmtKind::Hole { .. } | StmtKind::Error(_) => SmallVec::new(),
             StmtKind::Let { next, .. }
             | StmtKind::Call { next, .. }
+            | StmtKind::Resume { next, .. }
             | StmtKind::Perform { next, .. } => smallvec![*next],
             StmtKind::Val { value, next, .. } => smallvec![*value, *next],
             StmtKind::If {
@@ -190,6 +191,7 @@ impl StmtNode {
             } => {
                 smallvec![*cond]
             }
+            StmtKind::Resume { arg, .. } => smallvec![*arg],
             StmtKind::Call { args, .. } | StmtKind::Perform { args, .. } => {
                 args.iter().copied().collect()
             }
@@ -237,6 +239,12 @@ pub enum StmtKind {
         effect: EffectLabelId,
         operation: SymbolId,
         args: Vec<ExprId>,
+        next: StmtId,
+    },
+    Resume {
+        result: VarId,
+        resume: VarId,
+        arg: ExprId,
         next: StmtId,
     },
     Handle {

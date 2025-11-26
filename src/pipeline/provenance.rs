@@ -183,6 +183,12 @@ fn first_runtime_expr_in_stmt(
                 }
                 stack.push(*next);
             }
+            StmtKind::Resume { arg, next, .. } => {
+                if is_runtime_expr(*arg, bta) {
+                    return Some(*arg);
+                }
+                stack.push(*next);
+            }
             StmtKind::If {
                 cond,
                 then_branch,

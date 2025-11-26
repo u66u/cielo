@@ -349,6 +349,20 @@ fn stmt_shape_text(program: &CoreProgram, stmt_id: StmtId, scope: &mut ScopeCano
                 operation.as_u32()
             )
         }
+        StmtKind::Resume {
+            result,
+            resume,
+            arg,
+            next,
+        } => {
+            let result_bind = scope.bind(*result);
+            let arg_repr = expr_shape_text(program, *arg, scope);
+            let next_repr = stmt_shape_text(program, *next, scope);
+            format!(
+                "resume(v{},b{result_bind},{arg_repr},{next_repr})",
+                resume.as_u32()
+            )
+        }
         StmtKind::Handle {
             handler,
             body,
@@ -596,6 +610,24 @@ fn clone_stmt_graph(
                 .into_iter()
                 .map(|arg| clone_expr_graph(program, arg, source_func, specialized_func, expr_map))
                 .collect(),
+            next: clone_stmt_graph(
+                program,
+                next,
+                source_func,
+                specialized_func,
+                expr_map,
+                stmt_map,
+            ),
+        },
+        StmtKind::Resume {
+            result,
+            resume,
+            arg,
+            next,
+        } => StmtKind::Resume {
+            result,
+            resume,
+            arg: clone_expr_graph(program, arg, source_func, specialized_func, expr_map),
             next: clone_stmt_graph(
                 program,
                 next,
