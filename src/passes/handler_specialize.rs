@@ -4,12 +4,13 @@
 // - Residualized Core program
 //
 // Outputs:
-// - Residualized Core program with specialized function copies for handle-wrapped calls
+// - Residualized Core program with specialized function copies for handle-wrapped direct calls
 //
 // Invariants:
 // - A pair (callee, handler-shape) specializes at most once
 // - Specialized functions preserve signatures and clone the original body graph
 // - Recursive calls in specialized copies are retargeted to the specialized function id
+// - Direct `handle { f(...) }` callsites are rewritten to direct calls to the specialized copy
 //
 // Complexity:
 // - O(stmt_count + cloned_nodes)
@@ -32,7 +33,8 @@ pub fn run(residual: Residualized) -> Residualized {
 struct SpecializeCandidate {
     handler: HandlerId,
     shape: HandlerShapeKey,
-    call_stmt: StmtId,
+    handle_stmt: StmtId,
+    body_stmt: StmtId,
     callee: FuncId,
 }
 
@@ -42,14 +44,7 @@ fn specialize_handle_wrapped_calls(program: &mut CoreProgram) {
 
     for candidate in candidates {
         let specialized_callee = ensure_specialized(program, &candidate, &mut specialized);
-        if specialized_callee == candidate.callee {
-            continue;
-        }
-        if let Some(stmt) = program.stmt_mut(candidate.call_stmt) {
-            if let StmtKind::Call { callee, .. } = &mut stmt.kind {
-                *callee = specialized_callee;
-            }
-        }
+        rewrite_direct_handle_callsite(program, &candidate, specialized_callee);
     }
 }
 
@@ -61,16 +56,18 @@ fn collect_specialize_candidates(program: &CoreProgram) -> Vec<SpecializeCandida
         let Some(stmt) = program.stmt(stmt_id) else {
             continue;
         };
-        let StmtKind::Handle { handler, body, .. } = &stmt.kind else {
+        let StmtKind::Handle {
+            handler,
+            body,
+            next,
+        } = &stmt.kind
+        else {
             continue;
         };
-        let Some(call_stmt) = first_call_stmt(program, *body) else {
+        if next.is_some() {
             continue;
-        };
-        let Some(body_stmt) = program.stmt(call_stmt) else {
-            continue;
-        };
-        let StmtKind::Call { callee, .. } = body_stmt.kind else {
+        }
+        let Some(callee) = direct_handle_body_callee(program, *body) else {
             continue;
         };
         let Some(shape) = shapes.get(handler.index()).cloned() else {
@@ -79,11 +76,44 @@ fn collect_specialize_candidates(program: &CoreProgram) -> Vec<SpecializeCandida
         out.push(SpecializeCandidate {
             handler: *handler,
             shape,
-            call_stmt,
+            handle_stmt: stmt_id,
+            body_stmt: *body,
             callee,
         });
     }
     out
+}
+
+fn direct_handle_body_callee(program: &CoreProgram, body_stmt: StmtId) -> Option<FuncId> {
+    let stmt = program.stmt(body_stmt)?;
+    match stmt.kind {
+        StmtKind::Call { callee, .. } => Some(callee),
+        StmtKind::Val {
+            binding,
+            value,
+            next,
+        } if is_return_of_var(program, next, binding) => {
+            let value_stmt = program.stmt(value)?;
+            let StmtKind::Call { callee, .. } = value_stmt.kind else {
+                return None;
+            };
+            Some(callee)
+        }
+        _ => None,
+    }
+}
+
+fn is_return_of_var(program: &CoreProgram, stmt_id: StmtId, var: VarId) -> bool {
+    let Some(stmt) = program.stmt(stmt_id) else {
+        return false;
+    };
+    let StmtKind::Return(expr_id) = stmt.kind else {
+        return false;
+    };
+    let Some(expr) = program.expr(expr_id) else {
+        return false;
+    };
+    matches!(expr.kind, ExprKind::Var(bound) if bound == var)
 }
 
 fn collect_handler_shapes(program: &CoreProgram) -> Vec<HandlerShapeKey> {
@@ -94,22 +124,79 @@ fn collect_handler_shapes(program: &CoreProgram) -> Vec<HandlerShapeKey> {
         .collect()
 }
 
-fn first_call_stmt(program: &CoreProgram, root: StmtId) -> Option<StmtId> {
-    let mut stack = vec![root];
-    let mut seen = std::collections::HashSet::new();
-    while let Some(stmt_id) = stack.pop() {
-        if !seen.insert(stmt_id) {
-            continue;
-        }
-        let stmt = program.stmt(stmt_id)?;
-        if matches!(stmt.kind, StmtKind::Call { .. }) {
-            return Some(stmt_id);
-        }
-        for child in stmt.child_stmts() {
-            stack.push(child);
-        }
+fn rewrite_direct_handle_callsite(
+    program: &mut CoreProgram,
+    candidate: &SpecializeCandidate,
+    specialized_callee: FuncId,
+) {
+    let Some(replacement) = build_rewritten_body(program, candidate.body_stmt, specialized_callee)
+    else {
+        return;
+    };
+
+    let Some(handle_stmt) = program.stmt_mut(candidate.handle_stmt) else {
+        return;
+    };
+    if matches!(handle_stmt.kind, StmtKind::Handle { next: None, .. }) {
+        handle_stmt.kind = replacement;
     }
-    None
+}
+
+fn build_rewritten_body(
+    program: &mut CoreProgram,
+    body_stmt: StmtId,
+    specialized_callee: FuncId,
+) -> Option<StmtKind> {
+    let stmt = program.stmt(body_stmt)?.clone();
+    match stmt.kind {
+        StmtKind::Call {
+            result,
+            args,
+            effects,
+            next,
+            ..
+        } => Some(StmtKind::Call {
+            result,
+            callee: specialized_callee,
+            args,
+            effects,
+            next,
+        }),
+        StmtKind::Val {
+            binding,
+            value,
+            next,
+        } if is_return_of_var(program, next, binding) => {
+            let call_stmt = program.stmt(value)?.clone();
+            let StmtKind::Call {
+                result,
+                args,
+                effects,
+                next: call_next,
+                ..
+            } = call_stmt.kind
+            else {
+                return None;
+            };
+
+            let rewritten_call = program.push_stmt(StmtNode {
+                span: call_stmt.span,
+                kind: StmtKind::Call {
+                    result,
+                    callee: specialized_callee,
+                    args,
+                    effects,
+                    next: call_next,
+                },
+            });
+            Some(StmtKind::Val {
+                binding,
+                value: rewritten_call,
+                next,
+            })
+        }
+        _ => None,
+    }
 }
 
 fn ensure_specialized(
