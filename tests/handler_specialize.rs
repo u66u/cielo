@@ -49,8 +49,12 @@ fn main() -> Int {
         .iter()
         .find(|function| interner.resolve(function.name) == Some("main"))
         .expect("main function");
-    let handle_call_callee = first_handle_body_call_callee(compiled.residual.program(), main.body)
-        .expect("handle-wrapped call in main");
+    assert!(
+        !contains_handle_stmt(compiled.residual.program(), main.body),
+        "direct handle-wrapped callsites should be rewritten to plain calls"
+    );
+    let handle_call_callee = first_call_callee(compiled.residual.program(), main.body)
+        .expect("specialized call in main");
     assert_eq!(
         handle_call_callee, specialized_id,
         "handle-wrapped call should target specialized copy"
@@ -128,10 +132,14 @@ fn main() -> Int {
         .iter()
         .find(|function| interner.resolve(function.name) == Some("main"))
         .expect("main function");
-    let callees = handle_body_call_callees(compiled.residual.program(), main.body);
     assert!(
-        !callees.is_empty(),
-        "expected at least one handle-wrapped call in main"
+        !contains_handle_stmt(compiled.residual.program(), main.body),
+        "equivalent direct handle wrappers should be removed after specialization"
+    );
+    let callees = collect_call_callees(compiled.residual.program(), main.body);
+    assert!(
+        callees.len() >= 2,
+        "expected both direct callsites in main to remain as calls"
     );
     assert!(
         callees.iter().all(|callee| *callee == specialized_id),
@@ -159,7 +167,25 @@ fn first_handle_handler(program: &CoreProgram, root: StmtId) -> Option<HandlerId
     None
 }
 
-fn handle_body_call_callees(program: &CoreProgram, root: StmtId) -> Vec<FuncId> {
+fn contains_handle_stmt(program: &CoreProgram, root: StmtId) -> bool {
+    let mut stack = vec![root];
+    let mut seen = HashSet::new();
+    while let Some(stmt_id) = stack.pop() {
+        if !seen.insert(stmt_id) {
+            continue;
+        }
+        let Some(stmt) = program.stmt(stmt_id) else {
+            continue;
+        };
+        if matches!(stmt.kind, StmtKind::Handle { .. }) {
+            return true;
+        }
+        stack.extend(stmt.child_stmts());
+    }
+    false
+}
+
+fn collect_call_callees(program: &CoreProgram, root: StmtId) -> Vec<FuncId> {
     let mut out = Vec::new();
     let mut stack = vec![root];
     let mut seen = HashSet::new();
@@ -170,117 +196,12 @@ fn handle_body_call_callees(program: &CoreProgram, root: StmtId) -> Vec<FuncId> 
         let Some(stmt) = program.stmt(stmt_id) else {
             continue;
         };
-        match &stmt.kind {
-            StmtKind::Handle { body, next, .. } => {
-                if let Some(call_stmt) = first_call_stmt(program, *body) {
-                    if let Some(call_node) = program.stmt(call_stmt) {
-                        if let StmtKind::Call { callee, .. } = call_node.kind {
-                            out.push(callee);
-                        }
-                    }
-                }
-                stack.push(*body);
-                if let Some(next_stmt) = next {
-                    stack.push(*next_stmt);
-                }
-            }
-            StmtKind::Let { next, .. }
-            | StmtKind::Call { next, .. }
-            | StmtKind::Resume { next, .. }
-            | StmtKind::Perform {
-                next,
-                ..
-            } => stack.push(*next),
-            StmtKind::Val { value, next, .. } => {
-                stack.push(*next);
-                stack.push(*value);
-            }
-            StmtKind::If {
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                stack.push(*else_branch);
-                stack.push(*then_branch);
-            }
-            StmtKind::Match { arms, default, .. } => {
-                if let Some(default_stmt) = default {
-                    stack.push(*default_stmt);
-                }
-                for arm in arms {
-                    stack.push(arm.body);
-                }
-            }
-            StmtKind::Stage { body, next, .. } => {
-                stack.push(*body);
-                if let Some(next_stmt) = next {
-                    stack.push(*next_stmt);
-                }
-            }
-            StmtKind::Return(_) | StmtKind::Hole { .. } | StmtKind::Error(_) => {}
+        if let StmtKind::Call { callee, .. } = stmt.kind {
+            out.push(callee);
         }
+        stack.extend(stmt.child_stmts());
     }
     out
-}
-
-fn first_handle_body_call_callee(program: &CoreProgram, root: StmtId) -> Option<FuncId> {
-    let mut stack = vec![root];
-    let mut seen = HashSet::new();
-    while let Some(stmt_id) = stack.pop() {
-        if !seen.insert(stmt_id) {
-            continue;
-        }
-        let stmt = program.stmt(stmt_id)?;
-        match &stmt.kind {
-            StmtKind::Handle { body, next, .. } => {
-                if let Some(call_stmt) = first_call_stmt(program, *body) {
-                    let body_stmt = program.stmt(call_stmt)?;
-                    if let StmtKind::Call { callee, .. } = body_stmt.kind {
-                        return Some(callee);
-                    }
-                }
-                stack.push(*body);
-                if let Some(next_stmt) = next {
-                    stack.push(*next_stmt);
-                }
-            }
-            StmtKind::Let { next, .. }
-            | StmtKind::Call { next, .. }
-            | StmtKind::Resume { next, .. }
-            | StmtKind::Perform {
-                next,
-                ..
-            } => stack.push(*next),
-            StmtKind::Val { value, next, .. } => {
-                stack.push(*next);
-                stack.push(*value);
-            }
-            StmtKind::If {
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                stack.push(*else_branch);
-                stack.push(*then_branch);
-            }
-            StmtKind::Match { arms, default, .. } => {
-                if let Some(default_stmt) = default {
-                    stack.push(*default_stmt);
-                }
-                for arm in arms {
-                    stack.push(arm.body);
-                }
-            }
-            StmtKind::Stage { body, next, .. } => {
-                stack.push(*body);
-                if let Some(next_stmt) = next {
-                    stack.push(*next_stmt);
-                }
-            }
-            StmtKind::Return(_) | StmtKind::Hole { .. } | StmtKind::Error(_) => {}
-        }
-    }
-    None
 }
 
 fn first_call_callee(program: &CoreProgram, root: StmtId) -> Option<FuncId> {
