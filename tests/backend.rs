@@ -86,6 +86,12 @@ fn main() -> Int {
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
     let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let main = compiled
+        .linear
+        .functions
+        .iter()
+        .find(|function| interner.resolve(function.name) == Some("main"))
+        .expect("main function");
 
     assert!(
         !compiled.c_source.contains("(void)cielo_perform(0, \"tick\""),
@@ -94,6 +100,10 @@ fn main() -> Int {
     assert!(
         compiled.c_source.contains("cv_int(9)"),
         "resumptive clause should continue into the operation continuation"
+    );
+    assert!(
+        linear_stmt_graph_tail_resume_wrapper_count(&compiled.linear, main.body) == 1,
+        "tail resumptions should leave exactly one identity wrapper shape after TR optimization"
     );
 }
 
@@ -132,6 +142,10 @@ fn main() -> Int {
     assert!(
         linear_stmt_graph_contains_add_rhs_int(&compiled.linear, main.body, 1),
         "non-tail code after resume should be preserved"
+    );
+    assert!(
+        linear_stmt_graph_tail_resume_wrapper_count(&compiled.linear, main.body) == 0,
+        "non-tail resumptions should not collapse into the tail identity-wrapper shape"
     );
 }
 
@@ -393,6 +407,55 @@ fn linear_stmt_graph_contains_add_rhs_int(
         }
     }
     false
+}
+
+fn linear_stmt_graph_tail_resume_wrapper_count(
+    program: &LinearProgram,
+    root: cielo::common::ids::LinearStmtId,
+) -> usize {
+    let mut stack = vec![root];
+    let mut seen = HashSet::new();
+    let mut count = 0usize;
+    while let Some(stmt_id) = stack.pop() {
+        if !seen.insert(stmt_id) {
+            continue;
+        }
+        let Some(stmt) = program.stmt(stmt_id) else {
+            continue;
+        };
+        if let LinearStmt::Val {
+            binding,
+            next,
+            ..
+        } = stmt.kind
+            && let Some(next_stmt) = program.stmt(next)
+            && let LinearStmt::Let {
+                binding: return_param,
+                value,
+                next: return_next,
+            } = next_stmt.kind
+            && linear_expr_is_var(program, value, binding)
+            && let Some(return_stmt) = program.stmt(return_next)
+            && let LinearStmt::Return(return_expr) = return_stmt.kind
+            && linear_expr_is_var(program, return_expr, return_param)
+        {
+            count += 1;
+        }
+        for child in stmt.child_stmts() {
+            stack.push(child);
+        }
+    }
+    count
+}
+
+fn linear_expr_is_var(
+    program: &LinearProgram,
+    expr_id: cielo::common::ids::LinearExprId,
+    var: VarId,
+) -> bool {
+    program
+        .expr(expr_id)
+        .is_some_and(|expr| matches!(expr.kind, LinearExpr::Var(bound) if bound == var))
 }
 
 fn linear_expr_is_int_literal(
