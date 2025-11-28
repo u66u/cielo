@@ -556,6 +556,11 @@ fn lower_stmt_under_handler(
             } else {
                 continuation
             };
+            // Tail-resumption optimization: `resume(v)` that immediately returns its result
+            // does not need an intermediate `Val` wrapper node.
+            if is_identity_return_of_var(program, *next, *result) {
+                return continuation;
+            }
             let lowered_next = lower_stmt_under_handler(
                 program,
                 *next,
@@ -833,6 +838,19 @@ fn lower_stmt_under_handler(
         StmtKind::Hole { .. } => linear.push_stmt(LinearStmt::Hole),
         StmtKind::Error(_) => linear.push_stmt(LinearStmt::Error),
     }
+}
+
+fn is_identity_return_of_var(program: &CoreProgram, stmt_id: StmtId, var: VarId) -> bool {
+    let Some(stmt) = program.stmt(stmt_id) else {
+        return false;
+    };
+    let StmtKind::Return(expr_id) = stmt.kind else {
+        return false;
+    };
+    let Some(expr) = program.expr(expr_id) else {
+        return false;
+    };
+    matches!(expr.kind, ExprKind::Var(bound) if bound == var)
 }
 
 #[allow(clippy::too_many_arguments)]
