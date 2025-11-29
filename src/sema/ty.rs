@@ -81,6 +81,10 @@ impl TypeStore {
         self.kinds.get(id.index())
     }
 
+    pub fn get_mut(&mut self, id: TypeId) -> Option<&mut TypeKind> {
+        self.kinds.get_mut(id.index())
+    }
+
     pub fn kinds(&self) -> &[TypeKind] {
         &self.kinds
     }

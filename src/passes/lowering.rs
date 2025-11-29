@@ -23,7 +23,7 @@ use std::collections::{HashMap, HashSet};
 // - Linear in AST size (single walk + reverse statement stitching per block)
 
 use crate::common::diagnostics::DiagnosticBag;
-use crate::common::ids::{EffectLabelId, FuncId, SymbolId, TypeId, VarId};
+use crate::common::ids::{EffectLabelId, FuncId, SymbolId, VarId};
 use crate::common::span::Span;
 use crate::frontend::ast::{
     self, BuiltinType, EffectCapabilityHint, EffectPropertyHint, ExprKind as AstExprKind, Item,
@@ -144,7 +144,7 @@ impl Lowerer {
                     self.struct_ctors.insert(decl.name, decl.fields.len());
                     self.program.add_struct(AdtStructDecl {
                         name: decl.name,
-                        field_count: decl.fields.len(),
+                        fields: decl.fields.iter().map(|field| lower_type_ref(&field.ty)).collect(),
                         span: decl.span,
                     });
                 }
@@ -155,7 +155,7 @@ impl Lowerer {
                             .insert(variant.name, (decl.name, variant.fields.len()));
                         variants.push(AdtEnumVariantDecl {
                             name: variant.name,
-                            field_count: variant.fields.len(),
+                            fields: variant.fields.iter().map(lower_type_ref).collect(),
                             span: variant.span,
                         });
                     }
@@ -191,8 +191,12 @@ impl Lowerer {
                 let func_id = self.program.add_function(FunctionDecl {
                     name: function.name,
                     params: param_vars.clone(),
-                    param_types: vec![TypeId::INVALID; param_vars.len()],
-                    return_type: TypeId::INVALID,
+                    param_types: function.params.iter().map(|param| lower_type_ref(&param.ty)).collect(),
+                    return_type: function
+                        .return_type
+                        .as_ref()
+                        .map(lower_type_ref)
+                        .unwrap_or(CoreTypeRef::Unknown),
                     declared_effects: SortedEffectRow::new(declared_effects),
                     body: dummy,
                     ct_only: function.ct_only,

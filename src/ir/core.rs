@@ -310,8 +310,8 @@ pub struct HandlerDef {
 pub struct FunctionDecl {
     pub name: SymbolId,
     pub params: Vec<VarId>,
-    pub param_types: Vec<TypeId>,
-    pub return_type: TypeId,
+    pub param_types: Vec<CoreTypeRef>,
+    pub return_type: CoreTypeRef,
     pub declared_effects: SortedEffectRow,
     pub body: StmtId,
     pub ct_only: bool,
@@ -321,14 +321,14 @@ pub struct FunctionDecl {
 #[derive(Clone, Debug)]
 pub struct AdtStructDecl {
     pub name: SymbolId,
-    pub field_count: usize,
+    pub fields: Vec<CoreTypeRef>,
     pub span: Span,
 }
 
 #[derive(Clone, Debug)]
 pub struct AdtEnumVariantDecl {
     pub name: SymbolId,
-    pub field_count: usize,
+    pub fields: Vec<CoreTypeRef>,
     pub span: Span,
 }
 
