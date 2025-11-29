@@ -270,6 +270,118 @@ fn main() -> Int {
     assert!(compiled.c_source.contains("CIELO_CALL_CONTROL("));
 }
 
+#[test]
+fn linearize_prunes_unreachable_recursive_function_cycles() {
+    let src = r#"
+fn live() -> Int {
+  7
+}
+
+fn dead_a() -> Int {
+  dead_b()
+}
+
+fn dead_b() -> Int {
+  dead_a()
+}
+
+fn main() -> Int {
+  live()
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    let mut names = linear_function_names(&compiled.linear, &interner);
+    names.sort_unstable();
+    assert_eq!(names, vec!["live".to_owned(), "main".to_owned()]);
+    assert!(
+        !compiled.c_source.contains("cielo_fn_dead_a_"),
+        "unreachable dead_a must not be emitted"
+    );
+    assert!(
+        !compiled.c_source.contains("cielo_fn_dead_b_"),
+        "unreachable dead_b must not be emitted"
+    );
+}
+
+#[test]
+fn linearize_keeps_pure_call_dependencies_reachable() {
+    let src = r#"
+fn helper(x: Int) -> Int {
+  x + 1
+}
+
+fn wrapper() -> Int {
+  helper(41)
+}
+
+fn dead() -> Int {
+  0
+}
+
+fn main() -> Int {
+  wrapper()
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    let mut names = linear_function_names(&compiled.linear, &interner);
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        vec![
+            "helper".to_owned(),
+            "main".to_owned(),
+            "wrapper".to_owned()
+        ]
+    );
+    assert!(
+        !compiled.c_source.contains("cielo_fn_dead_"),
+        "unreachable pure function must not be emitted"
+    );
+}
+
+#[test]
+fn linearize_drops_unspecialized_copy_after_handler_specialization() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+
+fn loop() -> Int with Console {
+  loop()
+}
+
+fn main() -> Int {
+  let x = handle { loop() } with Console {
+    | print(s) => 0
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    let loop_count = compiled
+        .linear
+        .functions
+        .iter()
+        .filter(|function| interner.resolve(function.name) == Some("loop"))
+        .count();
+    assert_eq!(
+        compiled.linear.functions.len(),
+        2,
+        "only main + specialized loop should remain reachable"
+    );
+    assert_eq!(
+        loop_count, 1,
+        "unspecialized loop copy should be pruned after callsite retargeting"
+    );
+}
+
 fn collect_call_conventions(
     program: &LinearProgram,
     stmt_id: cielo::common::ids::LinearStmtId,
@@ -466,4 +578,12 @@ fn linear_expr_is_int_literal(
     program.expr(expr_id).is_some_and(|expr| {
         matches!(&expr.kind, LinearExpr::Literal(Literal::Int(lit)) if *lit == value)
     })
+}
+
+fn linear_function_names(program: &LinearProgram, interner: &Interner) -> Vec<String> {
+    program
+        .functions
+        .iter()
+        .map(|function| interner.resolve(function.name).unwrap_or("<missing>").to_owned())
+        .collect()
 }
