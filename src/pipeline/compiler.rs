@@ -154,8 +154,7 @@ impl Compiler {
     }
 
     fn ct_propagate(&self, mono: Monomorphized) -> CtPropagated {
-        let _ = self.config.target;
-        ct_propagate::run(mono)
+        ct_propagate::run(mono, self.config.target)
     }
 
     fn classify_staging(&self, ct: CtPropagated) -> BtaClassified {

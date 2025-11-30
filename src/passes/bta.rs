@@ -21,11 +21,12 @@ use std::collections::HashSet;
 use crate::common::ids::{EffectLabelId, ExprId, StmtId};
 use crate::ir::core::{CoreProgram, ExprKind, StageDirective, StmtKind};
 use crate::pipeline::phases::{
-    BtaClassified, BtaTables, CtPropagated, Reason, SemanticTables, Stage,
+    BtaClassified, BtaTables, CtPropagated, Knownness, Reason, SemanticTables, Stage,
 };
 use crate::sema::effect::{
     EffectFlags, EffectProperties, SortedEffectRow, first_non_thunkable_effect, is_thunkable,
 };
+use crate::sema::ty::Persistability;
 
 pub fn run(ct: CtPropagated) -> BtaClassified {
     let (program, mut diagnostics, sema, mono, ct_tables) = ct.into_parts();
@@ -49,6 +50,7 @@ pub fn run(ct: CtPropagated) -> BtaClassified {
 
     classify_non_thunkable_effects(&program, &sema, &mut bta);
     enforce_ct_only_calls(&program, &sema, &mut bta, &mut diagnostics);
+    classify_knownness(&sema, &ct_tables, &mut bta);
 
     BtaClassified::new(program, diagnostics, sema, mono, ct_tables, bta)
 }
@@ -506,4 +508,31 @@ fn blocking_effect(
         return None;
     }
     first_non_thunkable_effect(row, effect_props)
+}
+
+fn classify_knownness(sema: &SemanticTables, ct: &crate::pipeline::phases::CtPropagationTables, bta: &mut BtaTables) {
+    for (idx, _expr_ty) in sema.type_of_expr.iter().enumerate() {
+        let expr_id = ExprId::new(idx);
+        let knownness = if !ct.ct_cache.contains_key(&expr_id) {
+            Knownness::Unknown
+        } else {
+            let persistable = sema
+                .type_of_expr
+                .get(idx)
+                .and_then(|slot| *slot)
+                .is_some_and(|type_id| {
+                    sema.persistability_of_type
+                        .get(type_id.index())
+                        .is_some_and(|persistability| {
+                            *persistability != Persistability::NonPersistable
+                        })
+                });
+            if persistable {
+                Knownness::KnownPersistable
+            } else {
+                Knownness::KnownLocal
+            }
+        };
+        bta.knownness_of_expr.insert(expr_id, knownness);
+    }
 }

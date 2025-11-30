@@ -14,6 +14,13 @@ pub enum Stage {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Knownness {
+    Unknown,
+    KnownLocal,
+    KnownPersistable,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Reason {
     UnclassifiedRuntime,
     Parameter { func: FuncId, index: u16 },
@@ -65,17 +72,46 @@ pub struct MonomorphizationSummary {
     pub source_to_mono: HashMap<FuncId, Vec<FuncId>>,
 }
 
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct CtFileDep {
+    pub path: String,
+    pub content_hash: String,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CtCacheKey {
+    pub target_word_size_bits: u8,
+    pub target_endianness: String,
+    pub target_pointer_alignment: u8,
+    pub evaluator_policy: String,
+    pub compiler_version: String,
+}
+
+impl Default for CtCacheKey {
+    fn default() -> Self {
+        Self {
+            target_word_size_bits: 64,
+            target_endianness: "little".to_owned(),
+            target_pointer_alignment: 8,
+            evaluator_policy: "v1-int-wrap".to_owned(),
+            compiler_version: env!("CARGO_PKG_VERSION").to_owned(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct CtPropagationTables {
     pub ct_cache: HashMap<ExprId, Literal>,
     pub branch_decisions: HashMap<ExprId, BranchDecision>,
-    pub file_deps: Vec<(String, String)>,
+    pub file_deps: Vec<CtFileDep>,
+    pub cache_key: CtCacheKey,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct BtaTables {
     pub stage_of_expr: HashMap<ExprId, Stage>,
     pub stage_of_var: HashMap<VarId, Stage>,
+    pub knownness_of_expr: HashMap<ExprId, Knownness>,
     pub handler_discharge: HashMap<HandlerId, HandlerDischarge>,
 }
 
