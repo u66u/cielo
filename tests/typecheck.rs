@@ -300,3 +300,145 @@ fn main() -> Int {
         "ComptimeReadFiles should stay thunkable for staging decisions"
     );
 }
+
+#[test]
+fn generic_function_signature_allows_distinct_call_instantiations() {
+    let src = r#"
+fn id(x: A) -> A {
+  x
+}
+fn main() -> Int {
+  let a = id(1);
+  let b = id(true);
+  a
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    assert!(
+        diagnostics.entries().iter().all(|entry| entry.severity != cielo::common::diagnostics::Severity::Error),
+        "generic signature should instantiate per-call without type errors: {:?}",
+        diagnostics.entries()
+    );
+}
+
+#[test]
+fn same_generic_parameter_rejects_mismatched_call_types() {
+    let src = r#"
+fn pair_left(a: A, b: A) -> A {
+  a
+}
+fn main() -> Int {
+  let x = pair_left(1, true);
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    assert!(
+        diagnostics
+            .entries()
+            .iter()
+            .any(|entry| entry.code == "TYPE_CALL_ARG_MISMATCH"),
+        "shared generic parameter should force argument type agreement"
+    );
+}
+
+#[test]
+fn different_generic_parameters_do_not_unify_with_each_other() {
+    let src = r#"
+fn first(a: A, b: B) -> A {
+  a
+}
+fn main() -> Int {
+  let x = first(7, true);
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    assert!(
+        !diagnostics
+            .entries()
+            .iter()
+            .any(|entry| entry.code == "TYPE_CALL_ARG_MISMATCH"),
+        "distinct generic symbols should remain independent"
+    );
+}
+
+#[test]
+fn struct_constructor_field_mismatch_reports_type_error() {
+    let src = r#"
+struct Pair { a: Int, b: Bool }
+fn main() -> Int {
+  let x = Pair(1, 2);
+  0
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    assert!(
+        diagnostics
+            .entries()
+            .iter()
+            .any(|entry| entry.code == "TYPE_STRUCT_FIELD_MISMATCH"),
+        "struct field type mismatch should be diagnosed"
+    );
+}
+
+#[test]
+fn enum_constructor_field_mismatch_reports_type_error() {
+    let src = r#"
+enum OptionI { Some(Int), None }
+fn main() -> Int {
+  let x = Some(true);
+  0
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    assert!(
+        diagnostics
+            .entries()
+            .iter()
+            .any(|entry| entry.code == "TYPE_ENUM_FIELD_MISMATCH"),
+        "enum constructor field type mismatch should be diagnosed"
+    );
+}
+
+#[test]
+fn unresolved_adt_field_type_is_rejected_during_typecheck() {
+    let src = r#"
+struct Broken { x: MissingType }
+fn main() -> Int {
+  0
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    assert!(
+        diagnostics
+            .entries()
+            .iter()
+            .any(|entry| entry.code == "TYPE_UNKNOWN_ADT_FIELD_TYPE"),
+        "unknown ADT field types should be diagnosed"
+    );
+}
