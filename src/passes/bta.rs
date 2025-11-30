@@ -516,7 +516,7 @@ fn classify_knownness(sema: &SemanticTables, ct: &crate::pipeline::phases::CtPro
         let knownness = if !ct.ct_cache.contains_key(&expr_id) {
             Knownness::Unknown
         } else {
-            let persistable = sema
+            let persistable_by_type = sema
                 .type_of_expr
                 .get(idx)
                 .and_then(|slot| *slot)
@@ -527,7 +527,11 @@ fn classify_knownness(sema: &SemanticTables, ct: &crate::pipeline::phases::CtPro
                             *persistability != Persistability::NonPersistable
                         })
                 });
-            if persistable {
+            let persistable_by_value = ct
+                .ct_cache
+                .get(&expr_id)
+                .is_some_and(is_trivially_persistable_literal);
+            if persistable_by_type || persistable_by_value {
                 Knownness::KnownPersistable
             } else {
                 Knownness::KnownLocal
@@ -535,4 +539,16 @@ fn classify_knownness(sema: &SemanticTables, ct: &crate::pipeline::phases::CtPro
         };
         bta.knownness_of_expr.insert(expr_id, knownness);
     }
+}
+
+fn is_trivially_persistable_literal(literal: &crate::ir::core::Literal) -> bool {
+    matches!(
+        literal,
+        crate::ir::core::Literal::Unit
+            | crate::ir::core::Literal::Bool(_)
+            | crate::ir::core::Literal::Int(_)
+            | crate::ir::core::Literal::Float(_)
+            | crate::ir::core::Literal::Char(_)
+            | crate::ir::core::Literal::String(_)
+    )
 }

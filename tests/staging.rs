@@ -1,9 +1,11 @@
 use cielo::common::ids::SourceId;
 use cielo::common::symbols::Interner;
-use cielo::ir::core::{ExprKind, StmtKind};
-use cielo::pipeline::phases::Stage;
+use cielo::ir::core::{ExprKind, Literal, StmtKind};
+use cielo::pipeline::phases::{Knownness, Stage};
 use cielo::sema::effect::SortedEffectRow;
 use cielo::{Compiler, CompilerConfig};
+use std::fs;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
 fn ct_and_bta_tables_are_populated() {
@@ -345,4 +347,120 @@ fn main() -> Int {
         stage,
         Stage::Rt(cielo::pipeline::phases::Reason::EffectNotDischarged(_))
     )));
+}
+
+#[test]
+fn target_word_size_changes_ct_integer_wrapping() {
+    let src = r#"
+fn main() -> Int {
+  let x = 2147483647 + 1;
+  x
+}
+"#;
+    let mut interner_64 = Interner::new();
+    let compiler_64 = Compiler::new(CompilerConfig::default());
+    let residual_64 = compiler_64.compile_source_v0(src, SourceId::from_u32(0), &mut interner_64);
+
+    let mut config_32 = CompilerConfig::default();
+    config_32.target.word_size_bits = 32;
+    config_32.target.pointer_alignment = 4;
+    let compiler_32 = Compiler::new(config_32);
+    let mut interner_32 = Interner::new();
+    let residual_32 = compiler_32.compile_source_v0(src, SourceId::from_u32(0), &mut interner_32);
+
+    let ints_64 = residual_64
+        .ct()
+        .ct_cache
+        .values()
+        .filter_map(|lit| match lit {
+            Literal::Int(value) => Some(*value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let ints_32 = residual_32
+        .ct()
+        .ct_cache
+        .values()
+        .filter_map(|lit| match lit {
+            Literal::Int(value) => Some(*value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        ints_64.contains(&2_147_483_648),
+        "64-bit target should keep wide arithmetic result: {ints_64:?}"
+    );
+    assert!(
+        ints_32.contains(&-2_147_483_648),
+        "32-bit target should wrap arithmetic result: {ints_32:?}"
+    );
+}
+
+#[test]
+fn comptime_read_files_tracks_dependency_hash_changes() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("cielo_ct_dep_{stamp}.txt"));
+    fs::write(&path, "alpha").expect("write dep file");
+    let path_text = path.to_string_lossy().replace('\\', "\\\\");
+
+    let src = format!(
+        r#"
+effect ComptimeReadFiles {{ fn read(path: String) -> String }}
+fn main() -> Int {{
+  do ComptimeReadFiles.read("{path_text}");
+  0
+}}
+"#
+    );
+
+    let compiler = Compiler::new(CompilerConfig::default());
+    let mut interner_1 = Interner::new();
+    let residual_1 = compiler.compile_source_v0(src.as_str(), SourceId::from_u32(0), &mut interner_1);
+    let dep_1 = residual_1.ct().file_deps.first().expect("first dep");
+
+    fs::write(&path, "beta").expect("rewrite dep file");
+    let mut interner_2 = Interner::new();
+    let residual_2 = compiler.compile_source_v0(src.as_str(), SourceId::from_u32(1), &mut interner_2);
+    let dep_2 = residual_2.ct().file_deps.first().expect("first dep after edit");
+
+    assert_eq!(
+        dep_1.path, dep_2.path,
+        "dependency identity path should stay stable"
+    );
+    assert_ne!(
+        dep_1.content_hash, dep_2.content_hash,
+        "dependency hash should change when file contents change"
+    );
+}
+
+#[test]
+fn bta_knownness_marks_cached_values_as_persistable_when_possible() {
+    let src = r#"
+fn main() -> Int {
+  let x = 1 + 2;
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
+
+    assert!(
+        !residual.ct().ct_cache.is_empty(),
+        "ct cache must contain evaluated expressions"
+    );
+    for expr_id in residual.ct().ct_cache.keys() {
+        assert!(
+            matches!(
+                residual.bta().knownness_of_expr.get(expr_id),
+                Some(Knownness::KnownPersistable)
+            ),
+            "cached expression e{} should be marked as persistable-known",
+            expr_id.as_u32()
+        );
+    }
 }
