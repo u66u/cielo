@@ -58,8 +58,9 @@ no rollback, and deterministic behavior regardless of evaluation costs.
 The CT propagation pass permits evaluation of expressions performing effects 
 from a configurable set: `{ Pure, Diverge, Alloc, LocalState, ComptimeReadFiles }`.
 
-When `ComptimeReadFiles` is exercised, the file path and content hash are 
-recorded as build dependencies. If the file changes, CT propagation re-runs.
+When `ComptimeReadFiles` is exercised, dependencies are recorded as
+normalized path identity + content hash. If the hash changes, CT propagation
+re-runs.
 
 Users can extend the allowed set for custom CT-only effects that are 
 deterministic given their inputs. An effect is allowed during CT propagation 
@@ -104,13 +105,21 @@ Values crossing stage boundaries are classified by type:
 
 BTA uses this for cross-stage persistence checks. The residualizer uses tier distinction for embedding strategy.
 
+Knownness is tracked separately from staging:
+- **KnownLocal**: CT evaluator computed a value for this expression in the current build.
+- **KnownPersistable**: known local value + persistable type, so it is eligible for CT→RT embedding.
+
+This distinction improves diagnostics without requiring full online/offline CSP machinery in v1.
+
 ### CT-only functions
 
 Functions using CT-only effects (`ComptimeReadFiles`), taking `TypeInfo` arguments, or explicitly annotated CT-only cannot fall back to RT. If BTA determines a CT-only function is called with RT arguments, this is a hard error.
 
 ### Target-aware evaluation
 
-The evaluator simulates target semantics, not host. Integer arithmetic uses target-width types. Byte reinterpretation uses target endianness. The evaluator takes a `TargetSpec` and all memory layout operations consult it. CT cache entries are keyed by target spec.
+The evaluator simulates target semantics, not host. Integer arithmetic uses target-width types (wrapping/sign-extension to target word size). Byte reinterpretation uses target endianness. The evaluator takes a `TargetSpec` and all memory layout operations consult it. CT cache entries are keyed by target spec + evaluator policy + compiler version.
+
+Current caveat: floating point still uses host behavior when exact target emulation is unavailable.
 
 ### Type-level CT is a separate, earlier phase
 
@@ -450,14 +459,14 @@ Check: intersect computation's effect row with handler's operation set. If empty
 
 ### ComptimeReadFiles in Demand Evaluation
 
-`ComptimeReadFiles` is allowed during demand evaluation (BTA branch condition evaluation). When exercised, file paths and content hashes are recorded as dependencies on BTA results. File changes trigger BTA re-run. Users can extend the demand evaluation allowlist for custom deterministic CT-only effects.
+`ComptimeReadFiles` is allowed during demand evaluation (BTA branch condition evaluation). When exercised, normalized paths and content hashes are recorded as dependencies on BTA results. Content-hash changes trigger BTA re-run. Users can extend the demand evaluation allowlist for custom deterministic CT-only effects.
 
 ### Three-Tier Persistability
 
 Values crossing CT→RT boundary are classified:
 
 - **Trivial** (Int, Bool, Char, Float, String, small enums): inline as literal, cheap to duplicate
-- **Serializable** (structs/arrays/ADTs of persistable fields): constant table for large or multiply-used values
+- **Serializable** (structs/arrays/ADTs of persistable fields): constant table for large or multiply-used values (dedup + size caps)
 - **Non-persistable** (closures over RT values, handles, capabilities): cannot cross, error at boundary
 
 ### CT-Only Functions

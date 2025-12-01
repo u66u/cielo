@@ -81,9 +81,17 @@ Three-tier persistability: Trivial (inline), Serializable (constant table),
 NonPersistable (error at boundary). Residualizer uses tier to choose embedding 
 strategy.
 
+Knownness split in staging analysis: `KnownLocal` (CT evaluator produced a value) 
+vs `KnownPersistable` (value can safely cross CT→RT). This keeps CSP diagnostics 
+explicit without requiring full MetaOCaml online/offline machinery in v1.
+
 Target-aware CT evaluation: evaluator uses target word size, endianness, and 
 alignment for all arithmetic and memory layout operations. CT cache keyed by 
 target spec. Cross-compilation produces correct CT results.
+
+Constant-table embedding policy: pooled constants are structurally deduplicated, 
+subject to per-constant and per-compilation-unit size caps. Runtime resources, 
+capabilities, raw pointers, and closure values are not embeddable.
 
 ComptimeReadFiles allowed in demand evaluation with file dependency tracking. 
 BTA results invalidated when dependency files change. Users can extend demand 

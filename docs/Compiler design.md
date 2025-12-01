@@ -382,7 +382,9 @@ and concrete effect rows.
 **Produces:**
 - `ct_cache: ExprId -> Value` (all successfully evaluated CT expressions)
 - `branch_decisions: ExprId -> BranchDecision` (live branch for CT conditions)
-- `file_deps: Vec<(PathBuf, FileHash)>` (build dependencies)
+- `knownness_of_expr: ExprId -> {Unknown, KnownLocal, KnownPersistable}`
+- `file_deps: Vec<DepKey { normalized_path, content_hash }>` (build dependencies)
+- `ct_cache_key: {target spec, evaluator policy, compiler version}`
 - `ct_diagnostics: Vec<CtDiagnostic>` (fuel/size warnings)
 
 Tree-walking evaluation of all transitively-CT expressions. Respects fuel 
@@ -395,6 +397,7 @@ Iterates until no new cache entries (typically 1 pass).
 **Produces:**
 - `stage_of_expr: ExprId -> Stage { CT | RT(reason) }`
 - `stage_of_var: VarId -> Stage`
+- `knownness_of_expr: ExprId -> Knownness`
 - `handler_discharge: HandlerId -> HandlerDischarge`
 - `usage_of: VarId -> Usage` (from reachability analysis, can also run earlier)
 
@@ -407,6 +410,11 @@ Deterministic given inputs.
 **Produces:**
 - residual IR with CT parts replaced by constants
 - `func_effect_summary: FuncId -> EffectRow` (recomputed for residual)
+
+Constant embedding policy:
+- Trivial values inline directly.
+- Serializable values use a deduplicated const pool with per-entry and per-unit caps.
+- Non-persistable values fail boundary checks (never embedded).
 
 ### 6) Handler specialization
 
