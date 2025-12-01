@@ -27,6 +27,8 @@ use crate::ir::linear::{CallConvention, LinearExpr, LinearFunction, LinearProgra
 use crate::passes::linearize::Linearized;
 
 const C_RUNTIME_HEADER: &str = include_str!("../backend/cielo_runtime.h");
+const MAX_CONST_STRING_BYTES: usize = 1024;
+const MAX_CONST_POOL_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct EmittedC {
@@ -46,6 +48,12 @@ pub fn emit_c_program(program: &LinearProgram, interner: &Interner) -> String {
     let mut out = String::new();
     out.push_str(C_RUNTIME_HEADER);
     if !out.ends_with('\n') {
+        out.push('\n');
+    }
+
+    let const_pool = build_string_const_pool(program);
+    emit_const_pool(&mut out, &const_pool);
+    if !const_pool.entries.is_empty() {
         out.push('\n');
     }
 
@@ -77,6 +85,7 @@ pub fn emit_c_program(program: &LinearProgram, interner: &Interner) -> String {
             name,
             &fn_name_by_symbol,
             interner,
+            &const_pool,
         );
         out.push('\n');
     }
@@ -92,6 +101,7 @@ fn emit_function(
     c_name: &str,
     fn_name_by_symbol: &HashMap<SymbolId, String>,
     interner: &Interner,
+    const_pool: &StringConstPool,
 ) {
     emit_fn_signature(out, c_name, &function.params);
     out.push_str(" {\n");
@@ -114,6 +124,7 @@ fn emit_function(
         program,
         fn_name_by_symbol,
         interner,
+        const_pool,
         next_temp: 0,
     };
     emit_stmt(function.body, EmitMode::Return, out, 1, &mut cx);
@@ -364,7 +375,7 @@ fn emit_expr(expr_id: LinearExprId, cx: &EmitCx<'_>) -> String {
 
     match &expr.kind {
         LinearExpr::Var(var) => format!("v{}", var.as_u32()),
-        LinearExpr::Literal(lit) => emit_literal(lit),
+        LinearExpr::Literal(lit) => emit_literal(lit, cx.const_pool),
         LinearExpr::Unary { op, expr } => format!("{}({})", op.c_func(), emit_expr(*expr, cx)),
         LinearExpr::Binary { op, lhs, rhs } => {
             let lhs = emit_expr(*lhs, cx);
@@ -445,14 +456,20 @@ fn format_ctor_call(
     out
 }
 
-fn emit_literal(lit: &Literal) -> String {
+fn emit_literal(lit: &Literal, const_pool: &StringConstPool) -> String {
     match lit {
         Literal::Unit => "cv_unit()".to_owned(),
         Literal::Bool(value) => format!("cv_bool({})", if *value { 1 } else { 0 }),
         Literal::Int(value) => format!("cv_int({value})"),
         Literal::Float(value) => format!("cv_float({value})"),
         Literal::Char(value) => format!("cv_char({})", *value as u32),
-        Literal::String(value) => format!("cv_string(\"{}\")", escape_c_string(value)),
+        Literal::String(value) => {
+            if let Some(symbol) = const_pool.symbol_for(value) {
+                format!("cv_string({symbol})")
+            } else {
+                format!("cv_string(\"{}\")", escape_c_string(value))
+            }
+        }
     }
 }
 
@@ -615,6 +632,7 @@ struct EmitCx<'a> {
     program: &'a LinearProgram,
     fn_name_by_symbol: &'a HashMap<SymbolId, String>,
     interner: &'a Interner,
+    const_pool: &'a StringConstPool,
     next_temp: u32,
 }
 
@@ -632,4 +650,71 @@ enum EmitMode {
     AssignVar(VarId),
     AssignTemp(String),
     Discard,
+}
+
+#[derive(Clone, Debug)]
+struct StringConstEntry {
+    symbol: String,
+    value: String,
+}
+
+#[derive(Clone, Debug, Default)]
+struct StringConstPool {
+    entries: Vec<StringConstEntry>,
+    by_value: HashMap<String, usize>,
+    total_bytes: usize,
+}
+
+impl StringConstPool {
+    fn try_insert(&mut self, value: &str) {
+        if self.by_value.contains_key(value) {
+            return;
+        }
+
+        let byte_len = value.len().saturating_add(1);
+        if byte_len > MAX_CONST_STRING_BYTES {
+            return;
+        }
+        if self.total_bytes.saturating_add(byte_len) > MAX_CONST_POOL_BYTES {
+            return;
+        }
+
+        let idx = self.entries.len();
+        self.entries.push(StringConstEntry {
+            symbol: format!("cielo_const_s_{idx}"),
+            value: value.to_owned(),
+        });
+        self.by_value.insert(value.to_owned(), idx);
+        self.total_bytes = self.total_bytes.saturating_add(byte_len);
+    }
+
+    fn symbol_for(&self, value: &str) -> Option<&str> {
+        self.by_value
+            .get(value)
+            .and_then(|idx| self.entries.get(*idx))
+            .map(|entry| entry.symbol.as_str())
+    }
+}
+
+fn build_string_const_pool(program: &LinearProgram) -> StringConstPool {
+    let mut pool = StringConstPool::default();
+    for expr in program.exprs() {
+        let LinearExpr::Literal(Literal::String(value)) = &expr.kind else {
+            continue;
+        };
+        pool.try_insert(value);
+    }
+    pool
+}
+
+fn emit_const_pool(out: &mut String, pool: &StringConstPool) {
+    for entry in &pool.entries {
+        writeln!(
+            out,
+            "static const char* {} = \"{}\";",
+            entry.symbol,
+            escape_c_string(entry.value.as_str())
+        )
+        .expect("in-memory write should not fail");
+    }
 }

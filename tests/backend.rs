@@ -44,6 +44,57 @@ fn main() -> Int {
 }
 
 #[test]
+fn c_emitter_dedups_string_literals_in_const_pool() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+fn main() -> Int {
+  do Console.print("same");
+  do Console.print("same");
+  0
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert_eq!(
+        compiled.c_source.matches("static const char* cielo_const_s_").count(),
+        1,
+        "duplicated string literals should be pooled exactly once"
+    );
+    assert!(
+        compiled.c_source.contains("cv_string(cielo_const_s_0)"),
+        "pooled string should be referenced through const symbol"
+    );
+}
+
+#[test]
+fn c_emitter_respects_const_pool_entry_size_cap() {
+    let long = "a".repeat(1100);
+    let src = format!(
+        r#"
+effect Console {{ fn print(s: String) -> () }}
+fn main() -> Int {{
+  do Console.print("{long}");
+  0
+}}
+"#
+    );
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src.as_str(), SourceId::from_u32(0), &mut interner);
+
+    assert!(
+        !compiled.c_source.contains("static const char* cielo_const_s_"),
+        "oversized literals should not be added to const pool"
+    );
+    assert!(
+        compiled.c_source.contains("cv_string(\""),
+        "oversized literals should still be emitted inline"
+    );
+}
+
+#[test]
 fn lowers_handled_perform_into_clause_without_runtime_dispatch() {
     let src = r#"
 effect Console { fn print(s: String) -> () }
