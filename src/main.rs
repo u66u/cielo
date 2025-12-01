@@ -13,6 +13,9 @@ use cielo::passes::lowering::LowerConfig;
 use cielo::passes::{c_emit, handler_specialize, linearize};
 use cielo::pipeline::phases::{Residualized, Stage};
 use cielo::pipeline::provenance::runtime_provenance_lines;
+use cielo::pipeline::staging_diff::{
+    SnapshotStage, collect_snapshot, diff_snapshots, load_snapshot, save_snapshot,
+};
 use cielo::{Compiler, CompilerConfig};
 
 const RUNTIME_HEADER: &str = include_str!("backend/cielo_runtime.h");
@@ -40,6 +43,12 @@ struct Cli {
 
     #[arg(long, default_value = "gcc")]
     cc: String,
+
+    #[arg(long, help = "Persist and diff staging snapshots across rebuilds")]
+    staging_diff: bool,
+
+    #[arg(long, default_value = "/tmp/cielo_staging_snapshot.tsv")]
+    staging_snapshot: PathBuf,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum, Debug)]
@@ -108,6 +117,9 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
     let residual = compiler.run_v0_core_pipeline(core);
     if should_dump(cli, DumpKind::Sema) {
         dump_sema_summary(&residual);
+    }
+    if cli.staging_diff {
+        emit_staging_diff(cli.staging_snapshot.as_path(), &residual);
     }
     if should_dump(cli, DumpKind::Anf) {
         println!("=== ANF ===");
@@ -284,6 +296,18 @@ fn dump_sema_summary(residual: &Residualized) {
         .filter(|stage| matches!(stage, Stage::Ct))
         .count();
     let rt_exprs = residual.bta().stage_of_expr.len().saturating_sub(ct_exprs);
+    let known_local = residual
+        .bta()
+        .knownness_of_expr
+        .values()
+        .filter(|known| matches!(known, cielo::pipeline::phases::Knownness::KnownLocal))
+        .count();
+    let known_persistable = residual
+        .bta()
+        .knownness_of_expr
+        .values()
+        .filter(|known| matches!(known, cielo::pipeline::phases::Knownness::KnownPersistable))
+        .count();
     println!("=== Sema/BTA Summary ===");
     println!(
         "typed_exprs={typed_exprs}/{}",
@@ -294,6 +318,7 @@ fn dump_sema_summary(residual: &Residualized) {
         residual.program().stmts().len()
     );
     println!("stage ct={ct_exprs}, rt={rt_exprs}");
+    println!("known local={known_local}, known persistable={known_persistable}");
 
     if rt_exprs == 0 {
         return;
@@ -321,6 +346,55 @@ fn dump_sema_summary(residual: &Residualized) {
         if shown >= 3 {
             break;
         }
+    }
+}
+
+fn emit_staging_diff(snapshot_path: &Path, residual: &Residualized) {
+    let current = collect_snapshot(residual.program(), residual.bta());
+    let previous = load_snapshot(snapshot_path).unwrap_or_default();
+    let changes = diff_snapshots(previous.as_slice(), current.as_slice());
+
+    println!("=== Staging Diff ===");
+    if changes.is_empty() {
+        println!("(no stage changes)");
+    } else {
+        for change in &changes {
+            println!(
+                "- {}: {} -> {}",
+                change.stable_id,
+                stage_text(change.before),
+                stage_text(change.after),
+            );
+            if !change.before_reason.is_empty() || !change.after_reason.is_empty() {
+                println!(
+                    "  reason: {} -> {}",
+                    if change.before_reason.is_empty() {
+                        "<none>"
+                    } else {
+                        change.before_reason.as_str()
+                    },
+                    if change.after_reason.is_empty() {
+                        "<none>"
+                    } else {
+                        change.after_reason.as_str()
+                    }
+                );
+            }
+        }
+    }
+
+    if let Err(err) = save_snapshot(snapshot_path, current.as_slice()) {
+        eprintln!(
+            "failed to persist staging snapshot {}: {err}",
+            snapshot_path.display()
+        );
+    }
+}
+
+fn stage_text(stage: SnapshotStage) -> &'static str {
+    match stage {
+        SnapshotStage::Ct => "CT",
+        SnapshotStage::Rt => "RT",
     }
 }
 
