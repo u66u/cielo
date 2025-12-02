@@ -321,7 +321,8 @@ impl<'a> TypeChecker<'a> {
             self.infer_function(FuncId::new(idx));
         }
 
-        let mut sema = SemanticTables::with_counts(self.program.exprs().len(), self.program.stmts().len());
+        let mut sema =
+            SemanticTables::with_counts(self.program.exprs().len(), self.program.stmts().len());
         sema.effects_of_expr = vec![SortedEffectRow::empty(); self.program.exprs().len()];
         sema.effect_properties = self
             .program
@@ -394,7 +395,12 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
-    fn infer_stmt(&mut self, stmt_id: StmtId, env: &mut Env, resume_ctx: &mut ResumeCtx) -> InferTy {
+    fn infer_stmt(
+        &mut self,
+        stmt_id: StmtId,
+        env: &mut Env,
+        resume_ctx: &mut ResumeCtx,
+    ) -> InferTy {
         let Some(stmt) = self.program.stmt(stmt_id) else {
             return InferTy::Concrete(self.error_type);
         };
@@ -488,7 +494,9 @@ impl<'a> TypeChecker<'a> {
                             stmt.span,
                         );
                     }
-                    for (idx, (arg_id, expected)) in args.iter().zip(sig.param_types.iter()).enumerate() {
+                    for (idx, (arg_id, expected)) in
+                        args.iter().zip(sig.param_types.iter()).enumerate()
+                    {
                         if let Some(expected_ty) = expected {
                             let arg_ty = self.infer_expr(*arg_id, env);
                             if let Some(actual) = self.infer.resolve_concrete(arg_ty)
@@ -696,13 +704,13 @@ impl<'a> TypeChecker<'a> {
         );
 
         let mut return_env = env.clone();
-        return_env.insert(handler_def.return_param, self.mono_scheme(handler_result_ty));
-        let mut return_resume = resume_ctx.clone();
-        let return_ty = self.infer_stmt(
-            handler_def.return_body,
-            &mut return_env,
-            &mut return_resume,
+        return_env.insert(
+            handler_def.return_param,
+            self.mono_scheme(handler_result_ty),
         );
+        let mut return_resume = resume_ctx.clone();
+        let return_ty =
+            self.infer_stmt(handler_def.return_body, &mut return_env, &mut return_resume);
         let _ = self.unify_with(
             return_ty,
             handler_result_ty,
@@ -773,13 +781,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn infer_call(
-        &mut self,
-        callee: FuncId,
-        args: &[ExprId],
-        env: &Env,
-        span: Span,
-    ) -> InferTy {
+    fn infer_call(&mut self, callee: FuncId, args: &[ExprId], env: &Env, span: Span) -> InferTy {
         let Some(template) = self.function_templates.get(callee.index()).cloned() else {
             self.diagnostics.error(
                 "TYPE_UNKNOWN_CALLEE",
@@ -1048,7 +1050,11 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn instantiate_template(&mut self, template: TypeTemplate, generic_inst: &[InferTy]) -> InferTy {
+    fn instantiate_template(
+        &mut self,
+        template: TypeTemplate,
+        generic_inst: &[InferTy],
+    ) -> InferTy {
         match template {
             TypeTemplate::Concrete(ty) => InferTy::Concrete(ty),
             TypeTemplate::Generic(idx) => generic_inst
@@ -1097,12 +1103,7 @@ impl<'a> TypeChecker<'a> {
         vars
     }
 
-    fn pick_numeric_type(
-        &mut self,
-        left: InferTy,
-        right: Option<InferTy>,
-        span: Span,
-    ) -> InferTy {
+    fn pick_numeric_type(&mut self, left: InferTy, right: Option<InferTy>, span: Span) -> InferTy {
         for candidate in [left, right.unwrap_or(left)] {
             if let Some(ty) = self.infer.resolve_concrete(candidate)
                 && (ty == self.prim.int || ty == self.prim.float)
@@ -1154,9 +1155,9 @@ impl<'a> TypeChecker<'a> {
                     return existing;
                 }
                 let param_index = self.unresolved_type_params.len();
-                let param = self
-                    .store
-                    .intern(TypeKind::TypeParam((param_index.min(u16::MAX as usize)) as u16));
+                let param = self.store.intern(TypeKind::TypeParam(
+                    (param_index.min(u16::MAX as usize)) as u16,
+                ));
                 self.unresolved_type_params.insert(root, param);
                 param
             }
@@ -1213,18 +1214,20 @@ fn build_function_templates(
 
         let ret = match function.return_type {
             CoreTypeRef::Unknown => None,
-            _ => match template_type_from_ref(&function.return_type, adt_types, prim, &mut generics)
-            {
-                Some(template) => Some(template),
-                None => {
-                    diagnostics.error(
-                        "TYPE_RETURN_TYPE_UNKNOWN",
-                        "Could not resolve return type annotation",
-                        function.span,
-                    );
-                    Some(TypeTemplate::Concrete(error_type))
+            _ => {
+                match template_type_from_ref(&function.return_type, adt_types, prim, &mut generics)
+                {
+                    Some(template) => Some(template),
+                    None => {
+                        diagnostics.error(
+                            "TYPE_RETURN_TYPE_UNKNOWN",
+                            "Could not resolve return type annotation",
+                            function.span,
+                        );
+                        Some(TypeTemplate::Concrete(error_type))
+                    }
                 }
-            },
+            }
         };
 
         templates.push(FunctionTemplate {
@@ -1300,7 +1303,10 @@ fn build_ctor_signatures(
     program: &CoreProgram,
     store: &TypeStore,
     adt_types: &HashMap<SymbolId, TypeId>,
-) -> (HashMap<SymbolId, StructCtorSig>, HashMap<SymbolId, EnumCtorSig>) {
+) -> (
+    HashMap<SymbolId, StructCtorSig>,
+    HashMap<SymbolId, EnumCtorSig>,
+) {
     let mut struct_ctors = HashMap::new();
     let mut enum_ctors = HashMap::new();
 
@@ -1443,7 +1449,8 @@ fn intern_program_adts(
 
         if let Some(TypeKind::Enum { variants, .. }) = store.get_mut(ty_id) {
             for (variant_name, resolved_fields) in resolved_variants {
-                if let Some(variant) = variants.iter_mut().find(|entry| entry.name == variant_name) {
+                if let Some(variant) = variants.iter_mut().find(|entry| entry.name == variant_name)
+                {
                     variant.fields = resolved_fields;
                 }
             }
@@ -1494,10 +1501,8 @@ fn infer_stmt_effects(program: &CoreProgram, out: &mut [SortedEffectRow]) {
                     StmtKind::Call { effects, .. } => {
                         effects.union(&children.first().cloned().unwrap_or_default())
                     }
-                    StmtKind::Perform { effect, .. } => {
-                        SortedEffectRow::singleton(*effect)
-                            .union(&children.first().cloned().unwrap_or_default())
-                    }
+                    StmtKind::Perform { effect, .. } => SortedEffectRow::singleton(*effect)
+                        .union(&children.first().cloned().unwrap_or_default()),
                     StmtKind::If { .. } => children
                         .first()
                         .cloned()
