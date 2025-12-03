@@ -1,7 +1,16 @@
-use cielo::common::ids::{EffectLabelId, ExprId, SourceId};
+use cielo::common::diagnostics::DiagnosticBag;
+use cielo::common::ids::{EffectLabelId, ExprId, FuncId, SourceId, SymbolId, VarId};
+use cielo::common::span::Span;
 use cielo::common::symbols::Interner;
-use cielo::ir::core::StmtKind;
-use cielo::pipeline::phases::Stage;
+use cielo::ir::core::{
+    CoreProgram, CoreTypeRef, ExprKind, ExprNode, FunctionDecl, Literal, MatchArm,
+    PrimitiveTypeRef, StmtKind, StmtNode,
+};
+use cielo::passes::residualize;
+use cielo::pipeline::phases::{
+    BranchDecision, BtaClassified, BtaTables, CtPropagationTables, MonomorphizationSummary,
+    SemanticTables, Stage,
+};
 use cielo::pipeline::provenance::runtime_provenance_lines;
 use cielo::sema::effect::SortedEffectRow;
 use cielo::{Compiler, CompilerConfig};
@@ -153,6 +162,232 @@ fn main() -> Int {
         }
     }
     assert!(saw_call, "expected at least one call in main flow");
+}
+
+#[test]
+fn residualize_replaces_cached_ct_expr_with_literal() {
+    let mut program = CoreProgram::new();
+    let span = Span::synthetic();
+
+    let one = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(1)),
+    });
+    let two = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(2)),
+    });
+    let sum = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Add,
+            lhs: one,
+            rhs: two,
+        },
+    });
+    let result_var = VarId::from_u32(0);
+    let result_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Var(result_var),
+    });
+    let ret = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(result_expr),
+    });
+    let body = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Let {
+            binding: result_var,
+            value: sum,
+            next: ret,
+        },
+    });
+    let main_name = SymbolId::from_u32(1);
+    let main_id = program.add_function(FunctionDecl {
+        name: main_name,
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::empty(),
+        body,
+        ct_only: false,
+        span,
+    });
+    program.set_entrypoints([main_id]);
+
+    let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
+    let mut ct = CtPropagationTables::default();
+    ct.ct_cache.insert(sum, Literal::Int(3));
+    let classified = BtaClassified::new(
+        program,
+        DiagnosticBag::default(),
+        sema,
+        MonomorphizationSummary::default(),
+        ct,
+        BtaTables::default(),
+    );
+    let residual = residualize::run(classified);
+
+    assert!(matches!(
+        residual.program().expr(sum).map(|expr| &expr.kind),
+        Some(ExprKind::Literal(Literal::Int(3)))
+    ));
+}
+
+#[test]
+fn residualize_prunes_if_using_ct_branch_decision() {
+    let mut program = CoreProgram::new();
+    let span = Span::synthetic();
+
+    let cond = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Bool(true)),
+    });
+    let then_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(1)),
+    });
+    let else_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(2)),
+    });
+    let then_stmt = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(then_expr),
+    });
+    let else_stmt = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(else_expr),
+    });
+    let root_if = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::If {
+            cond,
+            then_branch: then_stmt,
+            else_branch: else_stmt,
+        },
+    });
+
+    let main_id = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(2),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::empty(),
+        body: root_if,
+        ct_only: false,
+        span,
+    });
+    program.set_entrypoints([main_id]);
+
+    let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
+    let mut ct = CtPropagationTables::default();
+    ct.ct_cache.insert(cond, Literal::Bool(true));
+    ct.branch_decisions.insert(cond, BranchDecision::LiveTrue);
+    let classified = BtaClassified::new(
+        program,
+        DiagnosticBag::default(),
+        sema,
+        MonomorphizationSummary::default(),
+        ct,
+        BtaTables::default(),
+    );
+    let residual = residualize::run(classified);
+
+    let body = residual
+        .program()
+        .function(FuncId::new(0))
+        .expect("main")
+        .body;
+    assert_eq!(body, then_stmt, "if root should be rewired to live branch");
+}
+
+#[test]
+fn residualize_prunes_match_with_known_variant_scrutinee() {
+    let mut program = CoreProgram::new();
+    let span = Span::synthetic();
+    let enum_name = SymbolId::from_u32(11);
+    let some_variant = SymbolId::from_u32(12);
+    let none_variant = SymbolId::from_u32(13);
+
+    let scrutinee = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::MakeEnum {
+            ty: enum_name,
+            variant: some_variant,
+            fields: Vec::new(),
+        },
+    });
+    let one = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(1)),
+    });
+    let zero = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(0)),
+    });
+    let some_body = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(one),
+    });
+    let none_body = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(zero),
+    });
+    let root_match = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Match {
+            scrutinee,
+            arms: vec![
+                MatchArm {
+                    tag: some_variant,
+                    binders: Vec::new(),
+                    body: some_body,
+                    span,
+                },
+                MatchArm {
+                    tag: none_variant,
+                    binders: Vec::new(),
+                    body: none_body,
+                    span,
+                },
+            ],
+            default: None,
+        },
+    });
+
+    let main_id = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(14),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::empty(),
+        body: root_match,
+        ct_only: false,
+        span,
+    });
+    program.set_entrypoints([main_id]);
+
+    let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
+    let classified = BtaClassified::new(
+        program,
+        DiagnosticBag::default(),
+        sema,
+        MonomorphizationSummary::default(),
+        CtPropagationTables::default(),
+        BtaTables::default(),
+    );
+    let residual = residualize::run(classified);
+
+    let body = residual
+        .program()
+        .function(FuncId::new(0))
+        .expect("main")
+        .body;
+    assert_eq!(
+        body, some_body,
+        "match root should be rewired to arm selected by known variant"
+    );
 }
 
 #[test]
