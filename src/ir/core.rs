@@ -419,6 +419,10 @@ impl CoreProgram {
         &self.handlers
     }
 
+    pub fn handler_mut(&mut self, id: HandlerId) -> Option<&mut HandlerDef> {
+        self.handlers.get_mut(id.index())
+    }
+
     pub fn effects(&self) -> &[EffectDecl] {
         &self.effects
     }
@@ -445,6 +449,10 @@ impl CoreProgram {
 
     pub fn expr(&self, id: ExprId) -> Option<&ExprNode> {
         self.exprs.get(id.index())
+    }
+
+    pub fn expr_mut(&mut self, id: ExprId) -> Option<&mut ExprNode> {
+        self.exprs.get_mut(id.index())
     }
 
     pub fn stmt(&self, id: StmtId) -> Option<&StmtNode> {
