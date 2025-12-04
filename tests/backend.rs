@@ -44,6 +44,58 @@ fn main() -> Int {
 }
 
 #[test]
+fn source_if_with_ct_condition_is_pruned_before_linear_ir() {
+    let src = r#"
+fn main() -> Int {
+  let x = if true { 1 } else { 2 };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let main = compiled
+        .linear
+        .functions
+        .iter()
+        .find(|function| interner.resolve(function.name) == Some("main"))
+        .expect("main function");
+
+    assert!(
+        !linear_stmt_graph_contains_if(&compiled.linear, main.body),
+        "ct-known source if should be pruned before linearization"
+    );
+}
+
+#[test]
+fn source_match_with_known_variant_is_pruned_before_linear_ir() {
+    let src = r#"
+enum Flag { On, Off }
+fn main() -> Int {
+  let x = match On() {
+    | On => 1
+    | _ => 0
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let main = compiled
+        .linear
+        .functions
+        .iter()
+        .find(|function| interner.resolve(function.name) == Some("main"))
+        .expect("main function");
+
+    assert!(
+        !linear_stmt_graph_contains_match(&compiled.linear, main.body),
+        "known-variant source match should be pruned before linearization"
+    );
+}
+
+#[test]
 fn c_emitter_dedups_string_literals_in_const_pool() {
     let src = r#"
 effect Console { fn print(s: String) -> () }
@@ -500,6 +552,52 @@ fn linear_stmt_graph_contains_perform_effect(
             continue;
         };
         if matches!(stmt.kind, LinearStmt::Perform { effect: eff, .. } if eff.as_u32() == effect) {
+            return true;
+        }
+        for child in stmt.child_stmts() {
+            stack.push(child);
+        }
+    }
+    false
+}
+
+fn linear_stmt_graph_contains_if(
+    program: &LinearProgram,
+    root: cielo::common::ids::LinearStmtId,
+) -> bool {
+    let mut stack = vec![root];
+    let mut seen = HashSet::new();
+    while let Some(stmt_id) = stack.pop() {
+        if !seen.insert(stmt_id) {
+            continue;
+        }
+        let Some(stmt) = program.stmt(stmt_id) else {
+            continue;
+        };
+        if matches!(stmt.kind, LinearStmt::If { .. }) {
+            return true;
+        }
+        for child in stmt.child_stmts() {
+            stack.push(child);
+        }
+    }
+    false
+}
+
+fn linear_stmt_graph_contains_match(
+    program: &LinearProgram,
+    root: cielo::common::ids::LinearStmtId,
+) -> bool {
+    let mut stack = vec![root];
+    let mut seen = HashSet::new();
+    while let Some(stmt_id) = stack.pop() {
+        if !seen.insert(stmt_id) {
+            continue;
+        }
+        let Some(stmt) = program.stmt(stmt_id) else {
+            continue;
+        };
+        if matches!(stmt.kind, LinearStmt::Match { .. }) {
             return true;
         }
         for child in stmt.child_stmts() {

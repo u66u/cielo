@@ -387,7 +387,7 @@ impl StmtRewriter<'_> {
             _ => None,
         }?;
         arms.iter()
-            .find(|arm| arm.tag == variant)
+            .find(|arm| arm.tag == variant && arm.binders.is_empty())
             .map(|arm| arm.body)
             .or(default)
     }
