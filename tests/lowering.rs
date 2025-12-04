@@ -219,6 +219,90 @@ fn main() -> Int {
 }
 
 #[test]
+fn lowers_if_expression_into_core_if_stmt() {
+    let src = r#"
+fn main() -> Int {
+  let x = if true { 1 } else { 2 };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    assert!(!lowered.diagnostics.has_errors());
+    let main = lowered
+        .program
+        .functions()
+        .iter()
+        .find(|f| interner.resolve(f.name) == Some("main"))
+        .expect("main");
+
+    let mut cursor = main.body;
+    let mut saw_if_stmt = false;
+    while let Some(stmt) = lowered.program.stmt(cursor) {
+        match &stmt.kind {
+            StmtKind::Val { value, next, .. } => {
+                if matches!(
+                    lowered.program.stmt(*value).map(|node| &node.kind),
+                    Some(StmtKind::If { .. })
+                ) {
+                    saw_if_stmt = true;
+                }
+                cursor = *next;
+            }
+            StmtKind::Let { next, .. } => cursor = *next,
+            StmtKind::Return(_) => break,
+            _ => break,
+        }
+    }
+    assert!(saw_if_stmt);
+}
+
+#[test]
+fn lowers_match_expression_into_core_match_stmt() {
+    let src = r#"
+enum Option { Some(Int), None }
+fn main() -> Int {
+  let x = match Some(1) {
+    | Some(v) => v
+    | _ => 0
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    assert!(!lowered.diagnostics.has_errors());
+    let main = lowered
+        .program
+        .functions()
+        .iter()
+        .find(|f| interner.resolve(f.name) == Some("main"))
+        .expect("main");
+
+    let mut cursor = main.body;
+    let mut saw_match_stmt = false;
+    while let Some(stmt) = lowered.program.stmt(cursor) {
+        match &stmt.kind {
+            StmtKind::Val { value, next, .. } => {
+                if matches!(
+                    lowered.program.stmt(*value).map(|node| &node.kind),
+                    Some(StmtKind::Match { .. })
+                ) {
+                    saw_match_stmt = true;
+                }
+                cursor = *next;
+            }
+            StmtKind::Let { next, .. } => cursor = *next,
+            StmtKind::Return(_) => break,
+            _ => break,
+        }
+    }
+    assert!(saw_match_stmt);
+}
+
+#[test]
 fn reports_unknown_effect_operation_in_do_statement() {
     let src = r#"
 effect Console { fn print(s: String) -> () }

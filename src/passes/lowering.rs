@@ -32,7 +32,7 @@ use crate::frontend::ast::{
 use crate::ir::core::{
     AdtEnumDecl, AdtEnumVariantDecl, AdtStructDecl, BinaryOp, CoreProgram, CoreTypeRef, EffectDecl,
     EffectOperationDecl, ExprKind, ExprNode, FunctionDecl, HandlerClause, HandlerDef, Literal,
-    PrimitiveTypeRef, StageDirective, StmtKind, StmtNode, UnaryOp,
+    MatchArm, PrimitiveTypeRef, StageDirective, StmtKind, StmtNode, UnaryOp,
 };
 use crate::sema::effect::{CapabilityLevel, EffectFlags, EffectProperties, SortedEffectRow};
 
@@ -458,6 +458,70 @@ impl Lowerer {
             ));
         }
 
+        if let AstExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } = &expr.kind
+        {
+            let cond = self.lower_expr(cond, locals);
+            let mut then_locals = locals.clone();
+            let then_branch = self.lower_block(then_branch, &mut then_locals);
+            let else_branch = if let Some(else_block) = else_branch {
+                let mut else_locals = locals.clone();
+                self.lower_block(else_block, &mut else_locals)
+            } else {
+                let unit = self.push_expr(ExprKind::Literal(Literal::Unit), expr.span);
+                self.push_stmt(StmtKind::Return(unit), expr.span)
+            };
+            return Some(self.push_stmt(
+                StmtKind::If {
+                    cond,
+                    then_branch,
+                    else_branch,
+                },
+                expr.span,
+            ));
+        }
+
+        if let AstExprKind::Match {
+            scrutinee,
+            clauses,
+            default,
+        } = &expr.kind
+        {
+            let scrutinee = self.lower_expr(scrutinee, locals);
+            let mut arms = Vec::with_capacity(clauses.len());
+            for clause in clauses {
+                let mut clause_locals = locals.clone();
+                let mut binders = Vec::with_capacity(clause.binders.len());
+                for binder in &clause.binders {
+                    let var = self.fresh_var();
+                    clause_locals.insert(*binder, var);
+                    binders.push(var);
+                }
+                let body = self.lower_block(&clause.body, &mut clause_locals);
+                arms.push(MatchArm {
+                    tag: clause.tag,
+                    binders,
+                    body,
+                    span: clause.span,
+                });
+            }
+            let default = default.as_ref().map(|block| {
+                let mut default_locals = locals.clone();
+                self.lower_block(block, &mut default_locals)
+            });
+            return Some(self.push_stmt(
+                StmtKind::Match {
+                    scrutinee,
+                    arms,
+                    default,
+                },
+                expr.span,
+            ));
+        }
+
         if let AstExprKind::Call { callee, args } = &expr.kind
             && let AstExprKind::Var(symbol) = callee.kind
         {
@@ -777,6 +841,7 @@ impl Lowerer {
                 }
             }
             AstExprKind::If { .. }
+            | AstExprKind::Match { .. }
             | AstExprKind::Block(_)
             | AstExprKind::StageBlock { .. }
             | AstExprKind::Handle { .. } => {
