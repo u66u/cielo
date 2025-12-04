@@ -28,6 +28,7 @@ define_keywords! {
     "do" => Do,
     "let" => Let,
     "if" => If,
+    "match" => Match,
     "else" => Else,
     "true" => True,
     "false" => False,

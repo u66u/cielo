@@ -119,6 +119,14 @@ pub struct HandleClause {
 }
 
 #[derive(Clone, Debug)]
+pub struct MatchClause {
+    pub tag: SymbolId,
+    pub binders: Vec<SymbolId>,
+    pub body: BlockExpr,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
 pub struct TypeExpr {
     pub kind: TypeExprKind,
     pub span: Span,
@@ -198,6 +206,11 @@ pub enum ExprKind {
         cond: Box<Expr>,
         then_branch: BlockExpr,
         else_branch: Option<BlockExpr>,
+    },
+    Match {
+        scrutinee: Box<Expr>,
+        clauses: Vec<MatchClause>,
+        default: Option<BlockExpr>,
     },
     Block(BlockExpr),
     StageBlock {

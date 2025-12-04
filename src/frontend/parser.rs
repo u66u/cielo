@@ -5,8 +5,8 @@ use crate::common::symbols::Interner;
 use crate::frontend::ast::{
     BinOp, BlockExpr, BuiltinType, EffectCapabilityHint, EffectDecl, EffectOperationDecl,
     EffectPropertyHint, EnumDecl, EnumVariantDecl, Expr, ExprKind, FieldDecl, FunctionDecl,
-    HandleClause, Item, Param, Program, StageMarker, Stmt, StructDecl, TypeExpr, TypeExprKind,
-    UnaryOp,
+    HandleClause, Item, MatchClause, Param, Program, StageMarker, Stmt, StructDecl, TypeExpr,
+    TypeExprKind, UnaryOp,
 };
 use crate::frontend::lexer::{Keyword, Token, TokenKind, lex};
 
@@ -28,8 +28,15 @@ pub struct ParseOutput {
 pub fn parse_source(source: &str, source_id: SourceId, interner: &mut Interner) -> ParseOutput {
     let builtins = BuiltinTypeSymbols::intern(interner);
     let effect_builtins = BuiltinEffectSymbols::intern(interner);
+    let wildcard_symbol = interner.intern("_");
     let lexed = lex(source, source_id, interner);
-    let mut parser = Parser::new(lexed.tokens, lexed.diagnostics, builtins, effect_builtins);
+    let mut parser = Parser::new(
+        lexed.tokens,
+        lexed.diagnostics,
+        builtins,
+        effect_builtins,
+        wildcard_symbol,
+    );
     let program = parser.parse_program();
     ParseOutput {
         program,
@@ -43,6 +50,7 @@ struct Parser {
     diagnostics: DiagnosticBag,
     builtins: BuiltinTypeSymbols,
     effect_builtins: BuiltinEffectSymbols,
+    wildcard_symbol: SymbolId,
 }
 
 impl Parser {
@@ -51,6 +59,7 @@ impl Parser {
         diagnostics: DiagnosticBag,
         builtins: BuiltinTypeSymbols,
         effect_builtins: BuiltinEffectSymbols,
+        wildcard_symbol: SymbolId,
     ) -> Self {
         Self {
             tokens,
@@ -58,6 +67,7 @@ impl Parser {
             diagnostics,
             builtins,
             effect_builtins,
+            wildcard_symbol,
         }
     }
 
@@ -525,6 +535,7 @@ impl Parser {
                 expr
             }
             TokenKind::Keyword(Keyword::If) => self.parse_if_expr(),
+            TokenKind::Keyword(Keyword::Match) => self.parse_match_expr(),
             TokenKind::Keyword(Keyword::Handle) => self.parse_handle_expr(),
             TokenKind::LBrace => {
                 let block = self.parse_block();
@@ -623,6 +634,90 @@ impl Parser {
                 else_branch,
             },
             span: span_join(start, end_span),
+        }
+    }
+
+    fn parse_match_expr(&mut self) -> Expr {
+        let start = self.expect_keyword(Keyword::Match).span;
+        let scrutinee = self.parse_expr(0);
+        self.expect_kind(TokenKind::LBrace, "Expected `{` to open match clauses");
+
+        let mut clauses = Vec::new();
+        let mut default = None;
+
+        while !self.check_kind(TokenKind::RBrace) && !self.at_eof() {
+            self.consume_kind(TokenKind::Pipe);
+            let clause_start = self.current_span();
+
+            if self.consume_keyword(Keyword::Else).is_some() {
+                self.expect_kind(TokenKind::FatArrow, "Expected `=>` after `else` in match");
+                let body = self.parse_handler_clause_body();
+                if default.is_some() {
+                    self.diagnostics.error(
+                        "PARSE_DUP_MATCH_DEFAULT",
+                        "Duplicate default (`else` or `_`) match clause",
+                        clause_start,
+                    );
+                } else {
+                    default = Some(body);
+                }
+                self.consume_kind(TokenKind::Comma);
+                self.consume_kind(TokenKind::Semi);
+                continue;
+            }
+
+            let tag = self.expect_identifier("Expected match variant or `_`");
+            if tag == self.wildcard_symbol {
+                self.expect_kind(TokenKind::FatArrow, "Expected `=>` after `_` in match");
+                let body = self.parse_handler_clause_body();
+                if default.is_some() {
+                    self.diagnostics.error(
+                        "PARSE_DUP_MATCH_DEFAULT",
+                        "Duplicate default (`else` or `_`) match clause",
+                        clause_start,
+                    );
+                } else {
+                    default = Some(body);
+                }
+                self.consume_kind(TokenKind::Comma);
+                self.consume_kind(TokenKind::Semi);
+                continue;
+            }
+
+            let mut binders = Vec::new();
+            if self.consume_kind(TokenKind::LParen).is_some() {
+                if !self.check_kind(TokenKind::RParen) {
+                    loop {
+                        binders.push(self.expect_identifier("Expected match arm binder"));
+                        if self.consume_kind(TokenKind::Comma).is_none() {
+                            break;
+                        }
+                    }
+                }
+                self.expect_kind(TokenKind::RParen, "Expected `)` after match arm binders");
+            }
+
+            self.expect_kind(TokenKind::FatArrow, "Expected `=>` after match arm head");
+            let body = self.parse_handler_clause_body();
+            clauses.push(MatchClause {
+                tag,
+                binders,
+                span: span_join(clause_start, body.span),
+                body,
+            });
+
+            self.consume_kind(TokenKind::Comma);
+            self.consume_kind(TokenKind::Semi);
+        }
+
+        let end = self.expect_kind(TokenKind::RBrace, "Expected `}` to close match body");
+        Expr {
+            kind: ExprKind::Match {
+                scrutinee: Box::new(scrutinee),
+                clauses,
+                default,
+            },
+            span: span_join(start, end.span),
         }
     }
 

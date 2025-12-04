@@ -8,7 +8,7 @@ use cielo::frontend::parser::parse_source;
 fn lexes_keywords_and_symbols() {
     let mut interner = Interner::new();
     let output = lex(
-        "fn add(a: i32) -> i32 { a + 1 }",
+        "fn add(a: i32) -> i32 { match a { | _ => 1 } }",
         SourceId::from_u32(0),
         &mut interner,
     );
@@ -23,6 +23,12 @@ fn lexes_keywords_and_symbols() {
             .tokens
             .iter()
             .any(|token| token.kind == TokenKind::Arrow)
+    );
+    assert!(
+        output
+            .tokens
+            .iter()
+            .any(|token| token.kind == TokenKind::Keyword(Keyword::Match))
     );
     assert_eq!(
         output.tokens.last().map(|token| &token.kind),
@@ -134,4 +140,35 @@ fn main() -> Int {
         _ => false,
     });
     assert!(has_handle);
+}
+
+#[test]
+fn parse_match_expression() {
+    let src = r#"
+enum Option { Some(Int), None }
+fn main() -> Int {
+  let x = match Some(1) {
+    | Some(v) => v
+    | _ => 0
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let func = parsed
+        .program
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Function(func) => Some(func),
+            _ => None,
+        })
+        .expect("expected function");
+    let has_match = func.body.statements.iter().any(|stmt| match stmt {
+        Stmt::Let { value, .. } => matches!(value.kind, ExprKind::Match { .. }),
+        _ => false,
+    });
+    assert!(has_match);
+    assert!(!parsed.diagnostics.has_errors());
 }
