@@ -391,6 +391,91 @@ fn residualize_prunes_match_with_known_variant_scrutinee() {
 }
 
 #[test]
+fn residualize_prunes_match_with_binders_by_materializing_let_bindings() {
+    let mut program = CoreProgram::new();
+    let span = Span::synthetic();
+    let enum_name = SymbolId::from_u32(21);
+    let some_variant = SymbolId::from_u32(22);
+
+    let field_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(41)),
+    });
+    let scrutinee = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::MakeEnum {
+            ty: enum_name,
+            variant: some_variant,
+            fields: vec![field_expr],
+        },
+    });
+    let binder = VarId::from_u32(77);
+    let binder_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Var(binder),
+    });
+    let arm_body = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(binder_expr),
+    });
+    let root_match = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Match {
+            scrutinee,
+            arms: vec![MatchArm {
+                tag: some_variant,
+                binders: vec![binder],
+                body: arm_body,
+                span,
+            }],
+            default: None,
+        },
+    });
+
+    let main_id = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(23),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::empty(),
+        body: root_match,
+        ct_only: false,
+        span,
+    });
+    program.set_entrypoints([main_id]);
+
+    let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
+    let classified = BtaClassified::new(
+        program,
+        DiagnosticBag::default(),
+        sema,
+        MonomorphizationSummary::default(),
+        CtPropagationTables::default(),
+        BtaTables::default(),
+    );
+    let residual = residualize::run(classified);
+
+    let body = residual
+        .program()
+        .function(FuncId::new(0))
+        .expect("main")
+        .body;
+    let stmt = residual.program().stmt(body).expect("rewritten root stmt");
+    match &stmt.kind {
+        StmtKind::Let {
+            binding,
+            value,
+            next,
+        } => {
+            assert_eq!(*binding, binder);
+            assert_eq!(*value, field_expr);
+            assert_eq!(*next, arm_body);
+        }
+        other => panic!("expected let-materialized match pruning, got {other:?}"),
+    }
+}
+
+#[test]
 fn v1_example_snapshot_matches_expected_registration_and_staging_counts() {
     let src = include_str!("../examples/v1_test.cielo");
     let mut interner = Interner::new();

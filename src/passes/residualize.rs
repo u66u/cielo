@@ -22,8 +22,11 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::common::ids::{ExprId, FuncId, HandlerId, StmtId};
-use crate::ir::core::{CoreProgram, ExprKind, Literal, MatchArm, StmtKind};
-use crate::pipeline::phases::{BranchDecision, BtaClassified, CtPropagationTables, ResidualTables, Residualized};
+use crate::common::span::Span;
+use crate::ir::core::{CoreProgram, ExprKind, Literal, MatchArm, StmtKind, StmtNode};
+use crate::pipeline::phases::{
+    BranchDecision, BtaClassified, CtPropagationTables, ResidualTables, Residualized,
+};
 use crate::sema::effect::SortedEffectRow;
 
 pub fn run(mut bta: BtaClassified) -> Residualized {
@@ -101,6 +104,12 @@ struct StmtRewriter<'a> {
     ct: &'a CtPropagationTables,
     memo: HashMap<StmtId, StmtId>,
     visiting: HashSet<StmtId>,
+}
+
+#[derive(Clone)]
+struct MatchSelection {
+    body: StmtId,
+    bindings: Vec<(crate::common::ids::VarId, ExprId)>,
 }
 
 impl StmtRewriter<'_> {
@@ -293,8 +302,8 @@ impl StmtRewriter<'_> {
                     })
                     .collect::<Vec<_>>();
                 let default = default.map(|stmt| self.rewrite_stmt(stmt));
-                if let Some(live) = self.pick_match_branch(scrutinee, &arms, default) {
-                    live
+                if let Some(selection) = self.pick_match_branch(scrutinee, &arms, default) {
+                    self.materialize_match_selection(selection, stmt.span)
                 } else {
                     self.set_stmt(
                         stmt_id,
@@ -381,15 +390,47 @@ impl StmtRewriter<'_> {
         scrutinee: ExprId,
         arms: &[MatchArm],
         default: Option<StmtId>,
-    ) -> Option<StmtId> {
-        let variant = match self.program.expr(scrutinee).map(|expr| &expr.kind) {
-            Some(ExprKind::MakeEnum { variant, .. }) => Some(*variant),
+    ) -> Option<MatchSelection> {
+        let (variant, fields) = match self.program.expr(scrutinee).map(|expr| &expr.kind) {
+            Some(ExprKind::MakeEnum {
+                variant, fields, ..
+            }) => Some((*variant, fields.clone())),
             _ => None,
         }?;
-        arms.iter()
-            .find(|arm| arm.tag == variant && arm.binders.is_empty())
-            .map(|arm| arm.body)
-            .or(default)
+        if let Some(arm) = arms.iter().find(|arm| arm.tag == variant) {
+            if arm.binders.len() != fields.len() {
+                return None;
+            }
+            let bindings = arm
+                .binders
+                .iter()
+                .copied()
+                .zip(fields)
+                .collect::<Vec<_>>();
+            return Some(MatchSelection {
+                body: arm.body,
+                bindings,
+            });
+        }
+        default.map(|body| MatchSelection {
+            body,
+            bindings: Vec::new(),
+        })
+    }
+
+    fn materialize_match_selection(&mut self, selection: MatchSelection, span: Span) -> StmtId {
+        let mut next = selection.body;
+        for (binder, value) in selection.bindings.into_iter().rev() {
+            next = self.program.push_stmt(StmtNode {
+                span,
+                kind: StmtKind::Let {
+                    binding: binder,
+                    value,
+                    next,
+                },
+            });
+        }
+        next
     }
 }
 
