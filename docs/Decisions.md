@@ -69,9 +69,10 @@ create a specialized copy with the handler pushed into the function body. Handle
 reduction rules fire inside the copy, eliminating dispatch. Recursive calls are 
 tied back to the specialized version. Already-specialized functions are not 
 re-specialized (termination guarantee). Runs between residualization and handler 
-lowering. Current v1 scope: direct wrappers (`handle { f(...) }`) are rewritten
-to direct calls to specialized copies; broader pushdown through complex wrapper
-bodies is deferred.
+ lowering. Current v1 scope: direct wrappers (`handle { f(...) }`) and
+ wrapper-only bodies (`let` chains + return-forwarding `val` wrappers around
+ one direct call) are rewritten to direct calls to specialized copies; broader
+ pushdown through complex/block/control-heavy bodies is deferred.
 
 CT-only functions: functions using CT-only effects or TypeInfo arguments cannot 
 fall back to RT. RT arguments at call sites are hard errors. Inferrable or 

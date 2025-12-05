@@ -406,6 +406,8 @@ For `handle f(v) with h` where h is statically known:
 2. Otherwise: create specialized `f'` with h pushed into body, apply handler reduction rules within body, tie recursive knots (replace `handle f(v') with h` inside f' with `f'(v')`)
 3. Don't re-specialize already-specialized functions (termination guarantee)
 
+Current v1 implementation rewrites both direct wrappers and wrapper-only bodies that structurally forward into one direct call (e.g. `let` chains + return-forwarding `val` wrappers). Block/control-heavy wrapper bodies remain deferred.
+
 When the return clause varies across recursive call sites (With-Do fires), v1 aborts specialization for that case. V2 adds generalized specialization with return-clause parameter (selective CPS).
 
 Position in pipeline: between residualization and handler lowering.
