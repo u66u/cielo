@@ -96,6 +96,42 @@ fn main() -> Int {
 }
 
 #[test]
+fn source_match_with_binder_is_pruned_and_binder_flow_is_preserved() {
+    let src = r#"
+enum OptionI { Some(Int), None }
+fn main() -> Int {
+  let x = match Some(41) {
+    | Some(v) => v + 1
+    | _ => 0
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let main = compiled
+        .linear
+        .functions
+        .iter()
+        .find(|function| interner.resolve(function.name) == Some("main"))
+        .expect("main function");
+
+    assert!(
+        !linear_stmt_graph_contains_match(&compiled.linear, main.body),
+        "known-variant source match with binders should be pruned before linearization"
+    );
+    assert!(
+        linear_stmt_graph_contains_literal_int(&compiled.linear, main.body, 41),
+        "selected match arm should preserve payload literal flow"
+    );
+    assert!(
+        linear_stmt_graph_contains_add_rhs_int(&compiled.linear, main.body, 1),
+        "selected match arm body should remain after pruning"
+    );
+}
+
+#[test]
 fn c_emitter_dedups_string_literals_in_const_pool() {
     let src = r#"
 effect Console { fn print(s: String) -> () }

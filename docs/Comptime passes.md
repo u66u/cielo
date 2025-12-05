@@ -358,6 +358,11 @@ Use-count analysis before emission (pre-pass over function body or emit let-bind
 
 **Branches with CT condition**: Emit only live branch body. Dead branch, condition, and branch construct all eliminated.
 
+**Matches with CT-known constructor scrutinee**: Select the matching arm (or default),
+erase the match node, and materialize binder values as `let` bindings before the selected
+arm body. This keeps binder semantics correct without carrying match control flow to
+runtime.
+
 **Handler blocks with discharged handler**: Handler construct erased. Effect operations targeting this handler are inlined with clause bodies. For tail-resumptive clauses, resume becomes a no-op — the continuation is the surrounding code. For non-TR clauses in a discharged handler, the entire operation was CT-evaluated; embed as constant.
 
 **Handler blocks with non-discharged handler**: Kept in residual for handler lowering.

@@ -483,7 +483,8 @@ text
 
 **Constant folding on branches:** `if (true) thn else els → thn`
 
-**Match reduction:** `match Make(tag, args) { case tag(params) => body } → body[params/args]`
+**Match reduction:** `match Make(tag, args) { case tag(params) => body }` rewires to the
+selected arm body and materializes `let param = arg` bindings at the boundary.
 
 These rules fire after handler specialization removes dispatch overhead, exposing
 further simplification opportunities.
