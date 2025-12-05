@@ -476,6 +476,230 @@ fn residualize_prunes_match_with_binders_by_materializing_let_bindings() {
 }
 
 #[test]
+fn residualize_prunes_if_through_let_alias_chain() {
+    let mut program = CoreProgram::new();
+    let span = Span::synthetic();
+    let cond_var0 = VarId::from_u32(200);
+    let cond_var1 = VarId::from_u32(201);
+
+    let cond_lit = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Bool(true)),
+    });
+    let cond_var0_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Var(cond_var0),
+    });
+    let cond_var1_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Var(cond_var1),
+    });
+    let then_lit = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(1)),
+    });
+    let else_lit = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(0)),
+    });
+
+    let then_stmt = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(then_lit),
+    });
+    let else_stmt = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(else_lit),
+    });
+    let if_stmt = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::If {
+            cond: cond_var1_expr,
+            then_branch: then_stmt,
+            else_branch: else_stmt,
+        },
+    });
+    let alias1_stmt = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Let {
+            binding: cond_var1,
+            value: cond_var0_expr,
+            next: if_stmt,
+        },
+    });
+    let root = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Let {
+            binding: cond_var0,
+            value: cond_lit,
+            next: alias1_stmt,
+        },
+    });
+
+    let main_id = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(24),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::empty(),
+        body: root,
+        ct_only: false,
+        span,
+    });
+    program.set_entrypoints([main_id]);
+
+    let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
+    let classified = BtaClassified::new(
+        program,
+        DiagnosticBag::default(),
+        sema,
+        MonomorphizationSummary::default(),
+        CtPropagationTables::default(),
+        BtaTables::default(),
+    );
+    let residual = residualize::run(classified);
+
+    let root_stmt = residual.program().stmt(root).expect("root let");
+    let next = match root_stmt.kind {
+        StmtKind::Let { next, .. } => next,
+        ref other => panic!("expected root let after residualization, got {other:?}"),
+    };
+    let alias_stmt = residual.program().stmt(next).expect("alias let");
+    match alias_stmt.kind {
+        StmtKind::Let { next, .. } => assert_eq!(
+            next, then_stmt,
+            "if should be pruned to then branch through alias chain"
+        ),
+        ref other => panic!("expected alias let after residualization, got {other:?}"),
+    }
+}
+
+#[test]
+fn residualize_prunes_match_through_let_alias_chain_with_binder_materialization() {
+    let mut program = CoreProgram::new();
+    let span = Span::synthetic();
+    let enum_name = SymbolId::from_u32(30);
+    let some_variant = SymbolId::from_u32(31);
+    let scrut_var0 = VarId::from_u32(210);
+    let scrut_var1 = VarId::from_u32(211);
+    let binder = VarId::from_u32(212);
+
+    let field_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(41)),
+    });
+    let make_enum = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::MakeEnum {
+            ty: enum_name,
+            variant: some_variant,
+            fields: vec![field_expr],
+        },
+    });
+    let scrut_var0_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Var(scrut_var0),
+    });
+    let scrut_var1_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Var(scrut_var1),
+    });
+    let binder_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Var(binder),
+    });
+    let fallback = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(0)),
+    });
+
+    let arm_body = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(binder_expr),
+    });
+    let default_body = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(fallback),
+    });
+    let root_match = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Match {
+            scrutinee: scrut_var1_expr,
+            arms: vec![MatchArm {
+                tag: some_variant,
+                binders: vec![binder],
+                body: arm_body,
+                span,
+            }],
+            default: Some(default_body),
+        },
+    });
+    let alias1_stmt = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Let {
+            binding: scrut_var1,
+            value: scrut_var0_expr,
+            next: root_match,
+        },
+    });
+    let root = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Let {
+            binding: scrut_var0,
+            value: make_enum,
+            next: alias1_stmt,
+        },
+    });
+
+    let main_id = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(32),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::empty(),
+        body: root,
+        ct_only: false,
+        span,
+    });
+    program.set_entrypoints([main_id]);
+
+    let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
+    let classified = BtaClassified::new(
+        program,
+        DiagnosticBag::default(),
+        sema,
+        MonomorphizationSummary::default(),
+        CtPropagationTables::default(),
+        BtaTables::default(),
+    );
+    let residual = residualize::run(classified);
+
+    let root_stmt = residual.program().stmt(root).expect("root let");
+    let next = match root_stmt.kind {
+        StmtKind::Let { next, .. } => next,
+        ref other => panic!("expected root let after residualization, got {other:?}"),
+    };
+    let alias_stmt = residual.program().stmt(next).expect("alias let");
+    let pruned = match alias_stmt.kind {
+        StmtKind::Let { next, .. } => next,
+        ref other => panic!("expected alias let after residualization, got {other:?}"),
+    };
+    let pruned_stmt = residual.program().stmt(pruned).expect("match pruned stmt");
+    match &pruned_stmt.kind {
+        StmtKind::Let {
+            binding,
+            value,
+            next,
+        } => {
+            assert_eq!(*binding, binder);
+            assert_eq!(*value, field_expr);
+            assert_eq!(*next, arm_body);
+        }
+        other => panic!("expected binder materialization after alias match prune, got {other:?}"),
+    }
+}
+
+#[test]
 fn v1_example_snapshot_matches_expected_registration_and_staging_counts() {
     let src = include_str!("../examples/v1_test.cielo");
     let mut interner = Interner::new();

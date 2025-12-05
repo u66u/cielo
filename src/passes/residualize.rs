@@ -21,7 +21,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::common::ids::{ExprId, FuncId, HandlerId, StmtId};
+use crate::common::ids::{ExprId, FuncId, HandlerId, StmtId, VarId};
 use crate::common::span::Span;
 use crate::ir::core::{CoreProgram, ExprKind, Literal, MatchArm, StmtKind, StmtNode};
 use crate::pipeline::phases::{
@@ -89,14 +89,27 @@ fn apply_ct_residualization(program: &mut CoreProgram, ct: &CtPropagationTables)
         expr.kind = ExprKind::Literal(value.clone());
     }
 
+    let var_let_defs = collect_let_value_defs(program);
     let mut rewriter = StmtRewriter {
         program,
         ct,
         memo: HashMap::new(),
         visiting: HashSet::new(),
+        var_let_defs,
     };
     rewriter.rewrite_function_roots();
     rewriter.rewrite_handler_roots();
+}
+
+fn collect_let_value_defs(program: &CoreProgram) -> HashMap<VarId, ExprId> {
+    program
+        .stmts()
+        .iter()
+        .filter_map(|stmt| match stmt.kind {
+            StmtKind::Let { binding, value, .. } => Some((binding, value)),
+            _ => None,
+        })
+        .collect()
 }
 
 struct StmtRewriter<'a> {
@@ -104,6 +117,7 @@ struct StmtRewriter<'a> {
     ct: &'a CtPropagationTables,
     memo: HashMap<StmtId, StmtId>,
     visiting: HashSet<StmtId>,
+    var_let_defs: HashMap<VarId, ExprId>,
 }
 
 #[derive(Clone)]
@@ -376,6 +390,14 @@ impl StmtRewriter<'_> {
                     ExprKind::Literal(Literal::Bool(false)) => Some(BranchDecision::LiveFalse),
                     _ => None,
                 })
+            })
+            .or_else(|| {
+                self.resolve_expr_kind(cond)
+                    .and_then(|kind| match kind {
+                        ExprKind::Literal(Literal::Bool(true)) => Some(BranchDecision::LiveTrue),
+                        ExprKind::Literal(Literal::Bool(false)) => Some(BranchDecision::LiveFalse),
+                        _ => None,
+                    })
             })?;
 
         match decision {
@@ -391,10 +413,10 @@ impl StmtRewriter<'_> {
         arms: &[MatchArm],
         default: Option<StmtId>,
     ) -> Option<MatchSelection> {
-        let (variant, fields) = match self.program.expr(scrutinee).map(|expr| &expr.kind) {
-            Some(ExprKind::MakeEnum {
+        let (variant, fields) = match self.resolve_expr_kind(scrutinee)? {
+            ExprKind::MakeEnum {
                 variant, fields, ..
-            }) => Some((*variant, fields.clone())),
+            } => Some((variant, fields)),
             _ => None,
         }?;
         if let Some(arm) = arms.iter().find(|arm| arm.tag == variant) {
@@ -421,6 +443,7 @@ impl StmtRewriter<'_> {
     fn materialize_match_selection(&mut self, selection: MatchSelection, span: Span) -> StmtId {
         let mut next = selection.body;
         for (binder, value) in selection.bindings.into_iter().rev() {
+            self.var_let_defs.insert(binder, value);
             next = self.program.push_stmt(StmtNode {
                 span,
                 kind: StmtKind::Let {
@@ -431,6 +454,29 @@ impl StmtRewriter<'_> {
             });
         }
         next
+    }
+
+    fn resolve_expr_kind(&self, expr_id: ExprId) -> Option<ExprKind> {
+        let mut current = expr_id;
+        let mut seen_vars = HashSet::new();
+
+        for _ in 0..32 {
+            let expr = self.program.expr(current)?;
+            match expr.kind.clone() {
+                ExprKind::Var(var) => {
+                    if !seen_vars.insert(var) {
+                        return None;
+                    }
+                    let Some(next_expr) = self.var_let_defs.get(&var).copied() else {
+                        return Some(ExprKind::Var(var));
+                    };
+                    current = next_expr;
+                }
+                kind => return Some(kind),
+            }
+        }
+
+        None
     }
 }
 
