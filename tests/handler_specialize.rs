@@ -141,9 +141,123 @@ fn main() -> Int {
         callees.len() >= 2,
         "expected both direct callsites in main to remain as calls"
     );
+    assert_eq!(
+        callees.into_iter().collect::<std::collections::HashSet<_>>(),
+        std::collections::HashSet::from([specialized_id]),
+        "all equivalent handle callsites should target the same specialized function"
+    );
+}
+
+#[test]
+fn specializes_handle_wrapped_call_through_let_wrapper_chain() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+
+fn io(v: Int) -> Int with Console {
+  do Console.print("x");
+  v
+}
+
+fn main() -> Int {
+  let y = handle {
+    let seed = 7;
+    io(seed)
+  } with Console {
+    | print(s) => 0
+  };
+  y
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    let io_ids: Vec<FuncId> = compiled
+        .residual
+        .program()
+        .functions()
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, function)| {
+            (interner.resolve(function.name) == Some("io")).then_some(FuncId::new(idx))
+        })
+        .collect();
+    assert_eq!(io_ids.len(), 2, "expected original + specialized io copy");
+
+    let specialized_id = io_ids
+        .iter()
+        .copied()
+        .max_by_key(|id| id.index())
+        .expect("specialized io id");
+    let main = compiled
+        .residual
+        .program()
+        .functions()
+        .iter()
+        .find(|function| interner.resolve(function.name) == Some("main"))
+        .expect("main function");
     assert!(
-        callees.iter().all(|callee| *callee == specialized_id),
-        "all equivalent handle callsites should target the same specialized function: {callees:?}"
+        !contains_handle_stmt(compiled.residual.program(), main.body),
+        "let-wrapped direct handle callsites should be specialized and rewritten"
+    );
+    let handle_call_callee = first_call_callee(compiled.residual.program(), main.body)
+        .expect("specialized call in main");
+    assert_eq!(
+        handle_call_callee, specialized_id,
+        "specialized call under let-wrapper should target specialized copy"
+    );
+}
+
+#[test]
+fn does_not_specialize_handle_body_with_non_wrapper_post_call_work() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+
+fn io() -> Int with Console {
+  do Console.print("x");
+  1
+}
+
+fn main() -> Int {
+  let y = handle {
+    let v = io();
+    v + 1
+  } with Console {
+    | print(s) => 0
+  };
+  y
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    let io_ids: Vec<FuncId> = compiled
+        .residual
+        .program()
+        .functions()
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, function)| {
+            (interner.resolve(function.name) == Some("io")).then_some(FuncId::new(idx))
+        })
+        .collect();
+    assert_eq!(
+        io_ids.len(),
+        1,
+        "non-wrapper post-call work must not trigger specialization copies"
+    );
+
+    let main = compiled
+        .residual
+        .program()
+        .functions()
+        .iter()
+        .find(|function| interner.resolve(function.name) == Some("main"))
+        .expect("main function");
+    assert!(
+        contains_handle_stmt(compiled.residual.program(), main.body),
+        "non-wrapper handle body should remain unspecialized"
     );
 }
 

@@ -85,20 +85,19 @@ fn collect_specialize_candidates(program: &CoreProgram) -> Vec<SpecializeCandida
 }
 
 fn direct_handle_body_callee(program: &CoreProgram, body_stmt: StmtId) -> Option<FuncId> {
-    let stmt = program.stmt(body_stmt)?;
+    wrapper_call_callee(program, body_stmt)
+}
+
+fn wrapper_call_callee(program: &CoreProgram, stmt_id: StmtId) -> Option<FuncId> {
+    let stmt = program.stmt(stmt_id)?;
     match stmt.kind {
         StmtKind::Call { callee, .. } => Some(callee),
+        StmtKind::Let { next, .. } => wrapper_call_callee(program, next),
         StmtKind::Val {
             binding,
             value,
             next,
-        } if is_return_of_var(program, next, binding) => {
-            let value_stmt = program.stmt(value)?;
-            let StmtKind::Call { callee, .. } = value_stmt.kind else {
-                return None;
-            };
-            Some(callee)
-        }
+        } if is_return_of_var(program, next, binding) => wrapper_call_callee(program, value),
         _ => None,
     }
 }
@@ -162,33 +161,24 @@ fn build_rewritten_body(
             effects,
             next,
         }),
+        StmtKind::Let {
+            binding,
+            value,
+            next,
+        } => {
+            let rewritten_next = build_rewritten_stmt(program, next, specialized_callee)?;
+            Some(StmtKind::Let {
+                binding,
+                value,
+                next: rewritten_next,
+            })
+        }
         StmtKind::Val {
             binding,
             value,
             next,
         } if is_return_of_var(program, next, binding) => {
-            let call_stmt = program.stmt(value)?.clone();
-            let StmtKind::Call {
-                result,
-                args,
-                effects,
-                next: call_next,
-                ..
-            } = call_stmt.kind
-            else {
-                return None;
-            };
-
-            let rewritten_call = program.push_stmt(StmtNode {
-                span: call_stmt.span,
-                kind: StmtKind::Call {
-                    result,
-                    callee: specialized_callee,
-                    args,
-                    effects,
-                    next: call_next,
-                },
-            });
+            let rewritten_call = build_rewritten_stmt(program, value, specialized_callee)?;
             Some(StmtKind::Val {
                 binding,
                 value: rewritten_call,
@@ -197,6 +187,16 @@ fn build_rewritten_body(
         }
         _ => None,
     }
+}
+
+fn build_rewritten_stmt(
+    program: &mut CoreProgram,
+    stmt_id: StmtId,
+    specialized_callee: FuncId,
+) -> Option<StmtId> {
+    let span = program.stmt(stmt_id)?.span;
+    let kind = build_rewritten_body(program, stmt_id, specialized_callee)?;
+    Some(program.push_stmt(StmtNode { span, kind }))
 }
 
 fn ensure_specialized(
