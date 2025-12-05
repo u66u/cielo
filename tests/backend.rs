@@ -68,6 +68,36 @@ fn main() -> Int {
 }
 
 #[test]
+fn source_if_with_alias_ct_condition_is_pruned_before_linear_ir() {
+    let src = r#"
+fn main() -> Int {
+  let c0 = true;
+  let c1 = c0;
+  let x = if c1 { 1 } else { 2 };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let main = compiled
+        .linear
+        .functions
+        .iter()
+        .find(|function| interner.resolve(function.name) == Some("main"))
+        .expect("main function");
+
+    assert!(
+        !linear_stmt_graph_contains_if(&compiled.linear, main.body),
+        "alias-to-literal ct condition should be pruned before linearization"
+    );
+    assert!(
+        linear_stmt_graph_contains_literal_int(&compiled.linear, main.body, 1),
+        "selected branch payload should remain"
+    );
+}
+
+#[test]
 fn source_match_with_known_variant_is_pruned_before_linear_ir() {
     let src = r#"
 enum Flag { On, Off }
@@ -128,6 +158,44 @@ fn main() -> Int {
     assert!(
         linear_stmt_graph_contains_add_rhs_int(&compiled.linear, main.body, 1),
         "selected match arm body should remain after pruning"
+    );
+}
+
+#[test]
+fn source_match_with_alias_scrutinee_and_binder_is_pruned() {
+    let src = r#"
+enum OptionI { Some(Int), None }
+fn main() -> Int {
+  let s0 = Some(41);
+  let s1 = s0;
+  let x = match s1 {
+    | Some(v) => v + 1
+    | _ => 0
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let main = compiled
+        .linear
+        .functions
+        .iter()
+        .find(|function| interner.resolve(function.name) == Some("main"))
+        .expect("main function");
+
+    assert!(
+        !linear_stmt_graph_contains_match(&compiled.linear, main.body),
+        "alias-to-constructor scrutinee should still prune match before linearization"
+    );
+    assert!(
+        linear_stmt_graph_contains_literal_int(&compiled.linear, main.body, 41),
+        "selected arm should preserve payload flow"
+    );
+    assert!(
+        linear_stmt_graph_contains_add_rhs_int(&compiled.linear, main.body, 1),
+        "selected arm computation should remain after pruning"
     );
 }
 
