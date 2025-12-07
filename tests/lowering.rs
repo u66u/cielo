@@ -120,7 +120,10 @@ fn main() -> Int {
     );
 }
 
-fn stmt_graph_contains_resume(program: &cielo::ir::core::CoreProgram, root: cielo::common::ids::StmtId) -> bool {
+fn stmt_graph_contains_resume(
+    program: &cielo::ir::core::CoreProgram,
+    root: cielo::common::ids::StmtId,
+) -> bool {
     let mut stack = vec![root];
     let mut seen = std::collections::HashSet::new();
     while let Some(stmt_id) = stack.pop() {

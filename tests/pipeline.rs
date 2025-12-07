@@ -707,8 +707,14 @@ fn v1_example_snapshot_matches_expected_registration_and_staging_counts() {
 
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
     assert_eq!(core.program().effects().len(), 2);
-    assert_eq!(interner.resolve(core.program().effects()[0].name), Some("Console"));
-    assert_eq!(interner.resolve(core.program().effects()[1].name), Some("LocalState"));
+    assert_eq!(
+        interner.resolve(core.program().effects()[0].name),
+        Some("Console")
+    );
+    assert_eq!(
+        interner.resolve(core.program().effects()[1].name),
+        Some("LocalState")
+    );
     assert_eq!(core.program().effects()[0].operations.len(), 1);
     assert_eq!(core.program().effects()[1].operations.len(), 1);
     assert_eq!(
@@ -719,8 +725,14 @@ fn v1_example_snapshot_matches_expected_registration_and_staging_counts() {
         interner.resolve(core.program().effects()[1].operations[0].name),
         Some("tick")
     );
-    assert_eq!(core.program().effects()[0].operations[0].param_types.len(), 1);
-    assert_eq!(core.program().effects()[1].operations[0].param_types.len(), 0);
+    assert_eq!(
+        core.program().effects()[0].operations[0].param_types.len(),
+        1
+    );
+    assert_eq!(
+        core.program().effects()[1].operations[0].param_types.len(),
+        0
+    );
 
     let expected_names = ["seed", "bump", "local_step", "io_step", "main"];
     let observed_names = core

@@ -561,7 +561,7 @@ fn lower_stmt_under_handler(
             effect,
             operation,
             args,
-                next,
+            next,
             ..
         } if *effect == handler.effect => {
             if let Some(clause) = handler
@@ -569,14 +569,11 @@ fn lower_stmt_under_handler(
                 .iter()
                 .find(|candidate| candidate.operation == *operation)
             {
-                let clause_resume_ctx =
-                    clause
-                        .resume_param
-                        .map(|resume_var| ResumeContext {
-                            resume_var,
-                            perform_result: *result,
-                            continuation: *next,
-                        });
+                let clause_resume_ctx = clause.resume_param.map(|resume_var| ResumeContext {
+                    resume_var,
+                    perform_result: *result,
+                    continuation: *next,
+                });
                 lower_matching_clause(
                     program,
                     clause,
@@ -983,7 +980,13 @@ fn lower_matching_clause(
     );
     let mut current = clause_body;
 
-    for (param, arg) in clause.params.iter().copied().zip(args.iter().copied()).rev() {
+    for (param, arg) in clause
+        .params
+        .iter()
+        .copied()
+        .zip(args.iter().copied())
+        .rev()
+    {
         let arg_expr = lower_expr(program, arg, fn_names, linear, expr_map);
         current = linear.push_stmt(LinearStmt::Let {
             binding: param,

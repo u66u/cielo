@@ -26,7 +26,9 @@ use crate::common::fixpoint::fixpoint;
 use crate::common::ids::ExprId;
 use crate::ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, OpCategory, UnaryOp};
 use crate::pipeline::compiler::{Endianness, TargetSpec};
-use crate::pipeline::phases::{CtCacheKey, CtFileDep, CtPropagated, CtPropagationTables, Monomorphized};
+use crate::pipeline::phases::{
+    CtCacheKey, CtFileDep, CtPropagated, CtPropagationTables, Monomorphized,
+};
 use crate::sema::effect::EffectFlags;
 
 const EVALUATOR_POLICY: &str = "v1-int-wrap";
@@ -60,7 +62,9 @@ pub fn run(mono: Monomorphized, target: TargetSpec) -> CtPropagated {
         .ct_cache
         .iter()
         .filter_map(|(expr_id, literal)| match literal {
-            Literal::Bool(true) => Some((*expr_id, crate::pipeline::phases::BranchDecision::LiveTrue)),
+            Literal::Bool(true) => {
+                Some((*expr_id, crate::pipeline::phases::BranchDecision::LiveTrue))
+            }
             Literal::Bool(false) => {
                 Some((*expr_id, crate::pipeline::phases::BranchDecision::LiveFalse))
             }
@@ -95,14 +99,21 @@ fn eval_expr(
 
 fn eval_unary(op: UnaryOp, value: &Literal, target: TargetSpec) -> Option<Literal> {
     match (op, value) {
-        (UnaryOp::Neg, Literal::Int(v)) => Some(Literal::Int(normalize_int(v.wrapping_neg(), target))),
+        (UnaryOp::Neg, Literal::Int(v)) => {
+            Some(Literal::Int(normalize_int(v.wrapping_neg(), target)))
+        }
         (UnaryOp::Neg, Literal::Float(v)) => Some(Literal::Float(-v)),
         (UnaryOp::Not, Literal::Bool(v)) => Some(Literal::Bool(!v)),
         _ => None,
     }
 }
 
-fn eval_binary(op: BinaryOp, left: &Literal, right: &Literal, target: TargetSpec) -> Option<Literal> {
+fn eval_binary(
+    op: BinaryOp,
+    left: &Literal,
+    right: &Literal,
+    target: TargetSpec,
+) -> Option<Literal> {
     match (op.category(), left, right) {
         (OpCategory::Arithmetic, Literal::Int(a), Literal::Int(b)) => {
             let lhs = normalize_int(*a, target);

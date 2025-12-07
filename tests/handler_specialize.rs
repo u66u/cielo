@@ -35,7 +35,11 @@ fn main() -> Int {
             (interner.resolve(function.name) == Some("loop")).then_some(FuncId::new(idx))
         })
         .collect();
-    assert_eq!(loop_ids.len(), 2, "expected original + specialized loop copy");
+    assert_eq!(
+        loop_ids.len(),
+        2,
+        "expected original + specialized loop copy"
+    );
 
     let specialized_id = loop_ids
         .iter()
@@ -65,8 +69,8 @@ fn main() -> Int {
         .program()
         .function(specialized_id)
         .expect("specialized function");
-    let specialized_handler =
-        first_handle_handler(compiled.residual.program(), specialized.body).expect("specialized handle");
+    let specialized_handler = first_handle_handler(compiled.residual.program(), specialized.body)
+        .expect("specialized handle");
     assert_eq!(
         specialized_handler,
         HandlerId::new(0),
@@ -142,7 +146,9 @@ fn main() -> Int {
         "expected both direct callsites in main to remain as calls"
     );
     assert_eq!(
-        callees.into_iter().collect::<std::collections::HashSet<_>>(),
+        callees
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>(),
         std::collections::HashSet::from([specialized_id]),
         "all equivalent handle callsites should target the same specialized function"
     );

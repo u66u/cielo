@@ -154,7 +154,11 @@ impl StmtRewriter<'_> {
                 (
                     HandlerId::new(idx),
                     handler.return_body,
-                    handler.clauses.iter().map(|clause| clause.body).collect::<Vec<_>>(),
+                    handler
+                        .clauses
+                        .iter()
+                        .map(|clause| clause.body)
+                        .collect::<Vec<_>>(),
                 )
             })
             .collect::<Vec<_>>();
@@ -378,11 +382,14 @@ impl StmtRewriter<'_> {
             .get(&cond)
             .copied()
             .or_else(|| {
-                self.ct.ct_cache.get(&cond).and_then(|literal| match literal {
-                    Literal::Bool(true) => Some(BranchDecision::LiveTrue),
-                    Literal::Bool(false) => Some(BranchDecision::LiveFalse),
-                    _ => None,
-                })
+                self.ct
+                    .ct_cache
+                    .get(&cond)
+                    .and_then(|literal| match literal {
+                        Literal::Bool(true) => Some(BranchDecision::LiveTrue),
+                        Literal::Bool(false) => Some(BranchDecision::LiveFalse),
+                        _ => None,
+                    })
             })
             .or_else(|| {
                 self.program.expr(cond).and_then(|expr| match &expr.kind {
@@ -392,12 +399,11 @@ impl StmtRewriter<'_> {
                 })
             })
             .or_else(|| {
-                self.resolve_expr_kind(cond)
-                    .and_then(|kind| match kind {
-                        ExprKind::Literal(Literal::Bool(true)) => Some(BranchDecision::LiveTrue),
-                        ExprKind::Literal(Literal::Bool(false)) => Some(BranchDecision::LiveFalse),
-                        _ => None,
-                    })
+                self.resolve_expr_kind(cond).and_then(|kind| match kind {
+                    ExprKind::Literal(Literal::Bool(true)) => Some(BranchDecision::LiveTrue),
+                    ExprKind::Literal(Literal::Bool(false)) => Some(BranchDecision::LiveFalse),
+                    _ => None,
+                })
             })?;
 
         match decision {
@@ -423,12 +429,7 @@ impl StmtRewriter<'_> {
             if arm.binders.len() != fields.len() {
                 return None;
             }
-            let bindings = arm
-                .binders
-                .iter()
-                .copied()
-                .zip(fields)
-                .collect::<Vec<_>>();
+            let bindings = arm.binders.iter().copied().zip(fields).collect::<Vec<_>>();
             return Some(MatchSelection {
                 body: arm.body,
                 bindings,

@@ -319,7 +319,10 @@ fn main() -> Int {
     let mut diagnostics = DiagnosticBag::default();
     let _ = typecheck_core(&lowered.program, &mut diagnostics);
     assert!(
-        diagnostics.entries().iter().all(|entry| entry.severity != cielo::common::diagnostics::Severity::Error),
+        diagnostics
+            .entries()
+            .iter()
+            .all(|entry| entry.severity != cielo::common::diagnostics::Severity::Error),
         "generic signature should instantiate per-call without type errors: {:?}",
         diagnostics.entries()
     );

@@ -655,7 +655,13 @@ fn clone_stmt_graph(
             arms,
             default,
         } => StmtKind::Match {
-            scrutinee: clone_expr_graph(program, scrutinee, source_func, specialized_func, expr_map),
+            scrutinee: clone_expr_graph(
+                program,
+                scrutinee,
+                source_func,
+                specialized_func,
+                expr_map,
+            ),
             arms: arms
                 .into_iter()
                 .map(|arm| crate::ir::core::MatchArm {
@@ -824,7 +830,9 @@ fn clone_expr_graph(
             ty,
             fields: fields
                 .into_iter()
-                .map(|field| clone_expr_graph(program, field, source_func, specialized_func, expr_map))
+                .map(|field| {
+                    clone_expr_graph(program, field, source_func, specialized_func, expr_map)
+                })
                 .collect(),
         },
         ExprKind::MakeEnum {
@@ -836,7 +844,9 @@ fn clone_expr_graph(
             variant,
             fields: fields
                 .into_iter()
-                .map(|field| clone_expr_graph(program, field, source_func, specialized_func, expr_map))
+                .map(|field| {
+                    clone_expr_graph(program, field, source_func, specialized_func, expr_map)
+                })
                 .collect(),
         },
         ExprKind::Error(error) => ExprKind::Error(error),

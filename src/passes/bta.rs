@@ -510,7 +510,11 @@ fn blocking_effect(
     first_non_thunkable_effect(row, effect_props)
 }
 
-fn classify_knownness(sema: &SemanticTables, ct: &crate::pipeline::phases::CtPropagationTables, bta: &mut BtaTables) {
+fn classify_knownness(
+    sema: &SemanticTables,
+    ct: &crate::pipeline::phases::CtPropagationTables,
+    bta: &mut BtaTables,
+) {
     for (idx, _expr_ty) in sema.type_of_expr.iter().enumerate() {
         let expr_id = ExprId::new(idx);
         let knownness = if !ct.ct_cache.contains_key(&expr_id) {

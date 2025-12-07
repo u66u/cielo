@@ -419,13 +419,19 @@ fn main() -> Int {{
 
     let compiler = Compiler::new(CompilerConfig::default());
     let mut interner_1 = Interner::new();
-    let residual_1 = compiler.compile_source_v0(src.as_str(), SourceId::from_u32(0), &mut interner_1);
+    let residual_1 =
+        compiler.compile_source_v0(src.as_str(), SourceId::from_u32(0), &mut interner_1);
     let dep_1 = residual_1.ct().file_deps.first().expect("first dep");
 
     fs::write(&path, "beta").expect("rewrite dep file");
     let mut interner_2 = Interner::new();
-    let residual_2 = compiler.compile_source_v0(src.as_str(), SourceId::from_u32(1), &mut interner_2);
-    let dep_2 = residual_2.ct().file_deps.first().expect("first dep after edit");
+    let residual_2 =
+        compiler.compile_source_v0(src.as_str(), SourceId::from_u32(1), &mut interner_2);
+    let dep_2 = residual_2
+        .ct()
+        .file_deps
+        .first()
+        .expect("first dep after edit");
 
     assert_eq!(
         dep_1.path, dep_2.path,

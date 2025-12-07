@@ -39,7 +39,11 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
 
-    assert!(compiled.c_source.contains("(void)cielo_perform(0, \"print\""));
+    assert!(
+        compiled
+            .c_source
+            .contains("(void)cielo_perform(0, \"print\"")
+    );
     assert!(compiled.c_source.contains("print"));
 }
 
@@ -214,7 +218,10 @@ fn main() -> Int {
     let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
-        compiled.c_source.matches("static const char* cielo_const_s_").count(),
+        compiled
+            .c_source
+            .matches("static const char* cielo_const_s_")
+            .count(),
         1,
         "duplicated string literals should be pooled exactly once"
     );
@@ -238,10 +245,13 @@ fn main() -> Int {{
     );
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src.as_str(), SourceId::from_u32(0), &mut interner);
+    let compiled =
+        compiler.compile_source_v0_to_c(src.as_str(), SourceId::from_u32(0), &mut interner);
 
     assert!(
-        !compiled.c_source.contains("static const char* cielo_const_s_"),
+        !compiled
+            .c_source
+            .contains("static const char* cielo_const_s_"),
         "oversized literals should not be added to const pool"
     );
     assert!(
@@ -270,7 +280,9 @@ fn main() -> Int {
         "handled callsites should not emit runtime handler push/pop"
     );
     assert!(
-        !compiled.c_source.contains("(void)cielo_perform(0, \"print\""),
+        !compiled
+            .c_source
+            .contains("(void)cielo_perform(0, \"print\""),
         "handled operations should lower into clause bodies instead of runtime perform stubs"
     );
     assert!(
@@ -301,7 +313,9 @@ fn main() -> Int {
         .expect("main function");
 
     assert!(
-        !compiled.c_source.contains("(void)cielo_perform(0, \"tick\""),
+        !compiled
+            .c_source
+            .contains("(void)cielo_perform(0, \"tick\""),
         "handled resumptive operations should not call runtime perform stubs"
     );
     assert!(
@@ -540,11 +554,7 @@ fn main() -> Int {
     names.sort_unstable();
     assert_eq!(
         names,
-        vec![
-            "helper".to_owned(),
-            "main".to_owned(),
-            "wrapper".to_owned()
-        ]
+        vec!["helper".to_owned(), "main".to_owned(), "wrapper".to_owned()]
     );
     assert!(
         !compiled.c_source.contains("cielo_fn_dead_"),
@@ -759,7 +769,9 @@ fn linear_stmt_graph_contains_add_rhs_int(
         };
         for expr_id in exprs {
             if let Some(expr) = program.expr(expr_id)
-                && let LinearExpr::Binary { op, rhs: rhs_expr, .. } = expr.kind
+                && let LinearExpr::Binary {
+                    op, rhs: rhs_expr, ..
+                } = expr.kind
                 && op == cielo::ir::core::BinaryOp::Add
                 && linear_expr_is_int_literal(program, rhs_expr, rhs)
             {
@@ -788,11 +800,7 @@ fn linear_stmt_graph_tail_resume_wrapper_count(
         let Some(stmt) = program.stmt(stmt_id) else {
             continue;
         };
-        if let LinearStmt::Val {
-            binding,
-            next,
-            ..
-        } = stmt.kind
+        if let LinearStmt::Val { binding, next, .. } = stmt.kind
             && let Some(next_stmt) = program.stmt(next)
             && let LinearStmt::Let {
                 binding: return_param,
@@ -828,15 +836,20 @@ fn linear_expr_is_int_literal(
     expr_id: cielo::common::ids::LinearExprId,
     value: i64,
 ) -> bool {
-    program.expr(expr_id).is_some_and(|expr| {
-        matches!(&expr.kind, LinearExpr::Literal(Literal::Int(lit)) if *lit == value)
-    })
+    program.expr(expr_id).is_some_and(
+        |expr| matches!(&expr.kind, LinearExpr::Literal(Literal::Int(lit)) if *lit == value),
+    )
 }
 
 fn linear_function_names(program: &LinearProgram, interner: &Interner) -> Vec<String> {
     program
         .functions
         .iter()
-        .map(|function| interner.resolve(function.name).unwrap_or("<missing>").to_owned())
+        .map(|function| {
+            interner
+                .resolve(function.name)
+                .unwrap_or("<missing>")
+                .to_owned()
+        })
         .collect()
 }

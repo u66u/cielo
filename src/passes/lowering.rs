@@ -144,7 +144,11 @@ impl Lowerer {
                     self.struct_ctors.insert(decl.name, decl.fields.len());
                     self.program.add_struct(AdtStructDecl {
                         name: decl.name,
-                        fields: decl.fields.iter().map(|field| lower_type_ref(&field.ty)).collect(),
+                        fields: decl
+                            .fields
+                            .iter()
+                            .map(|field| lower_type_ref(&field.ty))
+                            .collect(),
                         span: decl.span,
                     });
                 }
@@ -191,7 +195,11 @@ impl Lowerer {
                 let func_id = self.program.add_function(FunctionDecl {
                     name: function.name,
                     params: param_vars.clone(),
-                    param_types: function.params.iter().map(|param| lower_type_ref(&param.ty)).collect(),
+                    param_types: function
+                        .params
+                        .iter()
+                        .map(|param| lower_type_ref(&param.ty))
+                        .collect(),
                     return_type: function
                         .return_type
                         .as_ref()
