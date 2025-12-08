@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+manifest="$here/Cargo.toml"
+history="$here/.repl_history"
+words="$here/rlwrap.words"
+
+cmd=(cargo run --manifest-path "$manifest" --offline -- "$@")
+
+if command -v rlwrap >/dev/null 2>&1; then
+  exec rlwrap -c -f "$words" -H "$history" "${cmd[@]}"
+fi
+
+echo "rlwrap not found; running without readline/autocomplete" >&2
+exec "${cmd[@]}"
