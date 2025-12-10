@@ -371,6 +371,35 @@ fn main() -> Int {
 }
 
 #[test]
+fn reports_multi_shot_resume_in_handler_clause() {
+    let src = r#"
+effect LocalState { fn tick() -> Int }
+fn main() -> Int {
+  let x = handle { do LocalState.tick(); 9 } with LocalState {
+    | tick(resume) => {
+      let a = resume(41);
+      resume(a)
+    }
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert!(
+        compiled
+            .residual
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|diag| diag.code == "LINEARIZE_MULTI_SHOT_RESUME"),
+        "multi-shot resume usage should produce a dedicated linearization diagnostic"
+    );
+}
+
+#[test]
 fn emits_match_branches_with_ctor_runtime_helpers() {
     let mut interner = Interner::new();
     let main_name = interner.intern("main");

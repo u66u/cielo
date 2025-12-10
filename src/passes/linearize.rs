@@ -579,6 +579,16 @@ fn lower_stmt_under_handler(
                 .iter()
                 .find(|candidate| candidate.operation == *operation)
             {
+                if let Some(resume_var) = clause.resume_param {
+                    let resume_uses = count_resume_uses(program, clause.body, resume_var);
+                    if resume_uses > 1 {
+                        diagnostics.error(
+                            "LINEARIZE_MULTI_SHOT_RESUME",
+                            "Handler clause resumes the continuation more than once; v1 supports single-shot resumptions only",
+                            clause.span,
+                        );
+                    }
+                }
                 let clause_convention = classify_clause_convention(program, clause);
                 let clause_resume_ctx = clause.resume_param.map(|resume_var| ResumeContext {
                     resume_var,
@@ -1146,6 +1156,61 @@ fn stmt_mentions_var(program: &CoreProgram, root: StmtId, var: VarId) -> bool {
         }
     }
     false
+}
+
+fn count_resume_uses(program: &CoreProgram, root: StmtId, resume_var: VarId) -> usize {
+    let mut stack = vec![root];
+    let mut seen_stmts = HashSet::new();
+    let mut uses = 0usize;
+    while let Some(stmt_id) = stack.pop() {
+        if !seen_stmts.insert(stmt_id) {
+            continue;
+        }
+        let Some(stmt) = program.stmt(stmt_id) else {
+            continue;
+        };
+        match &stmt.kind {
+            StmtKind::Resume { resume, next, .. } => {
+                if *resume == resume_var {
+                    uses = uses.saturating_add(1);
+                }
+                stack.push(*next);
+            }
+            StmtKind::Let { next, .. }
+            | StmtKind::Call { next, .. }
+            | StmtKind::Perform { next, .. } => {
+                stack.push(*next);
+            }
+            StmtKind::Val { value, next, .. } => {
+                stack.push(*next);
+                stack.push(*value);
+            }
+            StmtKind::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                stack.push(*else_branch);
+                stack.push(*then_branch);
+            }
+            StmtKind::Match { arms, default, .. } => {
+                if let Some(default_stmt) = default {
+                    stack.push(*default_stmt);
+                }
+                for arm in arms {
+                    stack.push(arm.body);
+                }
+            }
+            StmtKind::Handle { body, next, .. } | StmtKind::Stage { body, next, .. } => {
+                stack.push(*body);
+                if let Some(next_stmt) = next {
+                    stack.push(*next_stmt);
+                }
+            }
+            StmtKind::Return(_) | StmtKind::Hole { .. } | StmtKind::Error(_) => {}
+        }
+    }
+    uses
 }
 
 fn expr_mentions_var(program: &CoreProgram, root: ExprId, var: VarId) -> bool {
