@@ -176,28 +176,59 @@ fn emit_stmt(
             emit_stmt(*value, EmitMode::AssignVar(*binding), out, indent, cx);
             emit_stmt(*next, mode, out, indent, cx);
         }
-        LinearStmt::Call {
+        LinearStmt::PureCall {
             result,
             callee,
-            convention,
             args,
             next,
         } => {
-            let callee_name = cx
-                .fn_name_by_symbol
-                .get(callee)
-                .cloned()
-                .unwrap_or_else(|| "cielo_fn_unknown".to_owned());
-            let wrapper = call_wrapper(*convention);
-            let call_expr = format_callee_call(callee_name.as_str(), args, cx);
-            if matches!(convention, CallConvention::Control) {
-                emit_indent(out, indent);
-                out.push_str("/* control-call convention: selective CPS hook */\n");
-            }
-            emit_indent(out, indent);
-            writeln!(out, "v{} = {}({});", result.as_u32(), wrapper, call_expr)
-                .expect("in-memory write should not fail");
-            emit_stmt(*next, mode, out, indent, cx);
+            emit_lowered_call(
+                *result,
+                *callee,
+                args,
+                *next,
+                CallConvention::Pure,
+                mode,
+                out,
+                indent,
+                cx,
+            );
+        }
+        LinearStmt::DirectCall {
+            result,
+            callee,
+            args,
+            next,
+        } => {
+            emit_lowered_call(
+                *result,
+                *callee,
+                args,
+                *next,
+                CallConvention::Direct,
+                mode,
+                out,
+                indent,
+                cx,
+            );
+        }
+        LinearStmt::ControlCall {
+            result,
+            callee,
+            args,
+            next,
+        } => {
+            emit_lowered_call(
+                *result,
+                *callee,
+                args,
+                *next,
+                CallConvention::Control,
+                mode,
+                out,
+                indent,
+                cx,
+            );
         }
         LinearStmt::If {
             cond,
@@ -368,6 +399,35 @@ fn emit_leaf(mode: EmitMode, value_expr: String, out: &mut String, indent: usize
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn emit_lowered_call(
+    result: VarId,
+    callee: SymbolId,
+    args: &[LinearExprId],
+    next: LinearStmtId,
+    convention: CallConvention,
+    mode: EmitMode,
+    out: &mut String,
+    indent: usize,
+    cx: &mut EmitCx<'_>,
+) {
+    let callee_name = cx
+        .fn_name_by_symbol
+        .get(&callee)
+        .cloned()
+        .unwrap_or_else(|| "cielo_fn_unknown".to_owned());
+    let wrapper = call_wrapper(convention);
+    let call_expr = format_callee_call(callee_name.as_str(), args, cx);
+    if matches!(convention, CallConvention::Control) {
+        emit_indent(out, indent);
+        out.push_str("/* control-call convention: selective CPS hook */\n");
+    }
+    emit_indent(out, indent);
+    writeln!(out, "v{} = {}({});", result.as_u32(), wrapper, call_expr)
+        .expect("in-memory write should not fail");
+    emit_stmt(next, mode, out, indent, cx);
+}
+
 fn emit_expr(expr_id: LinearExprId, cx: &EmitCx<'_>) -> String {
     let Some(expr) = cx.program.expr(expr_id) else {
         return "cv_unit()".to_owned();
@@ -490,7 +550,9 @@ fn collect_stmt_vars(
         LinearStmt::Let { binding, .. } | LinearStmt::Val { binding, .. } => {
             out.insert(*binding);
         }
-        LinearStmt::Call { result, .. } => {
+        LinearStmt::PureCall { result, .. }
+        | LinearStmt::DirectCall { result, .. }
+        | LinearStmt::ControlCall { result, .. } => {
             out.insert(*result);
         }
         LinearStmt::Perform { result, .. } => {

@@ -49,6 +49,14 @@ struct ResumeContext {
     resume_var: VarId,
     perform_result: Option<VarId>,
     continuation: StmtId,
+    clause_convention: ClauseConvention,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ClauseConvention {
+    Pure,
+    Direct,
+    Control,
 }
 
 fn lower_program(
@@ -276,26 +284,28 @@ fn lower_stmt(
                 );
                 SymbolId::INVALID
             });
-            LinearStmt::Call {
-                result: *result,
-                callee: callee_name,
-                convention: classify_call_convention(effects, sema),
-                args: args
-                    .iter()
-                    .copied()
-                    .map(|arg| lower_expr(program, arg, fn_names, linear, expr_map))
-                    .collect(),
-                next: lower_stmt(
-                    program,
-                    *next,
-                    fn_names,
-                    sema,
-                    diagnostics,
-                    linear,
-                    expr_map,
-                    stmt_map,
-                ),
-            }
+            let lowered_args = args
+                .iter()
+                .copied()
+                .map(|arg| lower_expr(program, arg, fn_names, linear, expr_map))
+                .collect();
+            let lowered_next = lower_stmt(
+                program,
+                *next,
+                fn_names,
+                sema,
+                diagnostics,
+                linear,
+                expr_map,
+                stmt_map,
+            );
+            linear_call_stmt(
+                *result,
+                callee_name,
+                lowered_args,
+                lowered_next,
+                classify_call_convention(effects, sema),
+            )
         }
         StmtKind::If {
             cond,
@@ -569,10 +579,12 @@ fn lower_stmt_under_handler(
                 .iter()
                 .find(|candidate| candidate.operation == *operation)
             {
+                let clause_convention = classify_clause_convention(program, clause);
                 let clause_resume_ctx = clause.resume_param.map(|resume_var| ResumeContext {
                     resume_var,
                     perform_result: *result,
                     continuation: *next,
+                    clause_convention,
                 });
                 lower_matching_clause(
                     program,
@@ -655,11 +667,21 @@ fn lower_stmt_under_handler(
             } else {
                 continuation
             };
-            // Tail-resumption optimization: `resume(v)` that immediately returns its result
-            // does not need an intermediate `Val` wrapper node.
+
             if is_identity_return_of_var(program, *next, *result) {
                 return continuation;
             }
+
+            if matches!(active_ctx.clause_convention, ClauseConvention::Direct) {
+                // Direct clauses must resume in tail position. Preserve a conservative fallback
+                // if earlier rewrites invalidate the syntactic guarantee.
+                diagnostics.error(
+                    "LINEARIZE_DIRECT_RESUME_NON_TAIL",
+                    "Direct handler clause resume is not in tail position; lowering as control path",
+                    stmt.span,
+                );
+            }
+
             let lowered_next = lower_stmt_under_handler(
                 program,
                 *next,
@@ -770,13 +792,13 @@ fn lower_stmt_under_handler(
                 .copied()
                 .map(|arg| lower_expr(program, arg, fn_names, linear, expr_map))
                 .collect();
-            linear.push_stmt(LinearStmt::Call {
-                result: *result,
-                callee: callee_name,
-                convention: classify_call_convention(effects, sema),
-                args: lowered_args,
-                next: lowered_next,
-            })
+            linear.push_stmt(linear_call_stmt(
+                *result,
+                callee_name,
+                lowered_args,
+                lowered_next,
+                classify_call_convention(effects, sema),
+            ))
         }
         StmtKind::If {
             cond,
@@ -952,6 +974,214 @@ fn is_identity_return_of_var(program: &CoreProgram, stmt_id: StmtId, var: VarId)
     matches!(expr.kind, ExprKind::Var(bound) if bound == var)
 }
 
+fn classify_clause_convention(program: &CoreProgram, clause: &HandlerClause) -> ClauseConvention {
+    let Some(resume_var) = clause.resume_param else {
+        return ClauseConvention::Pure;
+    };
+    if is_tail_resumptive_clause(program, clause.body, resume_var) {
+        ClauseConvention::Direct
+    } else {
+        ClauseConvention::Control
+    }
+}
+
+fn is_tail_resumptive_clause(program: &CoreProgram, stmt_id: StmtId, resume_var: VarId) -> bool {
+    let mut seen_stmts = HashSet::new();
+    is_tail_resumptive_stmt(program, stmt_id, resume_var, &mut seen_stmts)
+}
+
+fn is_tail_resumptive_stmt(
+    program: &CoreProgram,
+    stmt_id: StmtId,
+    resume_var: VarId,
+    seen_stmts: &mut HashSet<StmtId>,
+) -> bool {
+    if !seen_stmts.insert(stmt_id) {
+        return true;
+    }
+
+    let Some(stmt) = program.stmt(stmt_id) else {
+        return false;
+    };
+
+    match &stmt.kind {
+        StmtKind::Return(_) => false,
+        StmtKind::Let { value, next, .. } => {
+            !expr_mentions_var(program, *value, resume_var)
+                && is_tail_resumptive_stmt(program, *next, resume_var, seen_stmts)
+        }
+        StmtKind::Val {
+            binding,
+            value,
+            next,
+        } => {
+            if is_identity_return_of_var(program, *next, *binding) {
+                is_tail_resumptive_stmt(program, *value, resume_var, seen_stmts)
+            } else {
+                !stmt_mentions_var(program, *value, resume_var)
+                    && is_tail_resumptive_stmt(program, *next, resume_var, seen_stmts)
+            }
+        }
+        StmtKind::Call { args, next, .. } | StmtKind::Perform { args, next, .. } => {
+            !args
+                .iter()
+                .copied()
+                .any(|arg| expr_mentions_var(program, arg, resume_var))
+                && is_tail_resumptive_stmt(program, *next, resume_var, seen_stmts)
+        }
+        StmtKind::Resume {
+            result,
+            resume,
+            arg,
+            next,
+        } => {
+            *resume == resume_var
+                && !expr_mentions_var(program, *arg, resume_var)
+                && is_identity_return_of_var(program, *next, *result)
+        }
+        StmtKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            !expr_mentions_var(program, *cond, resume_var)
+                && is_tail_resumptive_stmt(program, *then_branch, resume_var, seen_stmts)
+                && is_tail_resumptive_stmt(program, *else_branch, resume_var, seen_stmts)
+        }
+        StmtKind::Match {
+            scrutinee,
+            arms,
+            default,
+        } => {
+            !expr_mentions_var(program, *scrutinee, resume_var)
+                && arms
+                    .iter()
+                    .all(|arm| is_tail_resumptive_stmt(program, arm.body, resume_var, seen_stmts))
+                && default.map_or(true, |stmt| {
+                    is_tail_resumptive_stmt(program, stmt, resume_var, seen_stmts)
+                })
+        }
+        StmtKind::Handle { .. } | StmtKind::Stage { .. } => false,
+        StmtKind::Hole { .. } | StmtKind::Error(_) => true,
+    }
+}
+
+fn stmt_mentions_var(program: &CoreProgram, root: StmtId, var: VarId) -> bool {
+    let mut stack = vec![root];
+    let mut seen_stmts = HashSet::new();
+    while let Some(stmt_id) = stack.pop() {
+        if !seen_stmts.insert(stmt_id) {
+            continue;
+        }
+        let Some(stmt) = program.stmt(stmt_id) else {
+            continue;
+        };
+        match &stmt.kind {
+            StmtKind::Return(expr) => {
+                if expr_mentions_var(program, *expr, var) {
+                    return true;
+                }
+            }
+            StmtKind::Let { value, next, .. } => {
+                if expr_mentions_var(program, *value, var) {
+                    return true;
+                }
+                stack.push(*next);
+            }
+            StmtKind::Val { value, next, .. } => {
+                stack.push(*next);
+                stack.push(*value);
+            }
+            StmtKind::Call { args, next, .. } | StmtKind::Perform { args, next, .. } => {
+                if args
+                    .iter()
+                    .copied()
+                    .any(|arg| expr_mentions_var(program, arg, var))
+                {
+                    return true;
+                }
+                stack.push(*next);
+            }
+            StmtKind::Resume {
+                resume, arg, next, ..
+            } => {
+                if *resume == var || expr_mentions_var(program, *arg, var) {
+                    return true;
+                }
+                stack.push(*next);
+            }
+            StmtKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                if expr_mentions_var(program, *cond, var) {
+                    return true;
+                }
+                stack.push(*else_branch);
+                stack.push(*then_branch);
+            }
+            StmtKind::Match {
+                scrutinee,
+                arms,
+                default,
+            } => {
+                if expr_mentions_var(program, *scrutinee, var) {
+                    return true;
+                }
+                if let Some(default_stmt) = default {
+                    stack.push(*default_stmt);
+                }
+                for arm in arms {
+                    stack.push(arm.body);
+                }
+            }
+            StmtKind::Handle { body, next, .. } | StmtKind::Stage { body, next, .. } => {
+                stack.push(*body);
+                if let Some(next_stmt) = next {
+                    stack.push(*next_stmt);
+                }
+            }
+            StmtKind::Hole { .. } | StmtKind::Error(_) => {}
+        }
+    }
+    false
+}
+
+fn expr_mentions_var(program: &CoreProgram, root: ExprId, var: VarId) -> bool {
+    let mut stack = vec![root];
+    let mut seen_exprs = HashSet::new();
+    while let Some(expr_id) = stack.pop() {
+        if !seen_exprs.insert(expr_id) {
+            continue;
+        }
+        let Some(expr) = program.expr(expr_id) else {
+            continue;
+        };
+        match &expr.kind {
+            ExprKind::Var(found) => {
+                if *found == var {
+                    return true;
+                }
+            }
+            ExprKind::Unary { expr, .. } => stack.push(*expr),
+            ExprKind::Binary { lhs, rhs, .. } => {
+                stack.push(*rhs);
+                stack.push(*lhs);
+            }
+            ExprKind::PureCall { args, .. }
+            | ExprKind::MakeStruct { fields: args, .. }
+            | ExprKind::MakeEnum { fields: args, .. } => {
+                for arg in args {
+                    stack.push(*arg);
+                }
+            }
+            ExprKind::Literal(_) | ExprKind::Error(_) => {}
+        }
+    }
+    false
+}
+
 #[allow(clippy::too_many_arguments)]
 fn lower_matching_clause(
     program: &CoreProgram,
@@ -1075,5 +1305,34 @@ fn classify_call_convention(
         CallConvention::Direct
     } else {
         CallConvention::Control
+    }
+}
+
+fn linear_call_stmt(
+    result: VarId,
+    callee: SymbolId,
+    args: Vec<LinearExprId>,
+    next: LinearStmtId,
+    convention: CallConvention,
+) -> LinearStmt {
+    match convention {
+        CallConvention::Pure => LinearStmt::PureCall {
+            result,
+            callee,
+            args,
+            next,
+        },
+        CallConvention::Direct => LinearStmt::DirectCall {
+            result,
+            callee,
+            args,
+            next,
+        },
+        CallConvention::Control => LinearStmt::ControlCall {
+            result,
+            callee,
+            args,
+            next,
+        },
     }
 }

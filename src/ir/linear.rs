@@ -62,7 +62,9 @@ impl LinearStmtNode {
         match &self.kind {
             LinearStmt::Return(_) | LinearStmt::Hole | LinearStmt::Error => SmallVec::new(),
             LinearStmt::Let { next, .. }
-            | LinearStmt::Call { next, .. }
+            | LinearStmt::PureCall { next, .. }
+            | LinearStmt::DirectCall { next, .. }
+            | LinearStmt::ControlCall { next, .. }
             | LinearStmt::Perform { next, .. } => smallvec![*next],
             LinearStmt::Val { value, next, .. } => smallvec![*value, *next],
             LinearStmt::If {
@@ -98,7 +100,10 @@ impl LinearStmtNode {
             } => {
                 smallvec![*cond]
             }
-            LinearStmt::Call { args, .. } | LinearStmt::Perform { args, .. } => {
+            LinearStmt::PureCall { args, .. }
+            | LinearStmt::DirectCall { args, .. }
+            | LinearStmt::ControlCall { args, .. }
+            | LinearStmt::Perform { args, .. } => {
                 args.iter().copied().collect()
             }
             LinearStmt::Val { .. }
@@ -167,10 +172,21 @@ pub enum LinearStmt {
         value: LinearStmtId,
         next: LinearStmtId,
     },
-    Call {
+    PureCall {
         result: VarId,
         callee: SymbolId,
-        convention: CallConvention,
+        args: Vec<LinearExprId>,
+        next: LinearStmtId,
+    },
+    DirectCall {
+        result: VarId,
+        callee: SymbolId,
+        args: Vec<LinearExprId>,
+        next: LinearStmtId,
+    },
+    ControlCall {
+        result: VarId,
+        callee: SymbolId,
         args: Vec<LinearExprId>,
         next: LinearStmtId,
     },

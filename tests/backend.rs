@@ -612,10 +612,16 @@ fn collect_call_conventions(
         return;
     };
     match &stmt.kind {
-        LinearStmt::Call {
-            convention, next, ..
-        } => {
-            out.push(*convention);
+        LinearStmt::PureCall { next, .. } => {
+            out.push(CallConvention::Pure);
+            collect_call_conventions(program, *next, seen, out);
+        }
+        LinearStmt::DirectCall { next, .. } => {
+            out.push(CallConvention::Direct);
+            collect_call_conventions(program, *next, seen, out);
+        }
+        LinearStmt::ControlCall { next, .. } => {
+            out.push(CallConvention::Control);
             collect_call_conventions(program, *next, seen, out);
         }
         LinearStmt::Let { next, .. } | LinearStmt::Perform { next, .. } => {
