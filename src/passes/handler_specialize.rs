@@ -90,16 +90,44 @@ fn direct_handle_body_callee(program: &CoreProgram, body_stmt: StmtId) -> Option
 
 fn wrapper_call_callee(program: &CoreProgram, stmt_id: StmtId) -> Option<FuncId> {
     let stmt = program.stmt(stmt_id)?;
-    match stmt.kind {
-        StmtKind::Call { callee, .. } => Some(callee),
-        StmtKind::Let { next, .. } => wrapper_call_callee(program, next),
+    match &stmt.kind {
+        StmtKind::Call { callee, .. } => Some(*callee),
+        StmtKind::Let { next, .. } => wrapper_call_callee(program, *next),
         StmtKind::Val {
             binding,
             value,
             next,
-        } if is_return_of_var(program, next, binding) => wrapper_call_callee(program, value),
+        } if is_return_of_var(program, *next, *binding) => wrapper_call_callee(program, *value),
+        StmtKind::If {
+            then_branch,
+            else_branch,
+            ..
+        } => same_callee(
+            wrapper_call_callee(program, *then_branch),
+            wrapper_call_callee(program, *else_branch),
+        ),
+        StmtKind::Match {
+            arms,
+            default: Some(default_stmt),
+            ..
+        } => {
+            let callee = wrapper_call_callee(program, *default_stmt)?;
+            for arm in arms {
+                let arm_callee = wrapper_call_callee(program, arm.body)?;
+                if arm_callee != callee {
+                    return None;
+                }
+            }
+            Some(callee)
+        }
         _ => None,
     }
+}
+
+fn same_callee(lhs: Option<FuncId>, rhs: Option<FuncId>) -> Option<FuncId> {
+    let lhs = lhs?;
+    let rhs = rhs?;
+    if lhs == rhs { Some(lhs) } else { None }
 }
 
 fn is_return_of_var(program: &CoreProgram, stmt_id: StmtId, var: VarId) -> bool {
@@ -183,6 +211,41 @@ fn build_rewritten_body(
                 binding,
                 value: rewritten_call,
                 next,
+            })
+        }
+        StmtKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            let rewritten_then = build_rewritten_stmt(program, then_branch, specialized_callee)?;
+            let rewritten_else = build_rewritten_stmt(program, else_branch, specialized_callee)?;
+            Some(StmtKind::If {
+                cond,
+                then_branch: rewritten_then,
+                else_branch: rewritten_else,
+            })
+        }
+        StmtKind::Match {
+            scrutinee,
+            arms,
+            default: Some(default_stmt),
+        } => {
+            let mut rewritten_arms = Vec::with_capacity(arms.len());
+            for arm in arms {
+                rewritten_arms.push(crate::ir::core::MatchArm {
+                    tag: arm.tag,
+                    binders: arm.binders,
+                    body: build_rewritten_stmt(program, arm.body, specialized_callee)?,
+                    span: arm.span,
+                });
+            }
+            let rewritten_default =
+                build_rewritten_stmt(program, default_stmt, specialized_callee)?;
+            Some(StmtKind::Match {
+                scrutinee,
+                arms: rewritten_arms,
+                default: Some(rewritten_default),
             })
         }
         _ => None,
