@@ -267,6 +267,209 @@ fn main() -> Int {
     );
 }
 
+#[test]
+fn specializes_handle_wrapped_call_through_if_forwarding_wrapper() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+
+fn io(v: Int) -> Int with Console {
+  do Console.print("x");
+  v
+}
+
+fn entry(flag: Bool) -> Int {
+  let y = handle {
+    if flag {
+      io(7)
+    } else {
+      io(8)
+    }
+  } with Console {
+    | print(s) => 0
+  };
+  y
+}
+
+fn main() -> Int {
+  entry(true)
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    let specialized_id = specialized_copy_named(compiled.residual.program(), &interner, "io")
+        .expect("if-forwarding wrapper should produce one specialized io copy");
+
+    let entry = function_named(compiled.residual.program(), &interner, "entry").expect("entry");
+    assert!(
+        !contains_handle_stmt(compiled.residual.program(), entry.body),
+        "if-forwarding wrapper should be rewritten to direct calls"
+    );
+    let callees = collect_call_callees(compiled.residual.program(), entry.body);
+    assert_eq!(
+        callees
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>(),
+        std::collections::HashSet::from([specialized_id]),
+        "all if branches should target the same specialized callee"
+    );
+    assert_eq!(
+        callees.len(),
+        2,
+        "if-forwarding wrapper should preserve both branch-local direct callsites"
+    );
+}
+
+#[test]
+fn does_not_specialize_if_wrapper_with_branch_callee_mismatch() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+
+fn io() -> Int with Console {
+  do Console.print("x");
+  1
+}
+
+fn alt() -> Int with Console {
+  do Console.print("y");
+  2
+}
+
+fn entry(flag: Bool) -> Int {
+  let y = handle {
+    if flag {
+      io()
+    } else {
+      alt()
+    }
+  } with Console {
+    | print(s) => 0
+  };
+  y
+}
+
+fn main() -> Int {
+  entry(true)
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert!(
+        specialized_copy_named(compiled.residual.program(), &interner, "io").is_none(),
+        "mismatched if-branch callees must not trigger io specialization"
+    );
+    assert!(
+        specialized_copy_named(compiled.residual.program(), &interner, "alt").is_none(),
+        "mismatched if-branch callees must not trigger alt specialization"
+    );
+
+    let entry = function_named(compiled.residual.program(), &interner, "entry").expect("entry");
+    assert!(
+        contains_handle_stmt(compiled.residual.program(), entry.body),
+        "mismatched if-branch wrappers should remain unspecialized"
+    );
+}
+
+#[test]
+fn specializes_handle_wrapped_call_through_match_forwarding_wrapper() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+enum Tag { A, B }
+
+fn io(v: Int) -> Int with Console {
+  do Console.print("x");
+  v
+}
+
+fn entry(tag: Tag) -> Int {
+  let y = handle {
+    match tag {
+      | A => io(7)
+      | _ => io(8)
+    }
+  } with Console {
+    | print(s) => 0
+  };
+  y
+}
+
+fn main() -> Int {
+  entry(A())
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    let specialized_id = specialized_copy_named(compiled.residual.program(), &interner, "io")
+        .expect("match-forwarding wrapper should produce one specialized io copy");
+
+    let entry = function_named(compiled.residual.program(), &interner, "entry").expect("entry");
+    assert!(
+        !contains_handle_stmt(compiled.residual.program(), entry.body),
+        "match-forwarding wrapper should be rewritten to direct calls"
+    );
+    let callees = collect_call_callees(compiled.residual.program(), entry.body);
+    assert_eq!(
+        callees
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>(),
+        std::collections::HashSet::from([specialized_id]),
+        "all match branches should target the same specialized callee"
+    );
+    assert_eq!(
+        callees.len(),
+        2,
+        "match-forwarding wrapper should preserve one direct callsite per arm/default path"
+    );
+}
+
+#[test]
+fn does_not_specialize_match_wrapper_without_default_branch() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+enum Tag { A, B }
+
+fn io(v: Int) -> Int with Console {
+  do Console.print("x");
+  v
+}
+
+fn entry(tag: Tag) -> Int {
+  let y = handle {
+    match tag {
+      | A => io(7)
+    }
+  } with Console {
+    | print(s) => 0
+  };
+  y
+}
+
+fn main() -> Int {
+  entry(A())
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert!(
+        specialized_copy_named(compiled.residual.program(), &interner, "io").is_none(),
+        "match wrappers without default branch should conservatively skip specialization"
+    );
+    let entry = function_named(compiled.residual.program(), &interner, "entry").expect("entry");
+    assert!(
+        contains_handle_stmt(compiled.residual.program(), entry.body),
+        "missing default match wrapper should remain unspecialized"
+    );
+}
+
 fn first_handle_handler(program: &CoreProgram, root: StmtId) -> Option<HandlerId> {
     let mut stack = vec![root];
     let mut seen = HashSet::new();
@@ -351,4 +554,39 @@ fn first_call_stmt(program: &CoreProgram, root: StmtId) -> Option<StmtId> {
         }
     }
     None
+}
+
+fn specialized_copy_named(
+    program: &CoreProgram,
+    interner: &Interner,
+    name: &str,
+) -> Option<FuncId> {
+    let mut out = None;
+    for (idx, function) in program.functions().iter().enumerate() {
+        if interner.resolve(function.name) != Some(name) {
+            continue;
+        }
+        if first_handle_handler(program, function.body).is_none() {
+            continue;
+        }
+        let id = FuncId::new(idx);
+        assert!(
+            out.is_none(),
+            "expected at most one specialized copy named `{name}`, found another at id {}",
+            id.as_u32()
+        );
+        out = Some(id);
+    }
+    out
+}
+
+fn function_named<'a>(
+    program: &'a CoreProgram,
+    interner: &Interner,
+    name: &str,
+) -> Option<&'a cielo::ir::core::FunctionDecl> {
+    program
+        .functions()
+        .iter()
+        .find(|function| interner.resolve(function.name) == Some(name))
 }
