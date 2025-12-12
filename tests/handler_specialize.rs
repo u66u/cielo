@@ -25,27 +25,23 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
 
-    let loop_ids: Vec<FuncId> = compiled
-        .residual
-        .program()
-        .functions()
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, function)| {
-            (interner.resolve(function.name) == Some("loop")).then_some(FuncId::new(idx))
-        })
-        .collect();
     assert_eq!(
-        loop_ids.len(),
-        2,
-        "expected original + specialized loop copy"
+        function_count_named(compiled.residual.program(), &interner, "loop"),
+        1,
+        "unreachable unspecialized loop copy should be pruned after specialization"
+    );
+    let specialized_id = specialized_copy_named(compiled.residual.program(), &interner, "loop")
+        .expect("specialized loop id");
+    assert!(
+        compiled
+            .residual
+            .residual()
+            .function_effect_summary
+            .keys()
+            .all(|id| id.index() < compiled.residual.program().functions().len()),
+        "residual function-effect summary keys must stay within compacted function id bounds"
     );
 
-    let specialized_id = loop_ids
-        .iter()
-        .copied()
-        .max_by_key(|id| id.index())
-        .expect("specialized loop id");
     let main = compiled
         .residual
         .program()
@@ -108,26 +104,13 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
 
-    let io_ids: Vec<FuncId> = compiled
-        .residual
-        .program()
-        .functions()
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, function)| {
-            (interner.resolve(function.name) == Some("io")).then_some(FuncId::new(idx))
-        })
-        .collect();
     assert_eq!(
-        io_ids.len(),
-        2,
-        "equivalent handlers should reuse one specialized copy"
+        function_count_named(compiled.residual.program(), &interner, "io"),
+        1,
+        "equivalent wrappers should compact to one reachable specialized io copy"
     );
 
-    let specialized_id = io_ids
-        .iter()
-        .copied()
-        .max_by_key(|id| id.index())
+    let specialized_id = specialized_copy_named(compiled.residual.program(), &interner, "io")
         .expect("specialized io id");
     let main = compiled
         .residual
@@ -178,22 +161,12 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
 
-    let io_ids: Vec<FuncId> = compiled
-        .residual
-        .program()
-        .functions()
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, function)| {
-            (interner.resolve(function.name) == Some("io")).then_some(FuncId::new(idx))
-        })
-        .collect();
-    assert_eq!(io_ids.len(), 2, "expected original + specialized io copy");
-
-    let specialized_id = io_ids
-        .iter()
-        .copied()
-        .max_by_key(|id| id.index())
+    assert_eq!(
+        function_count_named(compiled.residual.program(), &interner, "io"),
+        1,
+        "let-forwarding wrappers should leave only one reachable specialized io copy"
+    );
+    let specialized_id = specialized_copy_named(compiled.residual.program(), &interner, "io")
         .expect("specialized io id");
     let main = compiled
         .residual
@@ -238,20 +211,14 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
 
-    let io_ids: Vec<FuncId> = compiled
-        .residual
-        .program()
-        .functions()
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, function)| {
-            (interner.resolve(function.name) == Some("io")).then_some(FuncId::new(idx))
-        })
-        .collect();
     assert_eq!(
-        io_ids.len(),
+        function_count_named(compiled.residual.program(), &interner, "io"),
         1,
         "non-wrapper post-call work must not trigger specialization copies"
+    );
+    assert!(
+        specialized_copy_named(compiled.residual.program(), &interner, "io").is_none(),
+        "non-wrapper post-call work should keep only the original io function"
     );
 
     let main = compiled
@@ -470,6 +437,74 @@ fn main() -> Int {
     );
 }
 
+#[test]
+fn keeps_unspecialized_copy_when_original_still_reachable() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+
+fn io(v: Int) -> Int with Console {
+  do Console.print("x");
+  v
+}
+
+fn main() -> Int {
+  let fast = handle { io(1) } with Console {
+    | print(s) => 0
+  };
+  let slow = handle {
+    let v = io(2);
+    v + 1
+  } with Console {
+    | print(s) => 0
+  };
+  fast + slow
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    let io_ids = function_ids_named(compiled.residual.program(), &interner, "io");
+    assert_eq!(
+        io_ids.len(),
+        2,
+        "when another path still uses original io, pruning must keep both original and specialized copies"
+    );
+    let specialized_id = specialized_copy_named(compiled.residual.program(), &interner, "io")
+        .expect("specialized io id");
+    let original_id = io_ids
+        .iter()
+        .copied()
+        .find(|id| *id != specialized_id)
+        .expect("original io id");
+
+    let main = function_named(compiled.residual.program(), &interner, "main").expect("main");
+    assert!(
+        contains_handle_stmt(compiled.residual.program(), main.body),
+        "slow path should remain as an unspecialized handle wrapper"
+    );
+    let callees = collect_call_callees(compiled.residual.program(), main.body)
+        .into_iter()
+        .collect::<HashSet<_>>();
+    assert!(
+        callees.contains(&specialized_id),
+        "fast wrapper path should call specialized io"
+    );
+    assert!(
+        callees.contains(&original_id),
+        "slow unspecialized path should keep calling original io"
+    );
+    assert!(
+        compiled
+            .residual
+            .residual()
+            .function_effect_summary
+            .keys()
+            .all(|id| id.index() < compiled.residual.program().functions().len()),
+        "function-effect summary keys must remain in bounds after partial pruning"
+    );
+}
+
 fn first_handle_handler(program: &CoreProgram, root: StmtId) -> Option<HandlerId> {
     let mut stack = vec![root];
     let mut seen = HashSet::new();
@@ -578,6 +613,21 @@ fn specialized_copy_named(
         out = Some(id);
     }
     out
+}
+
+fn function_ids_named(program: &CoreProgram, interner: &Interner, name: &str) -> Vec<FuncId> {
+    program
+        .functions()
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, function)| {
+            (interner.resolve(function.name) == Some(name)).then_some(FuncId::new(idx))
+        })
+        .collect()
+}
+
+fn function_count_named(program: &CoreProgram, interner: &Interner, name: &str) -> usize {
+    function_ids_named(program, interner, name).len()
 }
 
 fn function_named<'a>(
