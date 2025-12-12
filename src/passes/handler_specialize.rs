@@ -204,6 +204,8 @@ fn remap_func_id(remap: &[Option<FuncId>], source: FuncId) -> Option<FuncId> {
 fn collect_specialize_candidates(program: &CoreProgram) -> Vec<SpecializeCandidate> {
     let mut out = Vec::new();
     let shapes = collect_handler_shapes(program);
+    let mut wrapper_callee_cache = HashMap::new();
+    let mut wrapper_callee_visiting = HashSet::new();
     for stmt_idx in 0..program.stmts().len() {
         let stmt_id = StmtId::new(stmt_idx);
         let Some(stmt) = program.stmt(stmt_id) else {
@@ -220,7 +222,12 @@ fn collect_specialize_candidates(program: &CoreProgram) -> Vec<SpecializeCandida
         if next.is_some() {
             continue;
         }
-        let Some(callee) = direct_handle_body_callee(program, *body) else {
+        let Some(callee) = direct_handle_body_callee(
+            program,
+            *body,
+            &mut wrapper_callee_cache,
+            &mut wrapper_callee_visiting,
+        ) else {
             continue;
         };
         let Some(shape) = shapes.get(handler.index()).cloned() else {
@@ -237,44 +244,84 @@ fn collect_specialize_candidates(program: &CoreProgram) -> Vec<SpecializeCandida
     out
 }
 
-fn direct_handle_body_callee(program: &CoreProgram, body_stmt: StmtId) -> Option<FuncId> {
-    wrapper_call_callee(program, body_stmt)
+fn direct_handle_body_callee(
+    program: &CoreProgram,
+    body_stmt: StmtId,
+    cache: &mut HashMap<StmtId, Option<FuncId>>,
+    visiting: &mut HashSet<StmtId>,
+) -> Option<FuncId> {
+    wrapper_call_callee(program, body_stmt, cache, visiting)
 }
 
-fn wrapper_call_callee(program: &CoreProgram, stmt_id: StmtId) -> Option<FuncId> {
-    let stmt = program.stmt(stmt_id)?;
-    match &stmt.kind {
-        StmtKind::Call { callee, .. } => Some(*callee),
-        StmtKind::Let { next, .. } => wrapper_call_callee(program, *next),
-        StmtKind::Val {
-            binding,
-            value,
-            next,
-        } if is_return_of_var(program, *next, *binding) => wrapper_call_callee(program, *value),
-        StmtKind::If {
-            then_branch,
-            else_branch,
-            ..
-        } => same_callee(
-            wrapper_call_callee(program, *then_branch),
-            wrapper_call_callee(program, *else_branch),
-        ),
-        StmtKind::Match {
-            arms,
-            default: Some(default_stmt),
-            ..
-        } => {
-            let callee = wrapper_call_callee(program, *default_stmt)?;
-            for arm in arms {
-                let arm_callee = wrapper_call_callee(program, arm.body)?;
-                if arm_callee != callee {
-                    return None;
-                }
-            }
-            Some(callee)
-        }
-        _ => None,
+fn wrapper_call_callee(
+    program: &CoreProgram,
+    stmt_id: StmtId,
+    cache: &mut HashMap<StmtId, Option<FuncId>>,
+    visiting: &mut HashSet<StmtId>,
+) -> Option<FuncId> {
+    if let Some(cached) = cache.get(&stmt_id).copied() {
+        return cached;
     }
+    if !visiting.insert(stmt_id) {
+        cache.insert(stmt_id, None);
+        return None;
+    }
+
+    let resolved = match program.stmt(stmt_id) {
+        Some(stmt) => match &stmt.kind {
+            StmtKind::Call { callee, .. } => Some(*callee),
+            StmtKind::Let { next, .. } => wrapper_call_callee(program, *next, cache, visiting),
+            StmtKind::Val {
+                binding,
+                value,
+                next,
+            } if is_return_of_var(program, *next, *binding) => {
+                wrapper_call_callee(program, *value, cache, visiting)
+            }
+            StmtKind::If {
+                then_branch,
+                else_branch,
+                ..
+            } => same_callee(
+                wrapper_call_callee(program, *then_branch, cache, visiting),
+                wrapper_call_callee(program, *else_branch, cache, visiting),
+            ),
+            StmtKind::Match {
+                arms,
+                default: Some(default_stmt),
+                ..
+            } => {
+                let Some(callee) = wrapper_call_callee(program, *default_stmt, cache, visiting)
+                else {
+                    return finish_wrapper_callee(cache, visiting, stmt_id, None);
+                };
+                for arm in arms {
+                    let Some(arm_callee) = wrapper_call_callee(program, arm.body, cache, visiting)
+                    else {
+                        return finish_wrapper_callee(cache, visiting, stmt_id, None);
+                    };
+                    if arm_callee != callee {
+                        return finish_wrapper_callee(cache, visiting, stmt_id, None);
+                    }
+                }
+                Some(callee)
+            }
+            _ => None,
+        },
+        None => None,
+    };
+    finish_wrapper_callee(cache, visiting, stmt_id, resolved)
+}
+
+fn finish_wrapper_callee(
+    cache: &mut HashMap<StmtId, Option<FuncId>>,
+    visiting: &mut HashSet<StmtId>,
+    stmt_id: StmtId,
+    resolved: Option<FuncId>,
+) -> Option<FuncId> {
+    visiting.remove(&stmt_id);
+    cache.insert(stmt_id, resolved);
+    resolved
 }
 
 fn same_callee(lhs: Option<FuncId>, rhs: Option<FuncId>) -> Option<FuncId> {
@@ -309,8 +356,15 @@ fn rewrite_direct_handle_callsite(
     candidate: &SpecializeCandidate,
     specialized_callee: FuncId,
 ) {
-    let Some(replacement) = build_rewritten_body(program, candidate.body_stmt, specialized_callee)
-    else {
+    let mut rewritten_cache = HashMap::new();
+    let mut rewritten_visiting = HashSet::new();
+    let Some(replacement) = build_rewritten_body(
+        program,
+        candidate.body_stmt,
+        specialized_callee,
+        &mut rewritten_cache,
+        &mut rewritten_visiting,
+    ) else {
         return;
     };
 
@@ -326,6 +380,8 @@ fn build_rewritten_body(
     program: &mut CoreProgram,
     body_stmt: StmtId,
     specialized_callee: FuncId,
+    cache: &mut HashMap<StmtId, Option<StmtId>>,
+    visiting: &mut HashSet<StmtId>,
 ) -> Option<StmtKind> {
     let stmt = program.stmt(body_stmt)?.clone();
     match stmt.kind {
@@ -347,7 +403,8 @@ fn build_rewritten_body(
             value,
             next,
         } => {
-            let rewritten_next = build_rewritten_stmt(program, next, specialized_callee)?;
+            let rewritten_next =
+                build_rewritten_stmt(program, next, specialized_callee, cache, visiting)?;
             Some(StmtKind::Let {
                 binding,
                 value,
@@ -359,7 +416,8 @@ fn build_rewritten_body(
             value,
             next,
         } if is_return_of_var(program, next, binding) => {
-            let rewritten_call = build_rewritten_stmt(program, value, specialized_callee)?;
+            let rewritten_call =
+                build_rewritten_stmt(program, value, specialized_callee, cache, visiting)?;
             Some(StmtKind::Val {
                 binding,
                 value: rewritten_call,
@@ -371,8 +429,10 @@ fn build_rewritten_body(
             then_branch,
             else_branch,
         } => {
-            let rewritten_then = build_rewritten_stmt(program, then_branch, specialized_callee)?;
-            let rewritten_else = build_rewritten_stmt(program, else_branch, specialized_callee)?;
+            let rewritten_then =
+                build_rewritten_stmt(program, then_branch, specialized_callee, cache, visiting)?;
+            let rewritten_else =
+                build_rewritten_stmt(program, else_branch, specialized_callee, cache, visiting)?;
             Some(StmtKind::If {
                 cond,
                 then_branch: rewritten_then,
@@ -389,12 +449,18 @@ fn build_rewritten_body(
                 rewritten_arms.push(crate::ir::core::MatchArm {
                     tag: arm.tag,
                     binders: arm.binders,
-                    body: build_rewritten_stmt(program, arm.body, specialized_callee)?,
+                    body: build_rewritten_stmt(
+                        program,
+                        arm.body,
+                        specialized_callee,
+                        cache,
+                        visiting,
+                    )?,
                     span: arm.span,
                 });
             }
             let rewritten_default =
-                build_rewritten_stmt(program, default_stmt, specialized_callee)?;
+                build_rewritten_stmt(program, default_stmt, specialized_callee, cache, visiting)?;
             Some(StmtKind::Match {
                 scrutinee,
                 arms: rewritten_arms,
@@ -409,10 +475,29 @@ fn build_rewritten_stmt(
     program: &mut CoreProgram,
     stmt_id: StmtId,
     specialized_callee: FuncId,
+    cache: &mut HashMap<StmtId, Option<StmtId>>,
+    visiting: &mut HashSet<StmtId>,
 ) -> Option<StmtId> {
-    let span = program.stmt(stmt_id)?.span;
-    let kind = build_rewritten_body(program, stmt_id, specialized_callee)?;
-    Some(program.push_stmt(StmtNode { span, kind }))
+    if let Some(cached) = cache.get(&stmt_id).copied() {
+        return cached;
+    }
+    if !visiting.insert(stmt_id) {
+        cache.insert(stmt_id, None);
+        return None;
+    }
+
+    let resolved = match program.stmt(stmt_id) {
+        Some(stmt) => {
+            let span = stmt.span;
+            let kind =
+                build_rewritten_body(program, stmt_id, specialized_callee, cache, visiting)?;
+            Some(program.push_stmt(StmtNode { span, kind }))
+        }
+        None => None,
+    };
+    visiting.remove(&stmt_id);
+    cache.insert(stmt_id, resolved);
+    resolved
 }
 
 fn ensure_specialized(
