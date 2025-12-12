@@ -1,6 +1,7 @@
 pub mod bta;
 pub mod c_emit;
 pub mod ct_propagate;
+pub mod function_graph;
 pub mod handler_specialize;
 pub mod linearize;
 pub mod lowering;
