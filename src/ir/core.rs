@@ -435,6 +435,10 @@ impl CoreProgram {
         &mut self.functions
     }
 
+    pub fn replace_functions(&mut self, functions: Vec<FunctionDecl>) {
+        self.functions = functions;
+    }
+
     pub fn structs(&self) -> &[AdtStructDecl] {
         &self.structs
     }

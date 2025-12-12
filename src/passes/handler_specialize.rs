@@ -11,21 +11,25 @@
 // - Specialized functions preserve signatures and clone the original body graph
 // - Recursive calls in specialized copies are retargeted to the specialized function id
 // - Direct `handle { f(...) }` callsites are rewritten to direct calls to the specialized copy
+// - Unreachable unspecialized copies are pruned after rewrite
 //
 // Complexity:
-// - O(stmt_count + cloned_nodes)
+// - O(stmt_count + cloned_nodes + reachable_call_graph)
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::common::ids::{EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, VarId};
 use crate::ir::core::{
     CoreProgram, ExprKind, ExprNode, FunctionDecl, HandlerDef, Literal, StmtKind, StmtNode,
 };
-use crate::pipeline::phases::Residualized;
+use crate::pipeline::phases::{ResidualTables, Residualized};
 
 pub fn run(residual: Residualized) -> Residualized {
-    let (mut program, diagnostics, sema, mono, ct, bta, residual_tables) = residual.into_parts();
+    let (mut program, diagnostics, sema, mono, ct, bta, mut residual_tables) =
+        residual.into_parts();
     specialize_handle_wrapped_calls(&mut program);
+    let func_remap = prune_unreachable_functions(&mut program);
+    remap_residual_tables(&mut residual_tables, &func_remap);
     Residualized::new(program, diagnostics, sema, mono, ct, bta, residual_tables)
 }
 
@@ -46,6 +50,155 @@ fn specialize_handle_wrapped_calls(program: &mut CoreProgram) {
         let specialized_callee = ensure_specialized(program, &candidate, &mut specialized);
         rewrite_direct_handle_callsite(program, &candidate, specialized_callee);
     }
+}
+
+fn prune_unreachable_functions(program: &mut CoreProgram) -> Vec<Option<FuncId>> {
+    let reachable = collect_reachable_functions(program);
+    let total = program.functions().len();
+    let mut remap = vec![None; total];
+    for (dense_idx, source_id) in reachable.iter().copied().enumerate() {
+        remap[source_id.index()] = Some(FuncId::new(dense_idx));
+    }
+    if reachable.len() == total {
+        return remap;
+    }
+
+    remap_program_function_ids(program, &remap);
+    let compacted_functions = reachable
+        .into_iter()
+        .filter_map(|source_id| program.function(source_id).cloned())
+        .collect::<Vec<_>>();
+    let compacted_entrypoints = program
+        .entrypoints()
+        .iter()
+        .filter_map(|entry| remap_func_id(&remap, *entry))
+        .collect::<Vec<_>>();
+    program.replace_functions(compacted_functions);
+    program.set_entrypoints(compacted_entrypoints);
+    remap
+}
+
+fn collect_reachable_functions(program: &CoreProgram) -> Vec<FuncId> {
+    let mut seen = HashSet::new();
+    let mut stack = program.entrypoints().to_vec();
+    while let Some(func_id) = stack.pop() {
+        if !seen.insert(func_id) {
+            continue;
+        }
+        let Some(function) = program.function(func_id) else {
+            continue;
+        };
+        for callee in collect_stmt_callees(program, function.body) {
+            stack.push(callee);
+        }
+    }
+    let mut out = seen.into_iter().collect::<Vec<_>>();
+    out.sort_by_key(|id| id.index());
+    out
+}
+
+fn collect_stmt_callees(program: &CoreProgram, root: StmtId) -> Vec<FuncId> {
+    let mut callees = HashSet::new();
+    let mut seen_stmts = HashSet::new();
+    let mut seen_exprs = HashSet::new();
+    let mut stack = vec![root];
+    while let Some(stmt_id) = stack.pop() {
+        if !seen_stmts.insert(stmt_id) {
+            continue;
+        }
+        let Some(stmt) = program.stmt(stmt_id) else {
+            continue;
+        };
+        if let StmtKind::Call { callee, .. } = stmt.kind {
+            callees.insert(callee);
+        }
+        for expr_id in stmt.child_exprs() {
+            collect_expr_callees(program, expr_id, &mut seen_exprs, &mut callees);
+        }
+        for child in stmt.child_stmts() {
+            stack.push(child);
+        }
+    }
+    let mut out = callees.into_iter().collect::<Vec<_>>();
+    out.sort_by_key(|id| id.index());
+    out
+}
+
+fn collect_expr_callees(
+    program: &CoreProgram,
+    expr_id: ExprId,
+    seen_exprs: &mut HashSet<ExprId>,
+    out: &mut HashSet<FuncId>,
+) {
+    if !seen_exprs.insert(expr_id) {
+        return;
+    }
+    let Some(expr) = program.expr(expr_id) else {
+        return;
+    };
+    match &expr.kind {
+        ExprKind::Unary { expr, .. } => collect_expr_callees(program, *expr, seen_exprs, out),
+        ExprKind::Binary { lhs, rhs, .. } => {
+            collect_expr_callees(program, *lhs, seen_exprs, out);
+            collect_expr_callees(program, *rhs, seen_exprs, out);
+        }
+        ExprKind::PureCall { callee, args } => {
+            out.insert(*callee);
+            for arg in args {
+                collect_expr_callees(program, *arg, seen_exprs, out);
+            }
+        }
+        ExprKind::MakeStruct { fields, .. } | ExprKind::MakeEnum { fields, .. } => {
+            for field in fields {
+                collect_expr_callees(program, *field, seen_exprs, out);
+            }
+        }
+        ExprKind::Var(_) | ExprKind::Literal(_) | ExprKind::Error(_) => {}
+    }
+}
+
+fn remap_program_function_ids(program: &mut CoreProgram, remap: &[Option<FuncId>]) {
+    let stmt_count = program.stmts().len();
+    for stmt_idx in 0..stmt_count {
+        let stmt_id = StmtId::new(stmt_idx);
+        let Some(stmt) = program.stmt_mut(stmt_id) else {
+            continue;
+        };
+        if let StmtKind::Call { callee, .. } = &mut stmt.kind
+            && let Some(mapped) = remap_func_id(remap, *callee)
+        {
+            *callee = mapped;
+        }
+    }
+
+    let expr_count = program.exprs().len();
+    for expr_idx in 0..expr_count {
+        let expr_id = ExprId::new(expr_idx);
+        let Some(expr) = program.expr_mut(expr_id) else {
+            continue;
+        };
+        if let ExprKind::PureCall { callee, .. } = &mut expr.kind
+            && let Some(mapped) = remap_func_id(remap, *callee)
+        {
+            *callee = mapped;
+        }
+    }
+}
+
+fn remap_residual_tables(residual_tables: &mut ResidualTables, remap: &[Option<FuncId>]) {
+    let summary = std::mem::take(&mut residual_tables.function_effect_summary);
+    for (source_id, effects) in summary {
+        let Some(mapped) = remap_func_id(remap, source_id) else {
+            continue;
+        };
+        residual_tables
+            .function_effect_summary
+            .insert(mapped, effects);
+    }
+}
+
+fn remap_func_id(remap: &[Option<FuncId>], source: FuncId) -> Option<FuncId> {
+    remap.get(source.index()).copied().flatten()
 }
 
 fn collect_specialize_candidates(program: &CoreProgram) -> Vec<SpecializeCandidate> {
