@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use cielo::common::ids::{FuncId, HandlerId, SourceId, StmtId};
 use cielo::common::symbols::Interner;
 use cielo::ir::core::{CoreProgram, StmtKind};
+use cielo::pipeline::phases::{Reason, Stage};
 use cielo::{Compiler, CompilerConfig};
 
 #[test]
@@ -32,15 +33,7 @@ fn main() -> Int {
     );
     let specialized_id = specialized_copy_named(compiled.residual.program(), &interner, "loop")
         .expect("specialized loop id");
-    assert!(
-        compiled
-            .residual
-            .residual()
-            .function_effect_summary
-            .keys()
-            .all(|id| id.index() < compiled.residual.program().functions().len()),
-        "residual function-effect summary keys must stay within compacted function id bounds"
-    );
+    assert_phase_func_ids_in_bounds(&compiled);
 
     let main = compiled
         .residual
@@ -494,15 +487,7 @@ fn main() -> Int {
         callees.contains(&original_id),
         "slow unspecialized path should keep calling original io"
     );
-    assert!(
-        compiled
-            .residual
-            .residual()
-            .function_effect_summary
-            .keys()
-            .all(|id| id.index() < compiled.residual.program().functions().len()),
-        "function-effect summary keys must remain in bounds after partial pruning"
-    );
+    assert_phase_func_ids_in_bounds(&compiled);
 }
 
 fn first_handle_handler(program: &CoreProgram, root: StmtId) -> Option<HandlerId> {
@@ -639,4 +624,72 @@ fn function_named<'a>(
         .functions()
         .iter()
         .find(|function| interner.resolve(function.name) == Some(name))
+}
+
+fn assert_phase_func_ids_in_bounds(compiled: &cielo::CompiledC) {
+    let func_count = compiled.residual.program().functions().len();
+    assert!(
+        compiled
+            .residual
+            .residual()
+            .function_effect_summary
+            .keys()
+            .all(|id| id.index() < func_count),
+        "residual function-effect summary keys must stay within compacted function id bounds"
+    );
+    assert!(
+        compiled
+            .residual
+            .mono()
+            .source_to_mono
+            .iter()
+            .all(|(source, monos)| {
+                source.index() < func_count && monos.iter().all(|mono| mono.index() < func_count)
+            }),
+        "monomorphization summary ids must stay within compacted function id bounds"
+    );
+    assert!(
+        compiled
+            .residual
+            .bta()
+            .stage_of_expr
+            .values()
+            .all(|stage| stage_has_valid_func_ids(*stage, func_count))
+            && compiled
+                .residual
+                .bta()
+                .stage_of_var
+                .values()
+                .all(|stage| stage_has_valid_func_ids(*stage, func_count)),
+        "BTA stage reasons must not retain stale function ids after specialization pruning"
+    );
+    assert!(
+        compiled
+            .residual
+            .bta()
+            .handler_discharge
+            .values()
+            .all(|discharge| {
+                discharge
+                    .reason
+                    .is_none_or(|reason| reason_has_valid_func_ids(reason, func_count))
+            }),
+        "handler discharge reasons must not retain stale function ids after specialization pruning"
+    );
+}
+
+fn stage_has_valid_func_ids(stage: Stage, func_count: usize) -> bool {
+    match stage {
+        Stage::Ct => true,
+        Stage::Rt(reason) => reason_has_valid_func_ids(reason, func_count),
+    }
+}
+
+fn reason_has_valid_func_ids(reason: Reason, func_count: usize) -> bool {
+    match reason {
+        Reason::Parameter { func, .. } | Reason::CtOnlyWithRuntimeArgs(func) => {
+            func.index() < func_count
+        }
+        _ => true,
+    }
 }
