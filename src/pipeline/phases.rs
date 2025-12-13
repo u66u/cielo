@@ -33,6 +33,20 @@ pub enum Reason {
     CtOnlyWithRuntimeArgs(FuncId),
 }
 
+impl Reason {
+    pub fn remap_func_ids(self, remap: &[Option<FuncId>]) -> Self {
+        match self {
+            Self::Parameter { func, index } => remap_func_id(remap, func)
+                .map(|func| Self::Parameter { func, index })
+                .unwrap_or(Self::UnclassifiedRuntime),
+            Self::CtOnlyWithRuntimeArgs(func) => remap_func_id(remap, func)
+                .map(Self::CtOnlyWithRuntimeArgs)
+                .unwrap_or(Self::UnclassifiedRuntime),
+            _ => self,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BranchDecision {
     LiveTrue,
@@ -70,6 +84,27 @@ impl SemanticTables {
 #[derive(Clone, Debug, Default)]
 pub struct MonomorphizationSummary {
     pub source_to_mono: HashMap<FuncId, Vec<FuncId>>,
+}
+
+impl MonomorphizationSummary {
+    pub fn remap_func_ids(&mut self, remap: &[Option<FuncId>]) {
+        let source_to_mono = std::mem::take(&mut self.source_to_mono);
+        for (source, monos) in source_to_mono {
+            let Some(source) = remap_func_id(remap, source) else {
+                continue;
+            };
+            let mut mapped = monos
+                .into_iter()
+                .filter_map(|mono| remap_func_id(remap, mono))
+                .collect::<Vec<_>>();
+            if mapped.is_empty() {
+                continue;
+            }
+            mapped.sort_by_key(|id| id.index());
+            mapped.dedup();
+            self.source_to_mono.insert(source, mapped);
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -115,9 +150,47 @@ pub struct BtaTables {
     pub handler_discharge: HashMap<HandlerId, HandlerDischarge>,
 }
 
+impl BtaTables {
+    pub fn remap_func_ids(&mut self, remap: &[Option<FuncId>]) {
+        for stage in self.stage_of_expr.values_mut() {
+            remap_stage_reason(stage, remap);
+        }
+        for stage in self.stage_of_var.values_mut() {
+            remap_stage_reason(stage, remap);
+        }
+        for discharge in self.handler_discharge.values_mut() {
+            if let Some(reason) = discharge.reason {
+                discharge.reason = Some(reason.remap_func_ids(remap));
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ResidualTables {
     pub function_effect_summary: HashMap<FuncId, SortedEffectRow>,
+}
+
+impl ResidualTables {
+    pub fn remap_func_ids(&mut self, remap: &[Option<FuncId>]) {
+        let summary = std::mem::take(&mut self.function_effect_summary);
+        for (source, effects) in summary {
+            let Some(mapped) = remap_func_id(remap, source) else {
+                continue;
+            };
+            self.function_effect_summary.insert(mapped, effects);
+        }
+    }
+}
+
+fn remap_stage_reason(stage: &mut Stage, remap: &[Option<FuncId>]) {
+    if let Stage::Rt(reason) = stage {
+        *stage = Stage::Rt(reason.remap_func_ids(remap));
+    }
+}
+
+fn remap_func_id(remap: &[Option<FuncId>], source: FuncId) -> Option<FuncId> {
+    remap.get(source.index()).copied().flatten()
 }
 
 #[derive(Clone, Debug)]

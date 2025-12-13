@@ -22,15 +22,17 @@ use crate::common::ids::{EffectLabelId, ExprId, FuncId, HandlerId, StmtId, Symbo
 use crate::ir::core::{
     CoreProgram, ExprKind, ExprNode, FunctionDecl, HandlerDef, Literal, StmtKind, StmtNode,
 };
-use crate::passes::function_graph::{prune_unreachable_functions, remap_func_id};
-use crate::pipeline::phases::{ResidualTables, Residualized};
+use crate::passes::function_graph::prune_unreachable_functions;
+use crate::pipeline::phases::Residualized;
 
 pub fn run(residual: Residualized) -> Residualized {
-    let (mut program, diagnostics, sema, mono, ct, bta, mut residual_tables) =
+    let (mut program, diagnostics, sema, mut mono, ct, mut bta, mut residual_tables) =
         residual.into_parts();
     specialize_handle_wrapped_calls(&mut program);
     let func_remap = prune_unreachable_functions(&mut program);
-    remap_residual_tables(&mut residual_tables, &func_remap);
+    mono.remap_func_ids(&func_remap);
+    bta.remap_func_ids(&func_remap);
+    residual_tables.remap_func_ids(&func_remap);
     Residualized::new(program, diagnostics, sema, mono, ct, bta, residual_tables)
 }
 
@@ -50,18 +52,6 @@ fn specialize_handle_wrapped_calls(program: &mut CoreProgram) {
     for candidate in candidates {
         let specialized_callee = ensure_specialized(program, &candidate, &mut specialized);
         rewrite_direct_handle_callsite(program, &candidate, specialized_callee);
-    }
-}
-
-fn remap_residual_tables(residual_tables: &mut ResidualTables, remap: &[Option<FuncId>]) {
-    let summary = std::mem::take(&mut residual_tables.function_effect_summary);
-    for (source_id, effects) in summary {
-        let Some(mapped) = remap_func_id(remap, source_id) else {
-            continue;
-        };
-        residual_tables
-            .function_effect_summary
-            .insert(mapped, effects);
     }
 }
 
