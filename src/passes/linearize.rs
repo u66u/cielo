@@ -21,7 +21,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::common::diagnostics::DiagnosticBag;
-use crate::common::ids::{ExprId, FuncId, LinearExprId, LinearStmtId, StmtId, SymbolId, VarId};
+use crate::common::ids::{
+    ExprId, FuncId, LinearExprId, LinearFuncId, LinearStmtId, StmtId, SymbolId, VarId,
+};
 use crate::ir::core::{CoreProgram, ExprKind, HandlerClause, HandlerDef, StmtKind};
 use crate::ir::linear::{
     CallConvention, LinearExpr, LinearFunction, LinearMatchArm, LinearProgram, LinearStmt,
@@ -76,11 +78,11 @@ fn lower_program(
     let mut expr_map: Vec<Option<LinearExprId>> = vec![None; program.exprs().len()];
     let mut stmt_map: Vec<Option<LinearStmtId>> = vec![None; program.stmts().len()];
     let reachable = collect_reachable_functions(program);
-    let dense_id_by_source: HashMap<FuncId, FuncId> = reachable
+    let dense_id_by_source: HashMap<FuncId, LinearFuncId> = reachable
         .iter()
         .copied()
         .enumerate()
-        .map(|(dense_idx, source_id)| (source_id, FuncId::new(dense_idx)))
+        .map(|(dense_idx, source_id)| (source_id, LinearFuncId::new(dense_idx)))
         .collect();
 
     for source_id in reachable {
@@ -100,7 +102,7 @@ fn lower_program(
         let dense_id = dense_id_by_source
             .get(&source_id)
             .copied()
-            .unwrap_or(FuncId::INVALID);
+            .unwrap_or(LinearFuncId::INVALID);
         linear.functions.push(LinearFunction {
             id: dense_id,
             name: function.name,

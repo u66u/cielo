@@ -63,6 +63,7 @@ define_id!(ExprId);
 define_id!(StmtId);
 define_id!(LinearExprId);
 define_id!(LinearStmtId);
+define_id!(LinearFuncId);
 define_id!(FuncId);
 define_id!(StructId);
 define_id!(EnumId);

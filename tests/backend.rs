@@ -1,4 +1,4 @@
-use cielo::common::ids::{FuncId, SourceId, VarId};
+use cielo::common::ids::{LinearFuncId, SourceId, VarId};
 use cielo::common::symbols::Interner;
 use cielo::ir::core::Literal;
 use cielo::ir::linear::{
@@ -430,12 +430,12 @@ fn emits_match_branches_with_ctor_runtime_helpers() {
     });
 
     program.functions.push(LinearFunction {
-        id: FuncId::new(0),
+        id: LinearFuncId::new(0),
         name: main_name,
         params: vec![],
         body,
     });
-    program.entrypoints = vec![FuncId::new(0)];
+    program.entrypoints = vec![LinearFuncId::new(0)];
 
     let emitted = emit_c_program(&program, &interner);
     assert!(emitted.contains("cielo_ctor_is_variant("));
