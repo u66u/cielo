@@ -1,3 +1,4 @@
+pub mod dense_map;
 pub mod diagnostics;
 pub mod fixpoint;
 pub mod ids;
