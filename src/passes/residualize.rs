@@ -82,8 +82,8 @@ fn rewrite_call_effect_rows(
 }
 
 fn apply_ct_residualization(program: &mut CoreProgram, ct: &CtPropagationTables) {
-    for (expr_id, value) in &ct.ct_cache {
-        let Some(expr) = program.expr_mut(*expr_id) else {
+    for (expr_id, value) in ct.ct_cache.iter() {
+        let Some(expr) = program.expr_mut(expr_id) else {
             continue;
         };
         expr.kind = ExprKind::Literal(value.clone());

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::common::dense_map::DenseMap;
 use crate::common::diagnostics::DiagnosticBag;
 use crate::common::ids::{EffectLabelId, ExprId, FuncId, HandlerId, TypeId, VarId};
 use crate::frontend::ast::Program as AstProgram;
@@ -136,18 +137,18 @@ impl Default for CtCacheKey {
 
 #[derive(Clone, Debug, Default)]
 pub struct CtPropagationTables {
-    pub ct_cache: HashMap<ExprId, Literal>,
-    pub branch_decisions: HashMap<ExprId, BranchDecision>,
+    pub ct_cache: DenseMap<ExprId, Literal>,
+    pub branch_decisions: DenseMap<ExprId, BranchDecision>,
     pub file_deps: Vec<CtFileDep>,
     pub cache_key: CtCacheKey,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct BtaTables {
-    pub stage_of_expr: HashMap<ExprId, Stage>,
-    pub stage_of_var: HashMap<VarId, Stage>,
-    pub knownness_of_expr: HashMap<ExprId, Knownness>,
-    pub handler_discharge: HashMap<HandlerId, HandlerDischarge>,
+    pub stage_of_expr: DenseMap<ExprId, Stage>,
+    pub stage_of_var: DenseMap<VarId, Stage>,
+    pub knownness_of_expr: DenseMap<ExprId, Knownness>,
+    pub handler_discharge: DenseMap<HandlerId, HandlerDischarge>,
 }
 
 impl BtaTables {

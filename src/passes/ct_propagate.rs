@@ -39,7 +39,7 @@ pub fn run(mono: Monomorphized, target: TargetSpec) -> CtPropagated {
     ct.file_deps = collect_file_deps(mono.program(), mono.sema());
 
     let limit = mono.program().exprs().len().saturating_add(1).max(1);
-    ct.ct_cache = fixpoint(
+    let cache = fixpoint(
         HashMap::new(),
         |cache| {
             let mut next = cache.clone();
@@ -57,16 +57,15 @@ pub fn run(mono: Monomorphized, target: TargetSpec) -> CtPropagated {
         },
         limit,
     );
+    ct.ct_cache = cache.into_iter().collect();
 
     ct.branch_decisions = ct
         .ct_cache
         .iter()
         .filter_map(|(expr_id, literal)| match literal {
-            Literal::Bool(true) => {
-                Some((*expr_id, crate::pipeline::phases::BranchDecision::LiveTrue))
-            }
+            Literal::Bool(true) => Some((expr_id, crate::pipeline::phases::BranchDecision::LiveTrue)),
             Literal::Bool(false) => {
-                Some((*expr_id, crate::pipeline::phases::BranchDecision::LiveFalse))
+                Some((expr_id, crate::pipeline::phases::BranchDecision::LiveFalse))
             }
             _ => None,
         })

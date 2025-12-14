@@ -462,7 +462,7 @@ fn main() -> Int {
     for expr_id in residual.ct().ct_cache.keys() {
         assert!(
             matches!(
-                residual.bta().knownness_of_expr.get(expr_id),
+                residual.bta().knownness_of_expr.get(&expr_id),
                 Some(Knownness::KnownPersistable)
             ),
             "cached expression e{} should be marked as persistable-known",
