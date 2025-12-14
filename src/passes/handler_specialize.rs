@@ -22,7 +22,7 @@ use crate::common::ids::{EffectLabelId, ExprId, FuncId, HandlerId, StmtId, Symbo
 use crate::ir::core::{
     CoreProgram, ExprKind, ExprNode, FunctionDecl, HandlerDef, Literal, StmtKind, StmtNode,
 };
-use crate::passes::function_graph::prune_unreachable_functions;
+use crate::passes::function_graph::{collect_reachable_functions, prune_unreachable_functions};
 use crate::pipeline::phases::Residualized;
 
 pub fn run(residual: Residualized) -> Residualized {
@@ -57,45 +57,69 @@ fn specialize_handle_wrapped_calls(program: &mut CoreProgram) {
 
 fn collect_specialize_candidates(program: &CoreProgram) -> Vec<SpecializeCandidate> {
     let mut out = Vec::new();
-    let shapes = collect_handler_shapes(program);
+    let mut seen_stmts = HashSet::new();
+    let mut shape_cache = HashMap::new();
     let mut wrapper_callee_cache = HashMap::new();
     let mut wrapper_callee_visiting = HashSet::new();
-    for stmt_idx in 0..program.stmts().len() {
-        let stmt_id = StmtId::new(stmt_idx);
+    let reachable_functions = collect_reachable_functions(program);
+    for func_id in reachable_functions {
+        let Some(function) = program.function(func_id) else {
+            continue;
+        };
+        collect_function_candidates(
+            program,
+            function.body,
+            &mut seen_stmts,
+            &mut shape_cache,
+            &mut wrapper_callee_cache,
+            &mut wrapper_callee_visiting,
+            &mut out,
+        );
+    }
+    out
+}
+
+fn collect_function_candidates(
+    program: &CoreProgram,
+    root: StmtId,
+    seen_stmts: &mut HashSet<StmtId>,
+    shape_cache: &mut HashMap<HandlerId, HandlerShapeKey>,
+    wrapper_callee_cache: &mut HashMap<StmtId, Option<FuncId>>,
+    wrapper_callee_visiting: &mut HashSet<StmtId>,
+    out: &mut Vec<SpecializeCandidate>,
+) {
+    let mut stack = vec![root];
+    while let Some(stmt_id) = stack.pop() {
+        if !seen_stmts.insert(stmt_id) {
+            continue;
+        }
         let Some(stmt) = program.stmt(stmt_id) else {
             continue;
         };
-        let StmtKind::Handle {
+        if let StmtKind::Handle {
             handler,
             body,
             next,
         } = &stmt.kind
-        else {
-            continue;
-        };
-        if next.is_some() {
-            continue;
+            && next.is_none()
+            && let Some(callee) = direct_handle_body_callee(
+                program,
+                *body,
+                wrapper_callee_cache,
+                wrapper_callee_visiting,
+            )
+            && let Some(shape) = shape_for_handler(program, *handler, shape_cache)
+        {
+            out.push(SpecializeCandidate {
+                handler: *handler,
+                shape,
+                handle_stmt: stmt_id,
+                body_stmt: *body,
+                callee,
+            });
         }
-        let Some(callee) = direct_handle_body_callee(
-            program,
-            *body,
-            &mut wrapper_callee_cache,
-            &mut wrapper_callee_visiting,
-        ) else {
-            continue;
-        };
-        let Some(shape) = shapes.get(handler.index()).cloned() else {
-            continue;
-        };
-        out.push(SpecializeCandidate {
-            handler: *handler,
-            shape,
-            handle_stmt: stmt_id,
-            body_stmt: *body,
-            callee,
-        });
+        stack.extend(stmt.child_stmts());
     }
-    out
 }
 
 fn direct_handle_body_callee(
@@ -197,12 +221,18 @@ fn is_return_of_var(program: &CoreProgram, stmt_id: StmtId, var: VarId) -> bool 
     matches!(expr.kind, ExprKind::Var(bound) if bound == var)
 }
 
-fn collect_handler_shapes(program: &CoreProgram) -> Vec<HandlerShapeKey> {
-    program
-        .handlers()
-        .iter()
-        .map(|handler| HandlerShapeKey::build(program, handler))
-        .collect()
+fn shape_for_handler(
+    program: &CoreProgram,
+    handler_id: HandlerId,
+    cache: &mut HashMap<HandlerId, HandlerShapeKey>,
+) -> Option<HandlerShapeKey> {
+    if let Some(shape) = cache.get(&handler_id).cloned() {
+        return Some(shape);
+    }
+    let handler = program.handlers().get(handler_id.index())?;
+    let shape = HandlerShapeKey::build(program, handler);
+    cache.insert(handler_id, shape.clone());
+    Some(shape)
 }
 
 fn rewrite_direct_handle_callsite(
@@ -1134,4 +1164,71 @@ fn clone_expr_graph(
     });
     expr_map.insert(source, cloned);
     cloned
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_specialize_candidates;
+    use crate::common::ids::SourceId;
+    use crate::common::symbols::Interner;
+    use crate::pipeline::compiler::{Compiler, CompilerConfig};
+
+    #[test]
+    fn candidate_collection_ignores_unreachable_handle_wrappers() {
+        let src = r#"
+effect Console { fn print(s: String) -> () }
+
+fn io() -> Int with Console {
+  do Console.print("x");
+  1
+}
+
+fn dead_wrapper() -> Int {
+  let y = handle { io() } with Console {
+    | print(s) => 0
+  };
+  y
+}
+
+fn main() -> Int {
+  io()
+}
+"#;
+        let mut interner = Interner::new();
+        let compiler = Compiler::new(CompilerConfig::default());
+        let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
+        let candidates = collect_specialize_candidates(residual.program());
+        assert!(
+            candidates.is_empty(),
+            "unreachable wrapper-only handles must not be considered specialization candidates"
+        );
+    }
+
+    #[test]
+    fn candidate_collection_keeps_reachable_wrapper_handles() {
+        let src = r#"
+effect Console { fn print(s: String) -> () }
+
+fn io() -> Int with Console {
+  do Console.print("x");
+  1
+}
+
+fn main() -> Int {
+  let y = handle { io() } with Console {
+    | print(s) => 0
+  };
+  y
+}
+"#;
+        let mut interner = Interner::new();
+        let compiler = Compiler::new(CompilerConfig::default());
+        let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
+        let candidates = collect_specialize_candidates(residual.program());
+        assert_eq!(
+            candidates.len(),
+            1,
+            "reachable wrapper-only handles should remain specialization candidates"
+        );
+    }
 }
