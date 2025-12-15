@@ -17,12 +17,12 @@
 // Complexity:
 // - O(expr_count * fixpoint_iters), with small bounded iter count in practice
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
-use crate::common::fixpoint::fixpoint;
+use crate::common::dense_map::DenseMap;
 use crate::common::ids::ExprId;
 use crate::ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, OpCategory, UnaryOp};
 use crate::pipeline::compiler::{Endianness, TargetSpec};
@@ -38,26 +38,7 @@ pub fn run(mono: Monomorphized, target: TargetSpec) -> CtPropagated {
     ct.cache_key = build_cache_key(target);
     ct.file_deps = collect_file_deps(mono.program(), mono.sema());
 
-    let limit = mono.program().exprs().len().saturating_add(1).max(1);
-    let cache = fixpoint(
-        HashMap::new(),
-        |cache| {
-            let mut next = cache.clone();
-            for (idx, expr) in mono.program().exprs().iter().enumerate() {
-                let expr_id = ExprId::new(idx);
-                if next.contains_key(&expr_id) {
-                    continue;
-                }
-                let Some(value) = eval_expr(expr_id, expr, &next, target) else {
-                    continue;
-                };
-                next.insert(expr_id, value);
-            }
-            next
-        },
-        limit,
-    );
-    ct.ct_cache = cache.into_iter().collect();
+    ct.ct_cache = compute_ct_cache(mono.program(), target);
 
     ct.branch_decisions = ct
         .ct_cache
@@ -77,7 +58,7 @@ pub fn run(mono: Monomorphized, target: TargetSpec) -> CtPropagated {
 fn eval_expr(
     expr_id: ExprId,
     expr: &crate::ir::core::ExprNode,
-    cache: &std::collections::HashMap<ExprId, Literal>,
+    cache: &DenseMap<ExprId, Literal>,
     target: TargetSpec,
 ) -> Option<Literal> {
     let _ = expr_id;
@@ -94,6 +75,29 @@ fn eval_expr(
         }
         _ => None,
     }
+}
+
+fn compute_ct_cache(program: &CoreProgram, target: TargetSpec) -> DenseMap<ExprId, Literal> {
+    let mut cache = DenseMap::default();
+    let limit = program.exprs().len().saturating_add(1).max(1);
+    for _ in 0..limit {
+        let mut changed = false;
+        for (idx, expr) in program.exprs().iter().enumerate() {
+            let expr_id = ExprId::new(idx);
+            if cache.contains_key(&expr_id) {
+                continue;
+            }
+            let Some(value) = eval_expr(expr_id, expr, &cache, target) else {
+                continue;
+            };
+            let _ = cache.insert(expr_id, value);
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+    }
+    cache
 }
 
 fn eval_unary(op: UnaryOp, value: &Literal, target: TargetSpec) -> Option<Literal> {
