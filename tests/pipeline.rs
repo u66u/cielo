@@ -1,18 +1,19 @@
 use cielo::common::diagnostics::DiagnosticBag;
-use cielo::common::ids::{EffectLabelId, ExprId, FuncId, SourceId, SymbolId, VarId};
+use cielo::common::ids::{EffectLabelId, ExprId, FuncId, SourceId, SymbolId, TypeId, VarId};
 use cielo::common::span::Span;
 use cielo::common::symbols::Interner;
 use cielo::ir::core::{
     CoreProgram, CoreTypeRef, ExprKind, ExprNode, FunctionDecl, Literal, MatchArm,
     PrimitiveTypeRef, StmtKind, StmtNode,
 };
-use cielo::passes::residualize;
+use cielo::passes::{bta, residualize};
 use cielo::pipeline::phases::{
     BranchDecision, BtaClassified, BtaTables, CtPropagationTables, MonomorphizationSummary,
     SemanticTables, Stage,
 };
 use cielo::pipeline::provenance::runtime_provenance_lines;
 use cielo::sema::effect::SortedEffectRow;
+use cielo::sema::ty::Persistability;
 use cielo::{Compiler, CompilerConfig};
 
 #[test]
@@ -232,6 +233,74 @@ fn residualize_replaces_cached_ct_expr_with_literal() {
         residual.program().expr(sum).map(|expr| &expr.kind),
         Some(ExprKind::Literal(Literal::Int(3)))
     ));
+}
+
+#[test]
+fn bta_marks_ct_expr_runtime_when_type_is_non_persistable() {
+    let mut program = CoreProgram::new();
+    let span = Span::synthetic();
+
+    let one = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(3)),
+    });
+    let two = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(4)),
+    });
+    let fake_ct_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Add,
+            lhs: one,
+            rhs: two,
+        },
+    });
+    let ret = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(fake_ct_expr),
+    });
+    let main_name = SymbolId::from_u32(1);
+    let main_id = program.add_function(FunctionDecl {
+        name: main_name,
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::empty(),
+        body: ret,
+        ct_only: false,
+        span,
+    });
+    program.set_entrypoints([main_id]);
+
+    let mut sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
+    sema.type_of_expr[fake_ct_expr.index()] = Some(TypeId::new(0));
+    sema.persistability_of_type = vec![Persistability::NonPersistable];
+
+    let mut ct = CtPropagationTables::default();
+    let _ = ct.ct_cache.insert(fake_ct_expr, Literal::Int(7));
+    let ct_state = cielo::pipeline::phases::CtPropagated::new(
+        program,
+        DiagnosticBag::default(),
+        sema,
+        MonomorphizationSummary::default(),
+        ct,
+    );
+    let classified = bta::run(ct_state);
+
+    assert!(matches!(
+        classified.bta().stage_of_expr.get(&fake_ct_expr),
+        Some(Stage::Rt(cielo::pipeline::phases::Reason::NotPersistable(ty)))
+            if *ty == TypeId::new(0)
+    ));
+    assert!(
+        classified
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|diag| diag.code == "BTA_NOT_PERSISTABLE_BOUNDARY"),
+        "non-persistable CT value crossing must emit a dedicated staging diagnostic"
+    );
 }
 
 #[test]

@@ -46,6 +46,7 @@ pub fn run(ct: CtPropagated) -> BtaClassified {
     for function in program.functions() {
         apply_stage_directives(&program, function.body, None, &mut bta, &mut visited);
     }
+    enforce_persistability_boundaries(&program, &sema, &mut bta, &mut diagnostics);
     propagate_runtime_reasons(&program, &mut bta);
 
     classify_non_thunkable_effects(&program, &sema, &mut bta);
@@ -53,6 +54,46 @@ pub fn run(ct: CtPropagated) -> BtaClassified {
     classify_knownness(&sema, &ct_tables, &mut bta);
 
     BtaClassified::new(program, diagnostics, sema, mono, ct_tables, bta)
+}
+
+fn enforce_persistability_boundaries(
+    program: &CoreProgram,
+    sema: &SemanticTables,
+    bta: &mut BtaTables,
+    diagnostics: &mut crate::common::diagnostics::DiagnosticBag,
+) {
+    for (idx, expr) in program.exprs().iter().enumerate() {
+        let expr_id = ExprId::new(idx);
+        if !matches!(bta.stage_of_expr.get(&expr_id), Some(Stage::Ct)) {
+            continue;
+        }
+        if matches!(expr.kind, ExprKind::Literal(_) | ExprKind::Error(_)) {
+            continue;
+        }
+        let Some(type_id) = sema.type_of_expr.get(idx).and_then(|slot| *slot) else {
+            continue;
+        };
+        let is_non_persistable = sema
+            .persistability_of_type
+            .get(type_id.index())
+            .is_some_and(|persistability| *persistability == Persistability::NonPersistable);
+        if !is_non_persistable {
+            continue;
+        }
+
+        let _ = bta
+            .stage_of_expr
+            .insert(expr_id, Stage::Rt(Reason::NotPersistable(type_id)));
+        diagnostics.error(
+            "BTA_NOT_PERSISTABLE_BOUNDARY",
+            format!(
+                "expression e{} has non-persistable type t{} and cannot cross the CT/RT boundary",
+                expr_id.as_u32(),
+                type_id.as_u32()
+            ),
+            expr.span,
+        );
+    }
 }
 
 #[derive(Clone, Copy)]
