@@ -62,6 +62,7 @@ fn enforce_persistability_boundaries(
     bta: &mut BtaTables,
     diagnostics: &mut crate::common::diagnostics::DiagnosticBag,
 ) {
+    let uses = ExprUseIndex::build(program);
     for (idx, expr) in program.exprs().iter().enumerate() {
         let expr_id = ExprId::new(idx);
         if !matches!(bta.stage_of_expr.get(&expr_id), Some(Stage::Ct)) {
@@ -84,15 +85,101 @@ fn enforce_persistability_boundaries(
         let _ = bta
             .stage_of_expr
             .insert(expr_id, Stage::Rt(Reason::NotPersistable(type_id)));
+        let boundary_stmt = uses.first_boundary_stmt(expr_id);
+        let boundary_span = boundary_stmt
+            .and_then(|stmt_id| program.stmt(stmt_id).map(|stmt| stmt.span))
+            .unwrap_or(expr.span);
+        let boundary_hint = boundary_stmt
+            .map(|stmt_id| format!(" at statement s{}", stmt_id.as_u32()))
+            .unwrap_or_default();
         diagnostics.error(
             "BTA_NOT_PERSISTABLE_BOUNDARY",
             format!(
-                "expression e{} has non-persistable type t{} and cannot cross the CT/RT boundary",
+                "expression e{} has non-persistable type t{} and cannot cross the CT/RT boundary{}",
                 expr_id.as_u32(),
-                type_id.as_u32()
+                type_id.as_u32(),
+                boundary_hint
             ),
-            expr.span,
+            boundary_span,
         );
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ExprUseIndex {
+    expr_parents: Vec<Vec<ExprId>>,
+    stmt_uses: Vec<Vec<StmtId>>,
+}
+
+impl ExprUseIndex {
+    fn build(program: &CoreProgram) -> Self {
+        let expr_count = program.exprs().len();
+        let mut expr_parents = vec![Vec::new(); expr_count];
+        for (parent_idx, expr) in program.exprs().iter().enumerate() {
+            let parent_id = ExprId::new(parent_idx);
+            match &expr.kind {
+                ExprKind::Unary { expr, .. } => {
+                    if expr.index() < expr_count {
+                        expr_parents[expr.index()].push(parent_id);
+                    }
+                }
+                ExprKind::Binary { lhs, rhs, .. } => {
+                    if lhs.index() < expr_count {
+                        expr_parents[lhs.index()].push(parent_id);
+                    }
+                    if rhs.index() < expr_count {
+                        expr_parents[rhs.index()].push(parent_id);
+                    }
+                }
+                ExprKind::PureCall { args, .. }
+                | ExprKind::MakeStruct { fields: args, .. }
+                | ExprKind::MakeEnum { fields: args, .. } => {
+                    for arg in args {
+                        if arg.index() < expr_count {
+                            expr_parents[arg.index()].push(parent_id);
+                        }
+                    }
+                }
+                ExprKind::Var(_) | ExprKind::Literal(_) | ExprKind::Error(_) => {}
+            }
+        }
+
+        let mut stmt_uses = vec![Vec::new(); expr_count];
+        for (stmt_idx, stmt) in program.stmts().iter().enumerate() {
+            let stmt_id = StmtId::new(stmt_idx);
+            for expr in stmt.child_exprs() {
+                if expr.index() < expr_count {
+                    stmt_uses[expr.index()].push(stmt_id);
+                }
+            }
+        }
+
+        Self {
+            expr_parents,
+            stmt_uses,
+        }
+    }
+
+    fn first_boundary_stmt(&self, expr_id: ExprId) -> Option<StmtId> {
+        let mut stack = vec![expr_id];
+        let mut seen = HashSet::new();
+        while let Some(current) = stack.pop() {
+            if !seen.insert(current) {
+                continue;
+            }
+            if let Some(stmt_id) = self
+                .stmt_uses
+                .get(current.index())
+                .and_then(|uses| uses.first())
+                .copied()
+            {
+                return Some(stmt_id);
+            }
+            if let Some(parents) = self.expr_parents.get(current.index()) {
+                stack.extend(parents.iter().copied());
+            }
+        }
+        None
     }
 }
 
@@ -568,22 +655,22 @@ fn classify_knownness(
             if persistable_by_value {
                 Knownness::KnownPersistable
             } else {
-            let persistability = sema
-                .type_of_expr
-                .get(idx)
-                .and_then(|slot| *slot)
-                .and_then(|type_id| sema.persistability_of_type.get(type_id.index()).copied());
+                let persistability = sema
+                    .type_of_expr
+                    .get(idx)
+                    .and_then(|slot| *slot)
+                    .and_then(|type_id| sema.persistability_of_type.get(type_id.index()).copied());
 
-            if matches!(persistability, Some(Persistability::NonPersistable)) {
-                Knownness::KnownLocal
-            } else {
-                let persistable_by_type = persistability.is_some();
-                if persistable_by_type {
-                    Knownness::KnownPersistable
-                } else {
+                if matches!(persistability, Some(Persistability::NonPersistable)) {
                     Knownness::KnownLocal
+                } else {
+                    let persistable_by_type = persistability.is_some();
+                    if persistable_by_type {
+                        Knownness::KnownPersistable
+                    } else {
+                        Knownness::KnownLocal
+                    }
                 }
-            }
             }
         };
         bta.knownness_of_expr.insert(expr_id, knownness);
