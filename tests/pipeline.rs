@@ -8,8 +8,8 @@ use cielo::ir::core::{
 };
 use cielo::passes::{bta, residualize};
 use cielo::pipeline::phases::{
-    BranchDecision, BtaClassified, BtaTables, CtPropagationTables, MonomorphizationSummary,
-    Knownness, Reason, SemanticTables, Stage,
+    BranchDecision, BtaClassified, BtaTables, CtPropagationTables, Knownness,
+    MonomorphizationSummary, Reason, SemanticTables, Stage,
 };
 use cielo::pipeline::provenance::runtime_provenance_lines;
 use cielo::sema::effect::SortedEffectRow;
@@ -392,6 +392,77 @@ fn bta_marks_ct_expr_runtime_when_type_is_non_persistable() {
         residual.program().expr(fake_ct_expr).map(|expr| &expr.kind),
         Some(ExprKind::Binary { .. })
     ));
+}
+
+#[test]
+fn bta_not_persistable_diagnostic_points_to_boundary_stmt_span() {
+    let mut program = CoreProgram::new();
+    let source = SourceId::from_u32(17);
+    let expr_span = Span::new(source, 5, 11);
+    let stmt_span = Span::new(source, 40, 52);
+    let fn_span = Span::new(source, 60, 80);
+
+    let one = program.push_expr(ExprNode {
+        span: expr_span,
+        kind: ExprKind::Literal(Literal::Int(3)),
+    });
+    let two = program.push_expr(ExprNode {
+        span: expr_span,
+        kind: ExprKind::Literal(Literal::Int(4)),
+    });
+    let fake_ct_expr = program.push_expr(ExprNode {
+        span: expr_span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Add,
+            lhs: one,
+            rhs: two,
+        },
+    });
+    let ret = program.push_stmt(StmtNode {
+        span: stmt_span,
+        kind: StmtKind::Return(fake_ct_expr),
+    });
+    let main_id = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(1),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::empty(),
+        body: ret,
+        ct_only: false,
+        span: fn_span,
+    });
+    program.set_entrypoints([main_id]);
+
+    let mut sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
+    sema.type_of_expr[fake_ct_expr.index()] = Some(TypeId::new(0));
+    sema.persistability_of_type = vec![Persistability::NonPersistable];
+
+    let mut ct = CtPropagationTables::default();
+    let _ = ct.ct_cache.insert(fake_ct_expr, Literal::Int(7));
+    let ct_state = cielo::pipeline::phases::CtPropagated::new(
+        program,
+        DiagnosticBag::default(),
+        sema,
+        MonomorphizationSummary::default(),
+        ct,
+    );
+    let classified = bta::run(ct_state);
+    let diag = classified
+        .diagnostics()
+        .entries()
+        .iter()
+        .find(|diag| diag.code == "BTA_NOT_PERSISTABLE_BOUNDARY")
+        .expect("boundary diagnostic");
+
+    assert_eq!(
+        diag.span, stmt_span,
+        "persistability boundary diagnostics should point at the runtime-use statement span"
+    );
+    assert!(
+        diag.message.contains("statement s"),
+        "diagnostic message should identify the boundary statement id"
+    );
 }
 
 #[test]
