@@ -400,6 +400,94 @@ fn main() -> Int {
 }
 
 #[test]
+fn allows_branch_exclusive_single_shot_resume_paths() {
+    let src = r#"
+effect LocalState { fn tick(flag: Bool) -> Int }
+fn main() -> Int {
+  let x = handle { do LocalState.tick(true); 9 } with LocalState {
+    | tick(flag, resume) => {
+      if flag {
+        resume(41)
+      } else {
+        resume(42)
+      }
+    }
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let main = compiled
+        .linear
+        .functions
+        .iter()
+        .find(|function| interner.resolve(function.name) == Some("main"))
+        .expect("main function");
+
+    assert!(
+        !compiled
+            .residual
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|diag| diag.code == "LINEARIZE_MULTI_SHOT_RESUME"),
+        "distinct branches that each resume once should be accepted as single-shot"
+    );
+    assert!(
+        !compiled
+            .residual
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|diag| diag.code == "LINEARIZE_DIRECT_RESUME_NON_TAIL"),
+        "branch-exclusive tail resumptions should stay on direct tail paths"
+    );
+    assert!(
+        !linear_stmt_graph_contains_perform_effect(&compiled.linear, main.body, 0),
+        "handled branch-exclusive resumptions should not leave residual perform dispatch"
+    );
+    assert!(
+        linear_stmt_graph_tail_resume_wrapper_count(&compiled.linear, main.body) >= 1,
+        "single-shot branch resumptions should still lower through tail-resumption wrappers"
+    );
+}
+
+#[test]
+fn reports_multi_shot_when_one_branch_resumes_twice_on_the_same_path() {
+    let src = r#"
+effect LocalState { fn tick(flag: Bool) -> Int }
+fn main() -> Int {
+  let x = handle { do LocalState.tick(false); 9 } with LocalState {
+    | tick(flag, resume) => {
+      if flag {
+        resume(41)
+      } else {
+        let y = resume(42);
+        resume(y)
+      }
+    }
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert!(
+        compiled
+            .residual
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|diag| diag.code == "LINEARIZE_MULTI_SHOT_RESUME"),
+        "a control-flow path with two resumes must still be rejected as multi-shot"
+    );
+}
+
+#[test]
 fn emits_match_branches_with_ctor_runtime_helpers() {
     let mut interner = Interner::new();
     let main_name = interner.intern("main");
