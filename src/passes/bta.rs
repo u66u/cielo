@@ -561,25 +561,29 @@ fn classify_knownness(
         let knownness = if !ct.ct_cache.contains_key(&expr_id) {
             Knownness::Unknown
         } else {
-            let persistable_by_type = sema
-                .type_of_expr
-                .get(idx)
-                .and_then(|slot| *slot)
-                .is_some_and(|type_id| {
-                    sema.persistability_of_type
-                        .get(type_id.index())
-                        .is_some_and(|persistability| {
-                            *persistability != Persistability::NonPersistable
-                        })
-                });
             let persistable_by_value = ct
                 .ct_cache
                 .get(&expr_id)
                 .is_some_and(is_trivially_persistable_literal);
-            if persistable_by_type || persistable_by_value {
+            if persistable_by_value {
                 Knownness::KnownPersistable
             } else {
+            let persistability = sema
+                .type_of_expr
+                .get(idx)
+                .and_then(|slot| *slot)
+                .and_then(|type_id| sema.persistability_of_type.get(type_id.index()).copied());
+
+            if matches!(persistability, Some(Persistability::NonPersistable)) {
                 Knownness::KnownLocal
+            } else {
+                let persistable_by_type = persistability.is_some();
+                if persistable_by_type {
+                    Knownness::KnownPersistable
+                } else {
+                    Knownness::KnownLocal
+                }
+            }
             }
         };
         bta.knownness_of_expr.insert(expr_id, knownness);

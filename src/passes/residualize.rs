@@ -25,13 +25,15 @@ use crate::common::ids::{ExprId, FuncId, HandlerId, StmtId, VarId};
 use crate::common::span::Span;
 use crate::ir::core::{CoreProgram, ExprKind, Literal, MatchArm, StmtKind, StmtNode};
 use crate::pipeline::phases::{
-    BranchDecision, BtaClassified, CtPropagationTables, ResidualTables, Residualized,
+    BranchDecision, BtaClassified, BtaTables, CtPropagationTables, Knownness, ResidualTables,
+    Residualized, Stage,
 };
 use crate::sema::effect::SortedEffectRow;
 
 pub fn run(mut bta: BtaClassified) -> Residualized {
     let ct_tables = bta.ct().clone();
-    apply_ct_residualization(bta.program_mut(), &ct_tables);
+    let bta_tables = bta.bta().clone();
+    apply_ct_residualization(bta.program_mut(), &ct_tables, &bta_tables);
 
     let function_effect_summary =
         collect_function_effect_summary(bta.program(), &bta.sema().effects_of_stmt);
@@ -81,8 +83,15 @@ fn rewrite_call_effect_rows(
     }
 }
 
-fn apply_ct_residualization(program: &mut CoreProgram, ct: &CtPropagationTables) {
+fn apply_ct_residualization(
+    program: &mut CoreProgram,
+    ct: &CtPropagationTables,
+    bta: &BtaTables,
+) {
     for (expr_id, value) in ct.ct_cache.iter() {
+        if !should_embed_ct_value(expr_id, bta) {
+            continue;
+        }
         let Some(expr) = program.expr_mut(expr_id) else {
             continue;
         };
@@ -99,6 +108,14 @@ fn apply_ct_residualization(program: &mut CoreProgram, ct: &CtPropagationTables)
     };
     rewriter.rewrite_function_roots();
     rewriter.rewrite_handler_roots();
+}
+
+fn should_embed_ct_value(expr_id: ExprId, bta: &BtaTables) -> bool {
+    matches!(bta.stage_of_expr.get(&expr_id), Some(Stage::Ct))
+        && matches!(
+            bta.knownness_of_expr.get(&expr_id),
+            Some(Knownness::KnownPersistable)
+        )
 }
 
 fn collect_let_value_defs(program: &CoreProgram) -> HashMap<VarId, ExprId> {
