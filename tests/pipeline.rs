@@ -9,7 +9,7 @@ use cielo::ir::core::{
 use cielo::passes::{bta, residualize};
 use cielo::pipeline::phases::{
     BranchDecision, BtaClassified, BtaTables, CtPropagationTables, MonomorphizationSummary,
-    SemanticTables, Stage,
+    Knownness, Reason, SemanticTables, Stage,
 };
 use cielo::pipeline::provenance::runtime_provenance_lines;
 use cielo::sema::effect::SortedEffectRow;
@@ -219,19 +219,100 @@ fn residualize_replaces_cached_ct_expr_with_literal() {
     let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
     let mut ct = CtPropagationTables::default();
     ct.ct_cache.insert(sum, Literal::Int(3));
+    let mut bta_tables = BtaTables::default();
+    bta_tables.stage_of_expr.insert(sum, Stage::Ct);
+    bta_tables
+        .knownness_of_expr
+        .insert(sum, Knownness::KnownPersistable);
     let classified = BtaClassified::new(
         program,
         DiagnosticBag::default(),
         sema,
         MonomorphizationSummary::default(),
         ct,
-        BtaTables::default(),
+        bta_tables,
     );
     let residual = residualize::run(classified);
 
     assert!(matches!(
         residual.program().expr(sum).map(|expr| &expr.kind),
         Some(ExprKind::Literal(Literal::Int(3)))
+    ));
+}
+
+#[test]
+fn residualize_skips_runtime_forced_cached_expr_even_when_literal_is_available() {
+    let mut program = CoreProgram::new();
+    let span = Span::synthetic();
+
+    let one = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(1)),
+    });
+    let two = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(2)),
+    });
+    let sum = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Add,
+            lhs: one,
+            rhs: two,
+        },
+    });
+    let result_var = VarId::from_u32(0);
+    let result_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Var(result_var),
+    });
+    let ret = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(result_expr),
+    });
+    let body = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Let {
+            binding: result_var,
+            value: sum,
+            next: ret,
+        },
+    });
+    let main_id = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(1),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::empty(),
+        body,
+        ct_only: false,
+        span,
+    });
+    program.set_entrypoints([main_id]);
+
+    let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
+    let mut ct = CtPropagationTables::default();
+    ct.ct_cache.insert(sum, Literal::Int(3));
+    let mut bta_tables = BtaTables::default();
+    bta_tables
+        .stage_of_expr
+        .insert(sum, Stage::Rt(Reason::UserForcedRuntime));
+    bta_tables
+        .knownness_of_expr
+        .insert(sum, Knownness::KnownPersistable);
+    let classified = BtaClassified::new(
+        program,
+        DiagnosticBag::default(),
+        sema,
+        MonomorphizationSummary::default(),
+        ct,
+        bta_tables,
+    );
+    let residual = residualize::run(classified);
+
+    assert!(matches!(
+        residual.program().expr(sum).map(|expr| &expr.kind),
+        Some(ExprKind::Binary { .. })
     ));
 }
 
@@ -293,6 +374,10 @@ fn bta_marks_ct_expr_runtime_when_type_is_non_persistable() {
         Some(Stage::Rt(cielo::pipeline::phases::Reason::NotPersistable(ty)))
             if *ty == TypeId::new(0)
     ));
+    assert!(matches!(
+        classified.bta().knownness_of_expr.get(&fake_ct_expr),
+        Some(Knownness::KnownLocal) | Some(Knownness::KnownPersistable)
+    ));
     assert!(
         classified
             .diagnostics()
@@ -301,6 +386,12 @@ fn bta_marks_ct_expr_runtime_when_type_is_non_persistable() {
             .any(|diag| diag.code == "BTA_NOT_PERSISTABLE_BOUNDARY"),
         "non-persistable CT value crossing must emit a dedicated staging diagnostic"
     );
+
+    let residual = residualize::run(classified);
+    assert!(matches!(
+        residual.program().expr(fake_ct_expr).map(|expr| &expr.kind),
+        Some(ExprKind::Binary { .. })
+    ));
 }
 
 #[test]
