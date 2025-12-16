@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::common::dense_map::DenseMap;
+use crate::common::densemap::DenseMap;
 use crate::common::diagnostics::DiagnosticBag;
 use crate::common::ids::{EffectLabelId, ExprId, FuncId, HandlerId, TypeId, VarId};
 use crate::frontend::ast::Program as AstProgram;

@@ -123,7 +123,7 @@ mod tests {
     use crate::common::ids::{ExprId, VarId};
 
     #[test]
-    fn dense_map_supports_sparse_id_insert_and_lookup() {
+    fn densemap_supports_sparse_id_insert_and_lookup() {
         let mut map = DenseMap::<ExprId, i32>::default();
         assert!(map.is_empty());
         assert_eq!(map.len(), 0);
@@ -140,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn dense_map_iterates_ids_in_dense_order() {
+    fn densemap_iterates_ids_in_dense_order() {
         let mut map = DenseMap::<VarId, &'static str>::default();
         let _ = map.insert(VarId::new(3), "c");
         let _ = map.insert(VarId::new(1), "a");

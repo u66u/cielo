@@ -22,7 +22,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
-use crate::common::dense_map::DenseMap;
+use crate::common::densemap::DenseMap;
 use crate::common::ids::ExprId;
 use crate::ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, OpCategory, UnaryOp};
 use crate::pipeline::compiler::{Endianness, TargetSpec};
