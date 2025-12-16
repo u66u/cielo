@@ -464,53 +464,85 @@ enum ShapeToken {
     String(String),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-enum ShapeTag {
-    StmtMissing,
-    StmtReturn,
-    StmtLet,
-    StmtVal,
-    StmtCall,
-    StmtIf,
-    StmtMatch,
-    MatchArm,
-    StmtPerform,
-    OptionalResultSome,
-    OptionalResultNone,
-    OptionalStmtSome,
-    OptionalStmtNone,
-    StmtResume,
-    StmtHandle,
-    StmtStage,
-    StageComptime,
-    StageRuntime,
-    StmtHole,
-    StmtError,
-    ExprMissing,
-    ExprVar,
-    ExprLiteral,
-    ExprUnary,
-    ExprBinary,
-    ExprPureCall,
-    ExprMakeStruct,
-    ExprMakeEnum,
-    ExprError,
-    UnaryNeg,
-    UnaryNot,
-    BinaryAdd,
-    BinarySub,
-    BinaryMul,
-    BinaryDiv,
-    BinaryMod,
-    BinaryEq,
-    BinaryNe,
-    BinaryLt,
-    BinaryLe,
-    BinaryGt,
-    BinaryGe,
-    BinaryAnd,
-    BinaryOr,
-    LiteralUnit,
+macro_rules! define_shape_tags {
+    (
+        fixed { $($fixed:ident),* $(,)? }
+        unary { $( $uop:path => $uvariant:ident ),* $(,)? }
+        binary { $( $bop:path => $bvariant:ident ),* $(,)? }
+    ) => {
+        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        enum ShapeTag {
+            $($fixed,)*
+            $($uvariant,)*
+            $($bvariant,)*
+            LiteralUnit,
+        }
+
+        fn unary_shape_tag(op: crate::ir::core::UnaryOp) -> ShapeTag {
+            match op {
+                $($uop => ShapeTag::$uvariant,)*
+            }
+        }
+
+        fn binary_shape_tag(op: crate::ir::core::BinaryOp) -> ShapeTag {
+            match op {
+                $($bop => ShapeTag::$bvariant,)*
+            }
+        }
+    };
+}
+
+define_shape_tags! {
+    fixed {
+        StmtMissing,
+        StmtReturn,
+        StmtLet,
+        StmtVal,
+        StmtCall,
+        StmtIf,
+        StmtMatch,
+        MatchArm,
+        StmtPerform,
+        OptionalResultSome,
+        OptionalResultNone,
+        OptionalStmtSome,
+        OptionalStmtNone,
+        StmtResume,
+        StmtHandle,
+        StmtStage,
+        StageComptime,
+        StageRuntime,
+        StmtHole,
+        StmtError,
+        ExprMissing,
+        ExprVar,
+        ExprLiteral,
+        ExprUnary,
+        ExprBinary,
+        ExprPureCall,
+        ExprMakeStruct,
+        ExprMakeEnum,
+        ExprError,
+    }
+    unary {
+        crate::ir::core::UnaryOp::Neg => UnaryNeg,
+        crate::ir::core::UnaryOp::Not => UnaryNot,
+    }
+    binary {
+        crate::ir::core::BinaryOp::Add => BinaryAdd,
+        crate::ir::core::BinaryOp::Sub => BinarySub,
+        crate::ir::core::BinaryOp::Mul => BinaryMul,
+        crate::ir::core::BinaryOp::Div => BinaryDiv,
+        crate::ir::core::BinaryOp::Mod => BinaryMod,
+        crate::ir::core::BinaryOp::Eq => BinaryEq,
+        crate::ir::core::BinaryOp::Ne => BinaryNe,
+        crate::ir::core::BinaryOp::Lt => BinaryLt,
+        crate::ir::core::BinaryOp::Le => BinaryLe,
+        crate::ir::core::BinaryOp::Gt => BinaryGt,
+        crate::ir::core::BinaryOp::Ge => BinaryGe,
+        crate::ir::core::BinaryOp::And => BinaryAnd,
+        crate::ir::core::BinaryOp::Or => BinaryOr,
+    }
 }
 
 impl HandlerShapeKey {
@@ -713,10 +745,7 @@ fn push_stmt_shape(
         }
         StmtKind::Stage { stage, body, next } => {
             out.push(ShapeToken::Tag(ShapeTag::StmtStage));
-            out.push(ShapeToken::Tag(match stage {
-                crate::ir::core::StageDirective::Comptime => ShapeTag::StageComptime,
-                crate::ir::core::StageDirective::Runtime => ShapeTag::StageRuntime,
-            }));
+            out.push(ShapeToken::Tag(stage_shape_tag(*stage)));
             push_stmt_shape(program, *body, scope, out);
             if let Some(next_stmt) = next {
                 out.push(ShapeToken::Tag(ShapeTag::OptionalStmtSome));
@@ -812,28 +841,10 @@ fn push_literal_shape(literal: &Literal, out: &mut Vec<ShapeToken>) {
     }
 }
 
-fn unary_shape_tag(op: crate::ir::core::UnaryOp) -> ShapeTag {
-    match op {
-        crate::ir::core::UnaryOp::Neg => ShapeTag::UnaryNeg,
-        crate::ir::core::UnaryOp::Not => ShapeTag::UnaryNot,
-    }
-}
-
-fn binary_shape_tag(op: crate::ir::core::BinaryOp) -> ShapeTag {
-    match op {
-        crate::ir::core::BinaryOp::Add => ShapeTag::BinaryAdd,
-        crate::ir::core::BinaryOp::Sub => ShapeTag::BinarySub,
-        crate::ir::core::BinaryOp::Mul => ShapeTag::BinaryMul,
-        crate::ir::core::BinaryOp::Div => ShapeTag::BinaryDiv,
-        crate::ir::core::BinaryOp::Mod => ShapeTag::BinaryMod,
-        crate::ir::core::BinaryOp::Eq => ShapeTag::BinaryEq,
-        crate::ir::core::BinaryOp::Ne => ShapeTag::BinaryNe,
-        crate::ir::core::BinaryOp::Lt => ShapeTag::BinaryLt,
-        crate::ir::core::BinaryOp::Le => ShapeTag::BinaryLe,
-        crate::ir::core::BinaryOp::Gt => ShapeTag::BinaryGt,
-        crate::ir::core::BinaryOp::Ge => ShapeTag::BinaryGe,
-        crate::ir::core::BinaryOp::And => ShapeTag::BinaryAnd,
-        crate::ir::core::BinaryOp::Or => ShapeTag::BinaryOr,
+fn stage_shape_tag(stage: crate::ir::core::StageDirective) -> ShapeTag {
+    match stage {
+        crate::ir::core::StageDirective::Comptime => ShapeTag::StageComptime,
+        crate::ir::core::StageDirective::Runtime => ShapeTag::StageRuntime,
     }
 }
 
