@@ -18,6 +18,7 @@
 // Complexity:
 // - O(expr_count + stmt_count)
 
+use crate::analysis::function_graph::collect_reachable_functions;
 use std::collections::{HashMap, HashSet};
 
 use crate::common::diagnostics::DiagnosticBag;
@@ -28,7 +29,6 @@ use crate::ir::core::{CoreProgram, ExprKind, HandlerClause, HandlerDef, StmtKind
 use crate::ir::linear::{
     CallConvention, LinearExpr, LinearFunction, LinearMatchArm, LinearProgram, LinearStmt,
 };
-use crate::passes::function_graph::collect_reachable_functions;
 use crate::pipeline::phases::{Residualized, SemanticTables};
 use crate::sema::effect::is_thunkable;
 

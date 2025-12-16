@@ -16,13 +16,13 @@
 // Complexity:
 // - O(stmt_count + cloned_nodes + reachable_call_graph)
 
+use crate::analysis::function_graph::{collect_reachable_functions, prune_unreachable_functions};
 use std::collections::{HashMap, HashSet};
 
 use crate::common::ids::{EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, VarId};
 use crate::ir::core::{
     CoreProgram, ExprKind, ExprNode, FunctionDecl, HandlerDef, Literal, StmtKind, StmtNode,
 };
-use crate::passes::function_graph::{collect_reachable_functions, prune_unreachable_functions};
 use crate::pipeline::phases::Residualized;
 
 pub fn run(residual: Residualized) -> Residualized {
