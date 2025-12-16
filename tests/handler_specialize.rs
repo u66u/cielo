@@ -490,6 +490,77 @@ fn main() -> Int {
     assert_phase_func_ids_in_bounds(&compiled);
 }
 
+#[test]
+fn skips_specialization_for_unreachable_wrapper_only_handles() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+
+fn io() -> Int with Console {
+  do Console.print("x");
+  1
+}
+
+fn dead_wrapper() -> Int {
+  let y = handle { io() } with Console {
+    | print(s) => 0
+  };
+  y
+}
+
+fn main() -> Int {
+  io()
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert!(
+        specialized_copy_named(compiled.residual.program(), &interner, "io").is_none(),
+        "unreachable wrapper-only handles must not trigger specialization copies"
+    );
+    assert_eq!(
+        function_count_named(compiled.residual.program(), &interner, "io"),
+        1,
+        "only the original reachable io should remain"
+    );
+}
+
+#[test]
+fn specializes_reachable_wrapper_only_handles() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+
+fn io() -> Int with Console {
+  do Console.print("x");
+  1
+}
+
+fn main() -> Int {
+  let y = handle { io() } with Console {
+    | print(s) => 0
+  };
+  y
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    let specialized_id = specialized_copy_named(compiled.residual.program(), &interner, "io")
+        .expect("reachable wrapper-only handle should produce a specialized io copy");
+    let main = function_named(compiled.residual.program(), &interner, "main").expect("main");
+    assert!(
+        !contains_handle_stmt(compiled.residual.program(), main.body),
+        "reachable wrapper-only handle should be rewritten to direct call"
+    );
+    assert_eq!(
+        first_call_callee(compiled.residual.program(), main.body),
+        Some(specialized_id),
+        "rewritten main path should call the specialized io copy"
+    );
+}
+
 fn first_handle_handler(program: &CoreProgram, root: StmtId) -> Option<HandlerId> {
     let mut stack = vec![root];
     let mut seen = HashSet::new();
