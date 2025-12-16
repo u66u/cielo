@@ -62,6 +62,38 @@ enum ClauseConvention {
     Control,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ResumeUseBound {
+    Zero,
+    One,
+    Many,
+}
+
+impl ResumeUseBound {
+    fn plus(self, other: Self) -> Self {
+        use ResumeUseBound::{Many, One, Zero};
+        match (self, other) {
+            (Many, _) | (_, Many) => Many,
+            (One, One) => Many,
+            (One, Zero) | (Zero, One) => One,
+            (Zero, Zero) => Zero,
+        }
+    }
+
+    fn max(self, other: Self) -> Self {
+        use ResumeUseBound::{Many, One, Zero};
+        match (self, other) {
+            (Many, _) | (_, Many) => Many,
+            (One, _) | (_, One) => One,
+            (Zero, Zero) => Zero,
+        }
+    }
+
+    fn is_many(self) -> bool {
+        matches!(self, Self::Many)
+    }
+}
+
 fn lower_program(
     program: &CoreProgram,
     sema: &SemanticTables,
@@ -500,8 +532,7 @@ fn lower_stmt_under_handler(
                 .find(|candidate| candidate.operation == *operation)
             {
                 if let Some(resume_var) = clause.resume_param {
-                    let resume_uses = count_resume_uses(program, clause.body, resume_var);
-                    if resume_uses > 1 {
+                    if clause_resume_use_bound(program, clause.body, resume_var).is_many() {
                         diagnostics.error(
                             "LINEARIZE_MULTI_SHOT_RESUME",
                             "Handler clause resumes the continuation more than once; v1 supports single-shot resumptions only",
@@ -916,29 +947,35 @@ fn classify_clause_convention(program: &CoreProgram, clause: &HandlerClause) -> 
 }
 
 fn is_tail_resumptive_clause(program: &CoreProgram, stmt_id: StmtId, resume_var: VarId) -> bool {
-    let mut seen_stmts = HashSet::new();
-    is_tail_resumptive_stmt(program, stmt_id, resume_var, &mut seen_stmts)
+    let mut memo = HashMap::new();
+    let mut visiting = HashSet::new();
+    is_tail_resumptive_stmt(program, stmt_id, resume_var, &mut memo, &mut visiting)
 }
 
 fn is_tail_resumptive_stmt(
     program: &CoreProgram,
     stmt_id: StmtId,
     resume_var: VarId,
-    seen_stmts: &mut HashSet<StmtId>,
+    memo: &mut HashMap<StmtId, bool>,
+    visiting: &mut HashSet<StmtId>,
 ) -> bool {
-    if !seen_stmts.insert(stmt_id) {
-        return true;
+    if let Some(is_tail) = memo.get(&stmt_id).copied() {
+        return is_tail;
+    }
+    if !visiting.insert(stmt_id) {
+        // Statement cycles are conservatively non-tail-resumptive.
+        return false;
     }
 
     let Some(stmt) = program.stmt(stmt_id) else {
         return false;
     };
 
-    match &stmt.kind {
+    let is_tail = match &stmt.kind {
         StmtKind::Return(_) => false,
         StmtKind::Let { value, next, .. } => {
             !expr_mentions_var(program, *value, resume_var)
-                && is_tail_resumptive_stmt(program, *next, resume_var, seen_stmts)
+                && is_tail_resumptive_stmt(program, *next, resume_var, memo, visiting)
         }
         StmtKind::Val {
             binding,
@@ -946,10 +983,10 @@ fn is_tail_resumptive_stmt(
             next,
         } => {
             if is_identity_return_of_var(program, *next, *binding) {
-                is_tail_resumptive_stmt(program, *value, resume_var, seen_stmts)
+                is_tail_resumptive_stmt(program, *value, resume_var, memo, visiting)
             } else {
                 !stmt_mentions_var(program, *value, resume_var)
-                    && is_tail_resumptive_stmt(program, *next, resume_var, seen_stmts)
+                    && is_tail_resumptive_stmt(program, *next, resume_var, memo, visiting)
             }
         }
         StmtKind::Call { args, next, .. } | StmtKind::Perform { args, next, .. } => {
@@ -957,7 +994,7 @@ fn is_tail_resumptive_stmt(
                 .iter()
                 .copied()
                 .any(|arg| expr_mentions_var(program, arg, resume_var))
-                && is_tail_resumptive_stmt(program, *next, resume_var, seen_stmts)
+                && is_tail_resumptive_stmt(program, *next, resume_var, memo, visiting)
         }
         StmtKind::Resume {
             result,
@@ -975,8 +1012,8 @@ fn is_tail_resumptive_stmt(
             else_branch,
         } => {
             !expr_mentions_var(program, *cond, resume_var)
-                && is_tail_resumptive_stmt(program, *then_branch, resume_var, seen_stmts)
-                && is_tail_resumptive_stmt(program, *else_branch, resume_var, seen_stmts)
+                && is_tail_resumptive_stmt(program, *then_branch, resume_var, memo, visiting)
+                && is_tail_resumptive_stmt(program, *else_branch, resume_var, memo, visiting)
         }
         StmtKind::Match {
             scrutinee,
@@ -984,16 +1021,19 @@ fn is_tail_resumptive_stmt(
             default,
         } => {
             !expr_mentions_var(program, *scrutinee, resume_var)
-                && arms
-                    .iter()
-                    .all(|arm| is_tail_resumptive_stmt(program, arm.body, resume_var, seen_stmts))
+                && arms.iter().all(|arm| {
+                    is_tail_resumptive_stmt(program, arm.body, resume_var, memo, visiting)
+                })
                 && default.map_or(true, |stmt| {
-                    is_tail_resumptive_stmt(program, stmt, resume_var, seen_stmts)
+                    is_tail_resumptive_stmt(program, stmt, resume_var, memo, visiting)
                 })
         }
         StmtKind::Handle { .. } | StmtKind::Stage { .. } => false,
         StmtKind::Hole { .. } | StmtKind::Error(_) => true,
-    }
+    };
+    visiting.remove(&stmt_id);
+    memo.insert(stmt_id, is_tail);
+    is_tail
 }
 
 fn stmt_mentions_var(program: &CoreProgram, root: StmtId, var: VarId) -> bool {
@@ -1078,59 +1118,98 @@ fn stmt_mentions_var(program: &CoreProgram, root: StmtId, var: VarId) -> bool {
     false
 }
 
-fn count_resume_uses(program: &CoreProgram, root: StmtId, resume_var: VarId) -> usize {
-    let mut stack = vec![root];
-    let mut seen_stmts = HashSet::new();
-    let mut uses = 0usize;
-    while let Some(stmt_id) = stack.pop() {
-        if !seen_stmts.insert(stmt_id) {
-            continue;
-        }
-        let Some(stmt) = program.stmt(stmt_id) else {
-            continue;
-        };
-        match &stmt.kind {
-            StmtKind::Resume { resume, next, .. } => {
-                if *resume == resume_var {
-                    uses = uses.saturating_add(1);
-                }
-                stack.push(*next);
-            }
-            StmtKind::Let { next, .. }
-            | StmtKind::Call { next, .. }
-            | StmtKind::Perform { next, .. } => {
-                stack.push(*next);
-            }
-            StmtKind::Val { value, next, .. } => {
-                stack.push(*next);
-                stack.push(*value);
-            }
-            StmtKind::If {
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                stack.push(*else_branch);
-                stack.push(*then_branch);
-            }
-            StmtKind::Match { arms, default, .. } => {
-                if let Some(default_stmt) = default {
-                    stack.push(*default_stmt);
-                }
-                for arm in arms {
-                    stack.push(arm.body);
-                }
-            }
-            StmtKind::Handle { body, next, .. } | StmtKind::Stage { body, next, .. } => {
-                stack.push(*body);
-                if let Some(next_stmt) = next {
-                    stack.push(*next_stmt);
-                }
-            }
-            StmtKind::Return(_) | StmtKind::Hole { .. } | StmtKind::Error(_) => {}
-        }
+fn clause_resume_use_bound(
+    program: &CoreProgram,
+    root: StmtId,
+    resume_var: VarId,
+) -> ResumeUseBound {
+    let mut memo = HashMap::new();
+    let mut visiting = HashSet::new();
+    clause_resume_use_bound_stmt(program, root, resume_var, &mut memo, &mut visiting)
+}
+
+fn clause_resume_use_bound_stmt(
+    program: &CoreProgram,
+    stmt_id: StmtId,
+    resume_var: VarId,
+    memo: &mut HashMap<StmtId, ResumeUseBound>,
+    visiting: &mut HashSet<StmtId>,
+) -> ResumeUseBound {
+    if let Some(bound) = memo.get(&stmt_id).copied() {
+        return bound;
     }
-    uses
+    if !visiting.insert(stmt_id) {
+        // Cycles may resume repeatedly; preserve a safe upper bound.
+        return ResumeUseBound::Many;
+    }
+
+    let Some(stmt) = program.stmt(stmt_id) else {
+        return ResumeUseBound::Many;
+    };
+
+    let bound = match &stmt.kind {
+        StmtKind::Return(_) | StmtKind::Hole { .. } | StmtKind::Error(_) => ResumeUseBound::Zero,
+        StmtKind::Let { next, .. }
+        | StmtKind::Call { next, .. }
+        | StmtKind::Perform { next, .. } => {
+            clause_resume_use_bound_stmt(program, *next, resume_var, memo, visiting)
+        }
+        StmtKind::Val { value, next, .. } => {
+            clause_resume_use_bound_stmt(program, *value, resume_var, memo, visiting).plus(
+                clause_resume_use_bound_stmt(program, *next, resume_var, memo, visiting),
+            )
+        }
+        StmtKind::Resume { resume, next, .. } => {
+            let this_resume = if *resume == resume_var {
+                ResumeUseBound::One
+            } else {
+                ResumeUseBound::Zero
+            };
+            this_resume.plus(clause_resume_use_bound_stmt(
+                program, *next, resume_var, memo, visiting,
+            ))
+        }
+        StmtKind::If {
+            then_branch,
+            else_branch,
+            ..
+        } => clause_resume_use_bound_stmt(program, *then_branch, resume_var, memo, visiting).max(
+            clause_resume_use_bound_stmt(program, *else_branch, resume_var, memo, visiting),
+        ),
+        StmtKind::Match { arms, default, .. } => {
+            let arms_bound = arms.iter().fold(ResumeUseBound::Zero, |acc, arm| {
+                acc.max(clause_resume_use_bound_stmt(
+                    program, arm.body, resume_var, memo, visiting,
+                ))
+            });
+            if let Some(default_stmt) = default {
+                arms_bound.max(clause_resume_use_bound_stmt(
+                    program,
+                    *default_stmt,
+                    resume_var,
+                    memo,
+                    visiting,
+                ))
+            } else {
+                arms_bound
+            }
+        }
+        StmtKind::Handle { body, next, .. } | StmtKind::Stage { body, next, .. } => {
+            let body_bound =
+                clause_resume_use_bound_stmt(program, *body, resume_var, memo, visiting);
+            if let Some(next_stmt) = next {
+                body_bound.plus(clause_resume_use_bound_stmt(
+                    program, *next_stmt, resume_var, memo, visiting,
+                ))
+            } else {
+                body_bound
+            }
+        }
+    };
+
+    visiting.remove(&stmt_id);
+    memo.insert(stmt_id, bound);
+    bound
 }
 
 fn expr_mentions_var(program: &CoreProgram, root: ExprId, var: VarId) -> bool {
