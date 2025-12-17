@@ -17,7 +17,7 @@
 // Complexity:
 // - O(total linear nodes + emitted text size)
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write;
 
 use crate::common::ids::{LinearExprId, LinearStmtId, SymbolId, VarId};
@@ -51,9 +51,15 @@ pub fn emit_c_program(program: &LinearProgram, interner: &Interner) -> String {
         out.push('\n');
     }
 
-    let const_pool = build_string_const_pool(program);
-    emit_const_pool(&mut out, &const_pool);
-    if !const_pool.entries.is_empty() {
+    let scalar_pool = build_scalar_const_pool(program);
+    emit_scalar_const_pool(&mut out, &scalar_pool);
+    if !scalar_pool.entries.is_empty() {
+        out.push('\n');
+    }
+
+    let string_pool = build_string_const_pool(program);
+    emit_string_const_pool(&mut out, &string_pool);
+    if !string_pool.entries.is_empty() {
         out.push('\n');
     }
 
@@ -85,7 +91,8 @@ pub fn emit_c_program(program: &LinearProgram, interner: &Interner) -> String {
             name,
             &fn_name_by_symbol,
             interner,
-            &const_pool,
+            &string_pool,
+            &scalar_pool,
         );
         out.push('\n');
     }
@@ -101,7 +108,8 @@ fn emit_function(
     c_name: &str,
     fn_name_by_symbol: &HashMap<SymbolId, String>,
     interner: &Interner,
-    const_pool: &StringConstPool,
+    string_pool: &StringConstPool,
+    scalar_pool: &ScalarConstPool,
 ) {
     emit_fn_signature(out, c_name, &function.params);
     out.push_str(" {\n");
@@ -124,7 +132,8 @@ fn emit_function(
         program,
         fn_name_by_symbol,
         interner,
-        const_pool,
+        string_pool,
+        scalar_pool,
         next_temp: 0,
     };
     emit_stmt(function.body, EmitMode::Return, out, 1, &mut cx);
@@ -435,7 +444,7 @@ fn emit_expr(expr_id: LinearExprId, cx: &EmitCx<'_>) -> String {
 
     match &expr.kind {
         LinearExpr::Var(var) => format!("v{}", var.as_u32()),
-        LinearExpr::Literal(lit) => emit_literal(lit, cx.const_pool),
+        LinearExpr::Literal(lit) => emit_literal(lit, cx.string_pool, cx.scalar_pool),
         LinearExpr::Unary { op, expr } => format!("{}({})", op.c_func(), emit_expr(*expr, cx)),
         LinearExpr::Binary { op, lhs, rhs } => {
             let lhs = emit_expr(*lhs, cx);
@@ -516,15 +525,31 @@ fn format_ctor_call(
     out
 }
 
-fn emit_literal(lit: &Literal, const_pool: &StringConstPool) -> String {
+fn emit_literal(
+    lit: &Literal,
+    string_pool: &StringConstPool,
+    scalar_pool: &ScalarConstPool,
+) -> String {
     match lit {
         Literal::Unit => "cv_unit()".to_owned(),
-        Literal::Bool(value) => format!("cv_bool({})", if *value { 1 } else { 0 }),
-        Literal::Int(value) => format!("cv_int({value})"),
+        Literal::Bool(value) => scalar_pool
+            .symbol_for(ScalarLiteralKey::Bool(*value))
+            .map_or_else(
+                || format!("cv_bool({})", if *value { 1 } else { 0 }),
+                |symbol| symbol.to_owned(),
+            ),
+        Literal::Int(value) => scalar_pool
+            .symbol_for(ScalarLiteralKey::Int(*value))
+            .map_or_else(|| format!("cv_int({value})"), |symbol| symbol.to_owned()),
         Literal::Float(value) => format!("cv_float({value})"),
-        Literal::Char(value) => format!("cv_char({})", *value as u32),
+        Literal::Char(value) => scalar_pool
+            .symbol_for(ScalarLiteralKey::Char(*value))
+            .map_or_else(
+                || format!("cv_char({})", *value as u32),
+                |symbol| symbol.to_owned(),
+            ),
         Literal::String(value) => {
-            if let Some(symbol) = const_pool.symbol_for(value) {
+            if let Some(symbol) = string_pool.symbol_for(value) {
                 format!("cv_string({symbol})")
             } else {
                 format!("cv_string(\"{}\")", escape_c_string(value))
@@ -694,7 +719,8 @@ struct EmitCx<'a> {
     program: &'a LinearProgram,
     fn_name_by_symbol: &'a HashMap<SymbolId, String>,
     interner: &'a Interner,
-    const_pool: &'a StringConstPool,
+    string_pool: &'a StringConstPool,
+    scalar_pool: &'a ScalarConstPool,
     next_temp: u32,
 }
 
@@ -758,6 +784,72 @@ impl StringConstPool {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+enum ScalarLiteralKey {
+    Bool(bool),
+    Int(i64),
+    Char(char),
+}
+
+impl ScalarLiteralKey {
+    fn from_literal(lit: &Literal) -> Option<Self> {
+        match lit {
+            Literal::Bool(value) => Some(Self::Bool(*value)),
+            Literal::Int(value) => Some(Self::Int(*value)),
+            Literal::Char(value) => Some(Self::Char(*value)),
+            Literal::Unit | Literal::Float(_) | Literal::String(_) => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ScalarConstEntry {
+    symbol: String,
+    key: ScalarLiteralKey,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ScalarConstPool {
+    entries: Vec<ScalarConstEntry>,
+    by_key: HashMap<ScalarLiteralKey, usize>,
+}
+
+impl ScalarConstPool {
+    fn symbol_for(&self, key: ScalarLiteralKey) -> Option<&str> {
+        self.by_key
+            .get(&key)
+            .and_then(|idx| self.entries.get(*idx))
+            .map(|entry| entry.symbol.as_str())
+    }
+}
+
+fn build_scalar_const_pool(program: &LinearProgram) -> ScalarConstPool {
+    let mut counts: BTreeMap<ScalarLiteralKey, usize> = BTreeMap::new();
+    for expr in program.exprs() {
+        let LinearExpr::Literal(lit) = &expr.kind else {
+            continue;
+        };
+        let Some(key) = ScalarLiteralKey::from_literal(lit) else {
+            continue;
+        };
+        *counts.entry(key).or_default() += 1;
+    }
+
+    let mut pool = ScalarConstPool::default();
+    for (key, count) in counts {
+        if count < 2 {
+            continue;
+        }
+        let idx = pool.entries.len();
+        pool.entries.push(ScalarConstEntry {
+            symbol: format!("cielo_const_v_{idx}"),
+            key,
+        });
+        pool.by_key.insert(key, idx);
+    }
+    pool
+}
+
 fn build_string_const_pool(program: &LinearProgram) -> StringConstPool {
     let mut pool = StringConstPool::default();
     for expr in program.exprs() {
@@ -769,7 +861,28 @@ fn build_string_const_pool(program: &LinearProgram) -> StringConstPool {
     pool
 }
 
-fn emit_const_pool(out: &mut String, pool: &StringConstPool) {
+fn emit_scalar_const_pool(out: &mut String, pool: &ScalarConstPool) {
+    for entry in &pool.entries {
+        let init = match entry.key {
+            ScalarLiteralKey::Bool(value) => format!(
+                "{{ .tag = CV_BOOL, .as.b = {} }}",
+                if value { "true" } else { "false" }
+            ),
+            ScalarLiteralKey::Int(value) => format!("{{ .tag = CV_INT, .as.i = {value} }}"),
+            ScalarLiteralKey::Char(value) => {
+                format!("{{ .tag = CV_CHAR, .as.c = {}u }}", value as u32)
+            }
+        };
+        writeln!(
+            out,
+            "static const CieloValue {} = {};",
+            entry.symbol, init
+        )
+        .expect("in-memory write should not fail");
+    }
+}
+
+fn emit_string_const_pool(out: &mut String, pool: &StringConstPool) {
     for entry in &pool.entries {
         writeln!(
             out,
