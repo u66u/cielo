@@ -261,6 +261,57 @@ fn main() -> Int {{
 }
 
 #[test]
+fn c_emitter_pools_repeated_runtime_int_literals() {
+    let src = r#"
+fn main() -> Int {
+  @runtime {
+    let a = 7;
+    let b = 7;
+    a + b
+  }
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert_eq!(
+        compiled
+            .c_source
+            .matches("static const CieloValue cielo_const_v_")
+            .count(),
+        1,
+        "repeated runtime scalar literals should emit one pooled CieloValue constant"
+    );
+    assert!(
+        compiled.c_source.matches("= cielo_const_v_0;").count() >= 2,
+        "pooled scalar literal symbol should be reused at runtime callsites"
+    );
+}
+
+#[test]
+fn c_emitter_keeps_single_use_runtime_int_literal_inline() {
+    let src = r#"
+fn main() -> Int {
+  @runtime {
+    let a = 7;
+    a
+  }
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert!(
+        !compiled
+            .c_source
+            .contains("static const CieloValue cielo_const_v_"),
+        "single-use runtime scalar literals should stay inline to avoid pool bloat"
+    );
+}
+
+#[test]
 fn lowers_handled_perform_into_clause_without_runtime_dispatch() {
     let src = r#"
 effect Console { fn print(s: String) -> () }
