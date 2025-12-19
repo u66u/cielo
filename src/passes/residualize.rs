@@ -33,10 +33,18 @@ use crate::sema::effect::SortedEffectRow;
 pub fn run(mut bta: BtaClassified) -> Residualized {
     let ct_tables = bta.ct().clone();
     let bta_tables = bta.bta().clone();
+    let pre_residual_function_roots = bta
+        .program()
+        .functions()
+        .iter()
+        .map(|function| function.body)
+        .collect::<Vec<_>>();
     apply_ct_residualization(bta.program_mut(), &ct_tables, &bta_tables);
 
-    let function_effect_summary =
-        collect_function_effect_summary(bta.program(), &bta.sema().effects_of_stmt);
+    let function_effect_summary = collect_function_effect_summary(
+        &pre_residual_function_roots,
+        &bta.sema().effects_of_stmt,
+    );
     rewrite_call_effect_rows(bta.program_mut(), &function_effect_summary);
     erase_function_effect_annotations(bta.program_mut());
     bta.into_residualized(ResidualTables {
@@ -45,16 +53,15 @@ pub fn run(mut bta: BtaClassified) -> Residualized {
 }
 
 fn collect_function_effect_summary(
-    program: &CoreProgram,
+    function_roots: &[StmtId],
     stmt_effects: &[SortedEffectRow],
 ) -> HashMap<FuncId, SortedEffectRow> {
-    program
-        .functions()
+    function_roots
         .iter()
         .enumerate()
-        .map(|(idx, function)| {
+        .map(|(idx, root_stmt)| {
             let row = stmt_effects
-                .get(function.body.index())
+                .get(root_stmt.index())
                 .cloned()
                 .unwrap_or_else(SortedEffectRow::empty);
             (FuncId::new(idx), row)
