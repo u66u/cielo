@@ -707,6 +707,145 @@ fn residualize_prunes_match_with_binders_by_materializing_let_bindings() {
 }
 
 #[test]
+fn residualize_preserves_function_effect_summary_when_match_pruning_rewrites_root_stmt() {
+    let mut program = CoreProgram::new();
+    let span = Span::synthetic();
+    let effect = EffectLabelId::from_u32(0);
+    let enum_name = SymbolId::from_u32(700);
+    let some_variant = SymbolId::from_u32(701);
+    let op_name = SymbolId::from_u32(702);
+
+    let payload = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(1)),
+    });
+    let scrutinee = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::MakeEnum {
+            ty: enum_name,
+            variant: some_variant,
+            fields: vec![payload],
+        },
+    });
+    let binder = VarId::from_u32(703);
+    let one = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(1)),
+    });
+    let perform_next = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(one),
+    });
+    let effectful_arm = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Perform {
+            result: None,
+            effect,
+            operation: op_name,
+            args: Vec::new(),
+            next: perform_next,
+        },
+    });
+    let callee_match_root = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Match {
+            scrutinee,
+            arms: vec![MatchArm {
+                tag: some_variant,
+                binders: vec![binder],
+                body: effectful_arm,
+                span,
+            }],
+            default: None,
+        },
+    });
+    let callee_id = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(704),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::singleton(effect),
+        body: callee_match_root,
+        ct_only: false,
+        span,
+    });
+
+    let call_result = VarId::from_u32(705);
+    let call_result_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Var(call_result),
+    });
+    let main_ret = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(call_result_expr),
+    });
+    let main_call = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Call {
+            result: call_result,
+            callee: callee_id,
+            args: Vec::new(),
+            effects: SortedEffectRow::empty(),
+            next: main_ret,
+        },
+    });
+    let main_id = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(706),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::empty(),
+        body: main_call,
+        ct_only: false,
+        span,
+    });
+    program.set_entrypoints([main_id]);
+
+    let mut sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
+    sema.effects_of_stmt[callee_match_root.index()] = SortedEffectRow::singleton(effect);
+    let classified = BtaClassified::new(
+        program,
+        DiagnosticBag::default(),
+        sema,
+        MonomorphizationSummary::default(),
+        CtPropagationTables::default(),
+        BtaTables::default(),
+    );
+    let residual = residualize::run(classified);
+
+    let rewritten_callee_root = residual
+        .program()
+        .function(callee_id)
+        .expect("callee function")
+        .body;
+    assert_ne!(
+        rewritten_callee_root, callee_match_root,
+        "match pruning with binders should allocate a new callee root stmt"
+    );
+    assert!(
+        residual
+            .residual()
+            .function_effect_summary
+            .get(&callee_id)
+            .is_some_and(|row| row.contains(effect)),
+        "function effect summary should retain pre-residualized root effects"
+    );
+
+    let main = residual.program().function(main_id).expect("main function");
+    let call_stmt = residual
+        .program()
+        .stmt(main.body)
+        .expect("main body call after residualization");
+    let StmtKind::Call { effects, .. } = &call_stmt.kind else {
+        panic!("expected main body to remain a call");
+    };
+    assert!(
+        effects.contains(effect),
+        "callsite effect rows should be rewritten from preserved function summaries"
+    );
+}
+
+#[test]
 fn residualize_prunes_if_through_let_alias_chain() {
     let mut program = CoreProgram::new();
     let span = Span::synthetic();
