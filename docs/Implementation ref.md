@@ -198,3 +198,19 @@ These are not copy targets — they're patterns to study and adapt.
 - **Key:** `abstract class Context extends NamerOps with TyperOps with ModuleDB with TransformerOps with Timers`
 - **Scoping:** `def in[T](block: => T): T` — save/restore focus and module across block.
 - **State:** `case class State(annotations, cache)` with `backup`/`restore` for rollback.
+
+
+## Plan Notes Sync
+
+### V1
+- Keep phase integrity strict per `docs/Decisions.md` (phase-safe IDs + attached analyses).
+- Keep each slice independently testable and end-to-end runnable (`--emit-c --run-c`).
+- Prefer conservative semantics first, then optimize.
+- Calling-convention grounding reference: `core/Transformer.scala` (`Pure`/`Direct`/`Control`).
+- Handler-specialization grounding references:
+  - `core/optimizer/StaticArguments.scala`
+  - `core/optimizer/Reachable.scala`
+
+### V2
+- Generalized specialization remains deferred: parameterize specialized workers by return-clause continuation (selective CPS over specialization sites).
+- If mutable-variable stmt forms are introduced in Core IR, tail-resumption checks must mirror the mutable-state caveat used by `RemoveTailResumptions`.

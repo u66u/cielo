@@ -480,6 +480,21 @@ Values crossing CT→RT boundary are classified:
 
 Functions using CT-only effects or taking TypeInfo arguments are CT-only. Calling with RT arguments is a hard error, not a staging suggestion. Inferrable from effect usage or explicitly declarable.
 
+### V1 Plan Notes (synced from `plan.md`)
+
+- Keep slices independently testable and end-to-end runnable (`--emit-c --run-c`).
+- Prefer conservative semantics first; optimize after invariants are explicit.
+- Handler pipeline closure notes:
+  - 2026-02-17: resume single-shot check is path-sensitive (branch-exclusive single resumes are accepted; same-path double resumes are diagnosed).
+  - 2026-02-17: tail-resumption checking is memoized and treats stmt cycles as non-tail conservatively.
+  - 2026-03-16: boundary diagnostics for non-persistable crossings anchor to runtime boundary stmt spans and include stmt ids.
+- Handler specialization notes:
+  - 2026-02-17: reachable pruning + `FuncId` remapping landed; tests assert cross-table id integrity.
+  - Scope remains bounded in v1 (wrapper/control-light pushdown only).
+- Persistability boundary notes:
+  - 2026-03-16: residualizer gates CT embedding on BTA stage (`Ct`) + knownness (`KnownPersistable`), preventing runtime-forced/boundary-rejected embeddings.
+  - 2026-03-18: C emitter pools repeated runtime scalar literals (`Int`/`Bool`/`Char`) as `static const CieloValue`.
+
 ## V2 Additions
 
 ### Handler Fusion
@@ -489,3 +504,11 @@ When multiple handlers are syntactically nested and handle disjoint effects with
 ### Generalized Handler Specialization
 
 When the return clause varies across recursive call sites within a specialized function, parameterize the specialized function by the return clause (pass as continuation argument). This is selective CPS applied to the specialization, covering cases like list-building with handlers where each recursive call wraps the result differently.
+
+### V2 Carry-Over Notes (from `plan.md`)
+
+- Generalized handler specialization by return-clause parameterization is deferred to v2 selective CPS.
+- If mutable-variable stmt forms are added to Core IR, tail-resumption gating must mirror the mutable-state caveat from `RemoveTailResumptions`.
+- Persistability/codegen expansion still pending beyond v1 scalar/string pooling:
+  - structural constant pooling for ADT/aggregate serializable values
+  - explicit float pooling policy (if adopted)
