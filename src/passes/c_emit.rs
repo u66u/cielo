@@ -63,6 +63,12 @@ pub fn emit_c_program(program: &LinearProgram, interner: &Interner) -> String {
         out.push('\n');
     }
 
+    let ctor_pool = build_ctor_const_pool(program);
+    emit_ctor_const_pool(&mut out, &ctor_pool, interner);
+    if !ctor_pool.entries.is_empty() {
+        out.push('\n');
+    }
+
     let mut fn_name_by_symbol: HashMap<SymbolId, String> = HashMap::new();
     let mut fn_name_by_index: Vec<String> = Vec::with_capacity(program.functions.len());
     for function in &program.functions {
@@ -93,6 +99,7 @@ pub fn emit_c_program(program: &LinearProgram, interner: &Interner) -> String {
             interner,
             &string_pool,
             &scalar_pool,
+            &ctor_pool,
         );
         out.push('\n');
     }
@@ -110,6 +117,7 @@ fn emit_function(
     interner: &Interner,
     string_pool: &StringConstPool,
     scalar_pool: &ScalarConstPool,
+    ctor_pool: &CtorConstPool,
 ) {
     emit_fn_signature(out, c_name, &function.params);
     out.push_str(" {\n");
@@ -134,6 +142,7 @@ fn emit_function(
         interner,
         string_pool,
         scalar_pool,
+        ctor_pool,
         next_temp: 0,
     };
     emit_stmt(function.body, EmitMode::Return, out, 1, &mut cx);
@@ -461,6 +470,13 @@ fn emit_expr(expr_id: LinearExprId, cx: &EmitCx<'_>) -> String {
             format!("{}({call_expr})", call_wrapper(CallConvention::Pure))
         }
         LinearExpr::MakeStruct { ty, fields } => {
+            if let Some(key) =
+                CtorLiteralKey::from_expr(cx.program, *ty, SymbolId::INVALID, fields)
+            {
+                if let Some(symbol) = cx.ctor_pool.symbol_for(&key) {
+                    return symbol.to_owned();
+                }
+            }
             let ty_name = escape_c_string(symbol_text(cx.interner, *ty).as_str());
             format_ctor_call(&ty_name, "", fields, cx)
         }
@@ -469,6 +485,11 @@ fn emit_expr(expr_id: LinearExprId, cx: &EmitCx<'_>) -> String {
             variant,
             fields,
         } => {
+            if let Some(key) = CtorLiteralKey::from_expr(cx.program, *ty, *variant, fields) {
+                if let Some(symbol) = cx.ctor_pool.symbol_for(&key) {
+                    return symbol.to_owned();
+                }
+            }
             let ty_name = escape_c_string(symbol_text(cx.interner, *ty).as_str());
             let variant_name = escape_c_string(symbol_text(cx.interner, *variant).as_str());
             format_ctor_call(&ty_name, &variant_name, fields, cx)
@@ -721,6 +742,7 @@ struct EmitCx<'a> {
     interner: &'a Interner,
     string_pool: &'a StringConstPool,
     scalar_pool: &'a ScalarConstPool,
+    ctor_pool: &'a CtorConstPool,
     next_temp: u32,
 }
 
@@ -823,6 +845,101 @@ impl ScalarConstPool {
     }
 }
 
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+enum CtorFieldKey {
+    Unit,
+    Bool(bool),
+    Int(i64),
+    Char(char),
+    String(String),
+}
+
+impl CtorFieldKey {
+    fn from_literal(lit: &Literal) -> Option<Self> {
+        match lit {
+            Literal::Unit => Some(Self::Unit),
+            Literal::Bool(value) => Some(Self::Bool(*value)),
+            Literal::Int(value) => Some(Self::Int(*value)),
+            Literal::Char(value) => Some(Self::Char(*value)),
+            Literal::String(value) => Some(Self::String(value.clone())),
+            Literal::Float(_) => None,
+        }
+    }
+
+    fn value_initializer(&self) -> String {
+        match self {
+            CtorFieldKey::Unit => "{ .tag = CV_UNIT }".to_owned(),
+            CtorFieldKey::Bool(value) => format!(
+                "{{ .tag = CV_BOOL, .as.b = {} }}",
+                if *value { "true" } else { "false" }
+            ),
+            CtorFieldKey::Int(value) => format!("{{ .tag = CV_INT, .as.i = {value} }}"),
+            CtorFieldKey::Char(value) => {
+                format!("{{ .tag = CV_CHAR, .as.c = {}u }}", *value as u32)
+            }
+            CtorFieldKey::String(value) => {
+                format!(
+                    "{{ .tag = CV_STRING, .as.s = \"{}\" }}",
+                    escape_c_string(value)
+                )
+            }
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+struct CtorLiteralKey {
+    ty: SymbolId,
+    variant: SymbolId,
+    fields: Vec<CtorFieldKey>,
+}
+
+impl CtorLiteralKey {
+    fn from_expr(
+        program: &LinearProgram,
+        ty: SymbolId,
+        variant: SymbolId,
+        fields: &[LinearExprId],
+    ) -> Option<Self> {
+        let mut field_keys = Vec::with_capacity(fields.len());
+        for field in fields {
+            let lit = match &program.expr(*field)?.kind {
+                LinearExpr::Literal(lit) => lit,
+                _ => return None,
+            };
+            field_keys.push(CtorFieldKey::from_literal(lit)?);
+        }
+        Some(Self {
+            ty,
+            variant,
+            fields: field_keys,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CtorConstEntry {
+    value_symbol: String,
+    ctor_symbol: String,
+    fields_symbol: Option<String>,
+    key: CtorLiteralKey,
+}
+
+#[derive(Clone, Debug, Default)]
+struct CtorConstPool {
+    entries: Vec<CtorConstEntry>,
+    by_key: HashMap<CtorLiteralKey, usize>,
+}
+
+impl CtorConstPool {
+    fn symbol_for(&self, key: &CtorLiteralKey) -> Option<&str> {
+        self.by_key
+            .get(key)
+            .and_then(|idx| self.entries.get(*idx))
+            .map(|entry| entry.value_symbol.as_str())
+    }
+}
+
 fn build_scalar_const_pool(program: &LinearProgram) -> ScalarConstPool {
     let mut counts: BTreeMap<ScalarLiteralKey, usize> = BTreeMap::new();
     for expr in program.exprs() {
@@ -844,6 +961,43 @@ fn build_scalar_const_pool(program: &LinearProgram) -> ScalarConstPool {
         pool.entries.push(ScalarConstEntry {
             symbol: format!("cielo_const_v_{idx}"),
             key,
+        });
+        pool.by_key.insert(key, idx);
+    }
+    pool
+}
+
+fn build_ctor_const_pool(program: &LinearProgram) -> CtorConstPool {
+    let mut counts: BTreeMap<CtorLiteralKey, usize> = BTreeMap::new();
+    for expr in program.exprs() {
+        let key = match &expr.kind {
+            LinearExpr::MakeStruct { ty, fields } => {
+                CtorLiteralKey::from_expr(program, *ty, SymbolId::INVALID, fields)
+            }
+            LinearExpr::MakeEnum {
+                ty,
+                variant,
+                fields,
+            } => CtorLiteralKey::from_expr(program, *ty, *variant, fields),
+            _ => None,
+        };
+        if let Some(key) = key {
+            *counts.entry(key).or_default() += 1;
+        }
+    }
+
+    let mut pool = CtorConstPool::default();
+    for (key, count) in counts {
+        if count < 2 {
+            continue;
+        }
+        let idx = pool.entries.len();
+        let fields_symbol = (!key.fields.is_empty()).then(|| format!("cielo_const_ctor_fields_{idx}"));
+        pool.entries.push(CtorConstEntry {
+            value_symbol: format!("cielo_const_ctor_v_{idx}"),
+            ctor_symbol: format!("cielo_const_ctor_{idx}"),
+            fields_symbol,
+            key: key.clone(),
         });
         pool.by_key.insert(key, idx);
     }
@@ -889,6 +1043,50 @@ fn emit_string_const_pool(out: &mut String, pool: &StringConstPool) {
             "static const char* {} = \"{}\";",
             entry.symbol,
             escape_c_string(entry.value.as_str())
+        )
+        .expect("in-memory write should not fail");
+    }
+}
+
+fn emit_ctor_const_pool(out: &mut String, pool: &CtorConstPool, interner: &Interner) {
+    for entry in &pool.entries {
+        if let Some(fields_symbol) = &entry.fields_symbol {
+            write!(out, "static CieloValue {fields_symbol}[] = {{")
+                .expect("in-memory write should not fail");
+            for (idx, field) in entry.key.fields.iter().enumerate() {
+                if idx > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&field.value_initializer());
+            }
+            out.push_str("};\n");
+        }
+
+        let ty_name = escape_c_string(symbol_text(interner, entry.key.ty).as_str());
+        let variant_name = if entry.key.variant.is_valid() {
+            escape_c_string(symbol_text(interner, entry.key.variant).as_str())
+        } else {
+            String::new()
+        };
+        let fields_ref = entry
+            .fields_symbol
+            .as_deref()
+            .unwrap_or("NULL");
+
+        writeln!(
+            out,
+            "static CieloCtor {} = {{ .ty = \"{}\", .variant = \"{}\", .argc = {}, .fields = {} }};",
+            entry.ctor_symbol,
+            ty_name,
+            variant_name,
+            entry.key.fields.len(),
+            fields_ref
+        )
+        .expect("in-memory write should not fail");
+        writeln!(
+            out,
+            "static const CieloValue {} = {{ .tag = CV_CTOR, .as.ctor = &{} }};",
+            entry.value_symbol, entry.ctor_symbol
         )
         .expect("in-memory write should not fail");
     }
