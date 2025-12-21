@@ -7,6 +7,7 @@ use cielo::ir::linear::{
 use cielo::passes::c_emit::emit_c_program;
 use cielo::{Compiler, CompilerConfig};
 use std::collections::HashSet;
+use std::fmt::Write as _;
 
 #[test]
 fn emits_c_for_basic_arithmetic_program() {
@@ -343,7 +344,9 @@ fn main() -> Int {
         "pooled ctor symbol should be reused across repeated runtime constructor sites"
     );
     assert!(
-        !compiled.c_source.contains("cielo_make_ctor(\"Pair\", \"Mk\", 2"),
+        !compiled
+            .c_source
+            .contains("cielo_make_ctor(\"Pair\", \"Mk\", 2"),
         "pooled repeated ctor literals should avoid repeated heap ctor construction"
     );
 }
@@ -373,8 +376,103 @@ fn main() -> Int {
         "single-use ctor literals should stay inline to avoid pool bloat"
     );
     assert!(
-        compiled.c_source.contains("cielo_make_ctor(\"Pair\", \"Mk\", 2"),
+        compiled
+            .c_source
+            .contains("cielo_make_ctor(\"Pair\", \"Mk\", 2"),
         "single-use ctor literal should still lower via inline ctor helper call"
+    );
+}
+
+#[test]
+fn c_emitter_skips_oversized_ctor_pool_entry_and_falls_back_inline() {
+    let long = "x".repeat(1300);
+    let src = format!(
+        r#"
+enum Pair {{ Mk(String, Int) }}
+fn main() -> Int {{
+  @runtime {{
+    let a = Mk("{long}", 1);
+    let b = Mk("{long}", 1);
+    match b {{
+      | Mk(s, x) => x
+      | _ => 0
+    }}
+  }}
+}}
+"#
+    );
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled =
+        compiler.compile_source_v0_to_c(src.as_str(), SourceId::from_u32(0), &mut interner);
+
+    assert!(
+        !compiled
+            .c_source
+            .contains("static const CieloValue cielo_const_ctor_v_"),
+        "oversized ctor constants should not be pooled"
+    );
+    assert!(
+        compiled
+            .c_source
+            .contains("cielo_make_ctor(\"Pair\", \"Mk\", 2"),
+        "oversized pooled candidates should fall back to inline constructor creation"
+    );
+}
+
+#[test]
+fn c_emitter_limits_ctor_pool_by_compilation_unit_budget() {
+    let ctor_arity = 32usize;
+    let repeated_unique_ctors = 40usize;
+    let mut body = String::new();
+    for idx in 0..repeated_unique_ctors {
+        let args = (0..ctor_arity)
+            .map(|offset| (idx + offset).to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(&mut body, "    let a{idx} = Mk({args});").expect("append ctor a");
+        writeln!(&mut body, "    let b{idx} = Mk({args});").expect("append ctor b");
+    }
+    body.push_str("    0\n");
+
+    let fields = (0..ctor_arity)
+        .map(|_| "Int")
+        .collect::<Vec<_>>()
+        .join(", ");
+    let src = format!(
+        "enum Blob {{ Mk({fields}) }}\nfn main() -> Int {{\n  @runtime {{\n{body}  }}\n}}\n"
+    );
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled =
+        compiler.compile_source_v0_to_c(src.as_str(), SourceId::from_u32(0), &mut interner);
+
+    let pooled_values = compiled
+        .c_source
+        .matches("static const CieloValue cielo_const_ctor_v_")
+        .count();
+    let pooled_ctors = compiled
+        .c_source
+        .matches("static CieloCtor cielo_const_ctor_")
+        .count();
+
+    assert!(
+        pooled_values > 0,
+        "budgeted ctor pool should still keep hot literals"
+    );
+    assert!(
+        pooled_values < repeated_unique_ctors,
+        "pool byte cap should stop before pooling every repeated ctor literal"
+    );
+    assert_eq!(
+        pooled_values, pooled_ctors,
+        "each pooled ctor value should have exactly one pooled ctor descriptor"
+    );
+    assert!(
+        compiled
+            .c_source
+            .contains("cielo_make_ctor(\"Blob\", \"Mk\", 32"),
+        "when pool budget is saturated, remaining ctor literals should stay inline"
     );
 }
 
