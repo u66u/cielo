@@ -312,6 +312,73 @@ fn main() -> Int {
 }
 
 #[test]
+fn c_emitter_pools_repeated_runtime_ctor_literals() {
+    let src = r#"
+enum Pair { Mk(Int, Int) }
+fn main() -> Int {
+  @runtime {
+    let a = Mk(1, 2);
+    let b = Mk(1, 2);
+    match b {
+      | Mk(x, y) => x + y
+      | _ => 0
+    }
+  }
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert_eq!(
+        compiled
+            .c_source
+            .matches("static const CieloValue cielo_const_ctor_v_")
+            .count(),
+        1,
+        "repeated runtime ctor literals should emit one pooled ctor value"
+    );
+    assert!(
+        compiled.c_source.matches("= cielo_const_ctor_v_0;").count() >= 2,
+        "pooled ctor symbol should be reused across repeated runtime constructor sites"
+    );
+    assert!(
+        !compiled.c_source.contains("cielo_make_ctor(\"Pair\", \"Mk\", 2"),
+        "pooled repeated ctor literals should avoid repeated heap ctor construction"
+    );
+}
+
+#[test]
+fn c_emitter_keeps_single_use_runtime_ctor_literal_inline() {
+    let src = r#"
+enum Pair { Mk(Int, Int) }
+fn main() -> Int {
+  @runtime {
+    let a = Mk(1, 2);
+    match a {
+      | Mk(x, y) => x + y
+      | _ => 0
+    }
+  }
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert!(
+        !compiled
+            .c_source
+            .contains("static const CieloValue cielo_const_ctor_v_"),
+        "single-use ctor literals should stay inline to avoid pool bloat"
+    );
+    assert!(
+        compiled.c_source.contains("cielo_make_ctor(\"Pair\", \"Mk\", 2"),
+        "single-use ctor literal should still lower via inline ctor helper call"
+    );
+}
+
+#[test]
 fn lowers_handled_perform_into_clause_without_runtime_dispatch() {
     let src = r#"
 effect Console { fn print(s: String) -> () }
