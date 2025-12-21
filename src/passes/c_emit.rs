@@ -27,8 +27,10 @@ use crate::ir::linear::{CallConvention, LinearExpr, LinearFunction, LinearProgra
 use crate::passes::linearize::Linearized;
 
 const C_RUNTIME_HEADER: &str = include_str!("../backend/cielo_runtime.h");
-const MAX_CONST_STRING_BYTES: usize = 1024;
+const MAX_CONST_ENTRY_BYTES: usize = 1024;
 const MAX_CONST_POOL_BYTES: usize = 16 * 1024;
+const ESTIMATED_VALUE_BYTES: usize = 16;
+const ESTIMATED_CTOR_BYTES: usize = 32;
 
 #[derive(Clone, Debug)]
 pub struct EmittedC {
@@ -51,19 +53,21 @@ pub fn emit_c_program(program: &LinearProgram, interner: &Interner) -> String {
         out.push('\n');
     }
 
-    let scalar_pool = build_scalar_const_pool(program);
+    let mut const_budget = ConstPoolBudget::new(MAX_CONST_POOL_BYTES);
+
+    let scalar_pool = build_scalar_const_pool(program, &mut const_budget);
     emit_scalar_const_pool(&mut out, &scalar_pool);
     if !scalar_pool.entries.is_empty() {
         out.push('\n');
     }
 
-    let string_pool = build_string_const_pool(program);
+    let string_pool = build_string_const_pool(program, &mut const_budget);
     emit_string_const_pool(&mut out, &string_pool);
     if !string_pool.entries.is_empty() {
         out.push('\n');
     }
 
-    let ctor_pool = build_ctor_const_pool(program);
+    let ctor_pool = build_ctor_const_pool(program, &mut const_budget);
     emit_ctor_const_pool(&mut out, &ctor_pool, interner);
     if !ctor_pool.entries.is_empty() {
         out.push('\n');
@@ -470,8 +474,7 @@ fn emit_expr(expr_id: LinearExprId, cx: &EmitCx<'_>) -> String {
             format!("{}({call_expr})", call_wrapper(CallConvention::Pure))
         }
         LinearExpr::MakeStruct { ty, fields } => {
-            if let Some(key) =
-                CtorLiteralKey::from_expr(cx.program, *ty, SymbolId::INVALID, fields)
+            if let Some(key) = CtorLiteralKey::from_expr(cx.program, *ty, SymbolId::INVALID, fields)
             {
                 if let Some(symbol) = cx.ctor_pool.symbol_for(&key) {
                     return symbol.to_owned();
@@ -762,6 +765,35 @@ enum EmitMode {
     Discard,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ConstPoolBudget {
+    used_bytes: usize,
+    max_bytes: usize,
+}
+
+impl ConstPoolBudget {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            used_bytes: 0,
+            max_bytes,
+        }
+    }
+
+    fn try_reserve(&mut self, bytes: usize) -> bool {
+        if bytes == 0 {
+            return true;
+        }
+        if bytes > MAX_CONST_ENTRY_BYTES {
+            return false;
+        }
+        if self.used_bytes.saturating_add(bytes) > self.max_bytes {
+            return false;
+        }
+        self.used_bytes = self.used_bytes.saturating_add(bytes);
+        true
+    }
+}
+
 #[derive(Clone, Debug)]
 struct StringConstEntry {
     symbol: String,
@@ -772,20 +804,16 @@ struct StringConstEntry {
 struct StringConstPool {
     entries: Vec<StringConstEntry>,
     by_value: HashMap<String, usize>,
-    total_bytes: usize,
 }
 
 impl StringConstPool {
-    fn try_insert(&mut self, value: &str) {
+    fn try_insert(&mut self, value: &str, budget: &mut ConstPoolBudget) {
         if self.by_value.contains_key(value) {
             return;
         }
 
         let byte_len = value.len().saturating_add(1);
-        if byte_len > MAX_CONST_STRING_BYTES {
-            return;
-        }
-        if self.total_bytes.saturating_add(byte_len) > MAX_CONST_POOL_BYTES {
+        if !budget.try_reserve(byte_len) {
             return;
         }
 
@@ -795,7 +823,6 @@ impl StringConstPool {
             value: value.to_owned(),
         });
         self.by_value.insert(value.to_owned(), idx);
-        self.total_bytes = self.total_bytes.saturating_add(byte_len);
     }
 
     fn symbol_for(&self, value: &str) -> Option<&str> {
@@ -821,6 +848,11 @@ impl ScalarLiteralKey {
             Literal::Char(value) => Some(Self::Char(*value)),
             Literal::Unit | Literal::Float(_) | Literal::String(_) => None,
         }
+    }
+
+    fn estimated_pool_bytes(&self) -> usize {
+        let _ = self;
+        ESTIMATED_VALUE_BYTES
     }
 }
 
@@ -885,6 +917,16 @@ impl CtorFieldKey {
             }
         }
     }
+
+    fn estimated_pool_bytes(&self) -> usize {
+        match self {
+            CtorFieldKey::Unit => 1,
+            CtorFieldKey::Bool(_) => 1,
+            CtorFieldKey::Int(_) => 8,
+            CtorFieldKey::Char(_) => 4,
+            CtorFieldKey::String(value) => value.len().saturating_add(1),
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -915,6 +957,18 @@ impl CtorLiteralKey {
             fields: field_keys,
         })
     }
+
+    fn estimated_pool_bytes(&self) -> usize {
+        let fields_bytes = self
+            .fields
+            .iter()
+            .map(CtorFieldKey::estimated_pool_bytes)
+            .sum::<usize>();
+        ESTIMATED_VALUE_BYTES
+            .saturating_add(ESTIMATED_CTOR_BYTES)
+            .saturating_add(self.fields.len().saturating_mul(ESTIMATED_VALUE_BYTES))
+            .saturating_add(fields_bytes)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -940,7 +994,10 @@ impl CtorConstPool {
     }
 }
 
-fn build_scalar_const_pool(program: &LinearProgram) -> ScalarConstPool {
+fn build_scalar_const_pool(
+    program: &LinearProgram,
+    budget: &mut ConstPoolBudget,
+) -> ScalarConstPool {
     let mut counts: BTreeMap<ScalarLiteralKey, usize> = BTreeMap::new();
     for expr in program.exprs() {
         let LinearExpr::Literal(lit) = &expr.kind else {
@@ -957,6 +1014,9 @@ fn build_scalar_const_pool(program: &LinearProgram) -> ScalarConstPool {
         if count < 2 {
             continue;
         }
+        if !budget.try_reserve(key.estimated_pool_bytes()) {
+            continue;
+        }
         let idx = pool.entries.len();
         pool.entries.push(ScalarConstEntry {
             symbol: format!("cielo_const_v_{idx}"),
@@ -967,7 +1027,7 @@ fn build_scalar_const_pool(program: &LinearProgram) -> ScalarConstPool {
     pool
 }
 
-fn build_ctor_const_pool(program: &LinearProgram) -> CtorConstPool {
+fn build_ctor_const_pool(program: &LinearProgram, budget: &mut ConstPoolBudget) -> CtorConstPool {
     let mut counts: BTreeMap<CtorLiteralKey, usize> = BTreeMap::new();
     for expr in program.exprs() {
         let key = match &expr.kind {
@@ -991,8 +1051,12 @@ fn build_ctor_const_pool(program: &LinearProgram) -> CtorConstPool {
         if count < 2 {
             continue;
         }
+        if !budget.try_reserve(key.estimated_pool_bytes()) {
+            continue;
+        }
         let idx = pool.entries.len();
-        let fields_symbol = (!key.fields.is_empty()).then(|| format!("cielo_const_ctor_fields_{idx}"));
+        let fields_symbol =
+            (!key.fields.is_empty()).then(|| format!("cielo_const_ctor_fields_{idx}"));
         pool.entries.push(CtorConstEntry {
             value_symbol: format!("cielo_const_ctor_v_{idx}"),
             ctor_symbol: format!("cielo_const_ctor_{idx}"),
@@ -1004,13 +1068,16 @@ fn build_ctor_const_pool(program: &LinearProgram) -> CtorConstPool {
     pool
 }
 
-fn build_string_const_pool(program: &LinearProgram) -> StringConstPool {
+fn build_string_const_pool(
+    program: &LinearProgram,
+    budget: &mut ConstPoolBudget,
+) -> StringConstPool {
     let mut pool = StringConstPool::default();
     for expr in program.exprs() {
         let LinearExpr::Literal(Literal::String(value)) = &expr.kind else {
             continue;
         };
-        pool.try_insert(value);
+        pool.try_insert(value, budget);
     }
     pool
 }
@@ -1027,12 +1094,8 @@ fn emit_scalar_const_pool(out: &mut String, pool: &ScalarConstPool) {
                 format!("{{ .tag = CV_CHAR, .as.c = {}u }}", value as u32)
             }
         };
-        writeln!(
-            out,
-            "static const CieloValue {} = {};",
-            entry.symbol, init
-        )
-        .expect("in-memory write should not fail");
+        writeln!(out, "static const CieloValue {} = {};", entry.symbol, init)
+            .expect("in-memory write should not fail");
     }
 }
 
@@ -1068,10 +1131,7 @@ fn emit_ctor_const_pool(out: &mut String, pool: &CtorConstPool, interner: &Inter
         } else {
             String::new()
         };
-        let fields_ref = entry
-            .fields_symbol
-            .as_deref()
-            .unwrap_or("NULL");
+        let fields_ref = entry.fields_symbol.as_deref().unwrap_or("NULL");
 
         writeln!(
             out,
