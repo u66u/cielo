@@ -27,7 +27,7 @@ use crate::common::ids::ExprId;
 use crate::ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, OpCategory, UnaryOp};
 use crate::pipeline::compiler::{Endianness, TargetSpec};
 use crate::pipeline::phases::{
-    CtCacheKey, CtFileDep, CtPropagated, CtPropagationTables, Monomorphized,
+    CtCacheKey, CtEvalStats, CtFileDep, CtPropagated, CtPropagationTables, Monomorphized,
 };
 use crate::sema::effect::EffectFlags;
 
@@ -38,13 +38,17 @@ pub fn run(mono: Monomorphized, target: TargetSpec) -> CtPropagated {
     ct.cache_key = build_cache_key(target);
     ct.file_deps = collect_file_deps(mono.program(), mono.sema());
 
-    ct.ct_cache = compute_ct_cache(mono.program(), target);
+    let (ct_cache, eval_stats) = compute_ct_cache(mono.program(), target);
+    ct.ct_cache = ct_cache;
+    ct.eval_stats = eval_stats;
 
     ct.branch_decisions = ct
         .ct_cache
         .iter()
         .filter_map(|(expr_id, literal)| match literal {
-            Literal::Bool(true) => Some((expr_id, crate::pipeline::phases::BranchDecision::LiveTrue)),
+            Literal::Bool(true) => {
+                Some((expr_id, crate::pipeline::phases::BranchDecision::LiveTrue))
+            }
             Literal::Bool(false) => {
                 Some((expr_id, crate::pipeline::phases::BranchDecision::LiveFalse))
             }
@@ -55,49 +59,108 @@ pub fn run(mono: Monomorphized, target: TargetSpec) -> CtPropagated {
     mono.into_ct_propagated(ct)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FoldKind {
+    Literal,
+    Unary,
+    Binary,
+}
+
+#[derive(Clone, Debug)]
+enum EvalOutcome {
+    Folded { value: Literal, kind: FoldKind },
+    MissingInputs,
+    Unsupported,
+}
+
 fn eval_expr(
-    expr_id: ExprId,
     expr: &crate::ir::core::ExprNode,
     cache: &DenseMap<ExprId, Literal>,
     target: TargetSpec,
-) -> Option<Literal> {
-    let _ = expr_id;
+) -> EvalOutcome {
     match &expr.kind {
-        ExprKind::Literal(value) => Some(value.clone()),
+        ExprKind::Literal(value) => EvalOutcome::Folded {
+            value: value.clone(),
+            kind: FoldKind::Literal,
+        },
         ExprKind::Unary { op, expr } => {
-            let value = cache.get(expr)?;
-            eval_unary(*op, value, target)
+            let Some(value) = cache.get(expr) else {
+                return EvalOutcome::MissingInputs;
+            };
+            let Some(value) = eval_unary(*op, value, target) else {
+                return EvalOutcome::Unsupported;
+            };
+            EvalOutcome::Folded {
+                value,
+                kind: FoldKind::Unary,
+            }
         }
         ExprKind::Binary { op, lhs, rhs } => {
-            let left = cache.get(lhs)?;
-            let right = cache.get(rhs)?;
-            eval_binary(*op, left, right, target)
+            let Some(left) = cache.get(lhs) else {
+                return EvalOutcome::MissingInputs;
+            };
+            let Some(right) = cache.get(rhs) else {
+                return EvalOutcome::MissingInputs;
+            };
+            let Some(value) = eval_binary(*op, left, right, target) else {
+                return EvalOutcome::Unsupported;
+            };
+            EvalOutcome::Folded {
+                value,
+                kind: FoldKind::Binary,
+            }
         }
-        _ => None,
+        _ => EvalOutcome::Unsupported,
     }
 }
 
-fn compute_ct_cache(program: &CoreProgram, target: TargetSpec) -> DenseMap<ExprId, Literal> {
+fn compute_ct_cache(
+    program: &CoreProgram,
+    target: TargetSpec,
+) -> (DenseMap<ExprId, Literal>, CtEvalStats) {
     let mut cache = DenseMap::default();
+    let mut stats = CtEvalStats::default();
     let limit = program.exprs().len().saturating_add(1).max(1);
     for _ in 0..limit {
+        stats.iterations = stats.iterations.saturating_add(1);
         let mut changed = false;
         for (idx, expr) in program.exprs().iter().enumerate() {
             let expr_id = ExprId::new(idx);
             if cache.contains_key(&expr_id) {
+                stats.cache_hits = stats.cache_hits.saturating_add(1);
                 continue;
             }
-            let Some(value) = eval_expr(expr_id, expr, &cache, target) else {
-                continue;
-            };
-            let _ = cache.insert(expr_id, value);
-            changed = true;
+            stats.eval_attempts = stats.eval_attempts.saturating_add(1);
+            match eval_expr(expr, &cache, target) {
+                EvalOutcome::Folded { value, kind } => {
+                    let _ = cache.insert(expr_id, value);
+                    stats.cache_inserts = stats.cache_inserts.saturating_add(1);
+                    match kind {
+                        FoldKind::Literal => {
+                            stats.folded_literals = stats.folded_literals.saturating_add(1)
+                        }
+                        FoldKind::Unary => {
+                            stats.folded_unary = stats.folded_unary.saturating_add(1)
+                        }
+                        FoldKind::Binary => {
+                            stats.folded_binary = stats.folded_binary.saturating_add(1)
+                        }
+                    }
+                    changed = true;
+                }
+                EvalOutcome::MissingInputs => {
+                    stats.miss_missing_inputs = stats.miss_missing_inputs.saturating_add(1);
+                }
+                EvalOutcome::Unsupported => {
+                    stats.miss_unsupported = stats.miss_unsupported.saturating_add(1);
+                }
+            }
         }
         if !changed {
             break;
         }
     }
-    cache
+    (cache, stats)
 }
 
 fn eval_unary(op: UnaryOp, value: &Literal, target: TargetSpec) -> Option<Literal> {

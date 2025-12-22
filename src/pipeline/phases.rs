@@ -135,12 +135,26 @@ impl Default for CtCacheKey {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct CtEvalStats {
+    pub iterations: u32,
+    pub eval_attempts: u32,
+    pub cache_hits: u32,
+    pub cache_inserts: u32,
+    pub folded_literals: u32,
+    pub folded_unary: u32,
+    pub folded_binary: u32,
+    pub miss_missing_inputs: u32,
+    pub miss_unsupported: u32,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct CtPropagationTables {
     pub ct_cache: DenseMap<ExprId, Literal>,
     pub branch_decisions: DenseMap<ExprId, BranchDecision>,
     pub file_deps: Vec<CtFileDep>,
     pub cache_key: CtCacheKey,
+    pub eval_stats: CtEvalStats,
 }
 
 #[derive(Clone, Debug, Default)]

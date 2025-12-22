@@ -308,6 +308,7 @@ fn dump_sema_summary(residual: &Residualized) {
         .values()
         .filter(|known| matches!(known, cielo::pipeline::phases::Knownness::KnownPersistable))
         .count();
+    let eval = residual.ct().eval_stats;
     println!("=== Sema/BTA Summary ===");
     println!(
         "typed_exprs={typed_exprs}/{}",
@@ -319,6 +320,17 @@ fn dump_sema_summary(residual: &Residualized) {
     );
     println!("stage ct={ct_exprs}, rt={rt_exprs}");
     println!("known local={known_local}, known persistable={known_persistable}");
+    println!(
+        "ct-eval iter={}, attempts={}, hits={}, folds(lit/unary/bin)={}/{}/{}, misses(dep/unsupported)={}/{}",
+        eval.iterations,
+        eval.eval_attempts,
+        eval.cache_hits,
+        eval.folded_literals,
+        eval.folded_unary,
+        eval.folded_binary,
+        eval.miss_missing_inputs,
+        eval.miss_unsupported
+    );
 
     if rt_exprs == 0 {
         return;
