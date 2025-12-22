@@ -6,7 +6,7 @@ use cielo::ir::core::{
     CoreProgram, CoreTypeRef, ExprKind, ExprNode, FunctionDecl, Literal, MatchArm,
     PrimitiveTypeRef, StmtKind, StmtNode,
 };
-use cielo::passes::{bta, residualize};
+use cielo::passes::{bta, ct_propagate, residualize};
 use cielo::pipeline::phases::{
     BranchDecision, BtaClassified, BtaTables, CtPropagationTables, Knownness,
     MonomorphizationSummary, Reason, SemanticTables, Stage,
@@ -238,6 +238,138 @@ fn residualize_replaces_cached_ct_expr_with_literal() {
         residual.program().expr(sum).map(|expr| &expr.kind),
         Some(ExprKind::Literal(Literal::Int(3)))
     ));
+}
+
+#[test]
+fn ct_propagate_collects_stable_eval_stats_oracle() {
+    let mut program = CoreProgram::new();
+    let span = Span::synthetic();
+
+    let lit_one = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(1)),
+    });
+    let lit_two = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(2)),
+    });
+    let folded_add = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Add,
+            lhs: lit_one,
+            rhs: lit_two,
+        },
+    });
+    let runtime_var = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Var(VarId::from_u32(0)),
+    });
+    let missing_input_add = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Add,
+            lhs: runtime_var,
+            rhs: lit_two,
+        },
+    });
+    let unsupported_call = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::PureCall {
+            callee: FuncId::from_u32(0),
+            args: vec![lit_one],
+        },
+    });
+    let folded_neg = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Unary {
+            op: cielo::ir::core::UnaryOp::Neg,
+            expr: lit_two,
+        },
+    });
+
+    let ret = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(folded_add),
+    });
+    let main_name = SymbolId::from_u32(100);
+    let main_id = program.add_function(FunctionDecl {
+        name: main_name,
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::empty(),
+        body: ret,
+        ct_only: false,
+        span,
+    });
+    program.set_entrypoints([main_id]);
+
+    let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
+    let mono = cielo::pipeline::phases::Monomorphized::new(
+        program,
+        DiagnosticBag::default(),
+        sema,
+        MonomorphizationSummary::default(),
+    );
+    let ct = ct_propagate::run(mono, CompilerConfig::default().target);
+    let stats = ct.ct().eval_stats;
+
+    assert_eq!(
+        ct.ct().ct_cache.get(&folded_add),
+        Some(&Literal::Int(3)),
+        "foldable binary expression should be materialized in ct cache"
+    );
+    assert_eq!(
+        ct.ct().ct_cache.get(&folded_neg),
+        Some(&Literal::Int(-2)),
+        "foldable unary expression should be materialized in ct cache"
+    );
+    assert!(
+        !ct.ct().ct_cache.contains_key(&missing_input_add),
+        "binary expression with runtime var operand should remain unresolved"
+    );
+    assert!(
+        !ct.ct().ct_cache.contains_key(&unsupported_call),
+        "unsupported expression shapes should not enter ct cache"
+    );
+
+    assert_eq!(
+        stats.iterations, 2,
+        "program should converge in exactly two fixpoint iterations"
+    );
+    assert_eq!(
+        stats.eval_attempts, 10,
+        "eval attempts should include first-pass full walk and second-pass unresolved nodes"
+    );
+    assert_eq!(
+        stats.cache_hits, 4,
+        "second-pass cache hits should match folded nodes"
+    );
+    assert_eq!(
+        stats.cache_inserts, 4,
+        "ct cache inserts should equal literal+unary+binary folds"
+    );
+    assert_eq!(
+        stats.folded_literals, 2,
+        "literal folds should count both literals"
+    );
+    assert_eq!(
+        stats.folded_unary, 1,
+        "unary fold count should include negation"
+    );
+    assert_eq!(
+        stats.folded_binary, 1,
+        "binary fold count should include add"
+    );
+    assert_eq!(
+        stats.miss_missing_inputs, 2,
+        "missing-input misses should repeat until fixpoint convergence"
+    );
+    assert_eq!(
+        stats.miss_unsupported, 4,
+        "unsupported-shape misses should be tracked across fixpoint iterations"
+    );
 }
 
 #[test]
