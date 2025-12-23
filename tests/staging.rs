@@ -1,6 +1,7 @@
 use cielo::common::ids::SourceId;
 use cielo::common::symbols::Interner;
 use cielo::ir::core::{ExprKind, Literal, StmtKind};
+use cielo::pipeline::compiler::Endianness;
 use cielo::pipeline::phases::{Knownness, Stage};
 use cielo::sema::effect::SortedEffectRow;
 use cielo::{Compiler, CompilerConfig};
@@ -394,6 +395,75 @@ fn main() -> Int {
     assert!(
         ints_32.contains(&-2_147_483_648),
         "32-bit target should wrap arithmetic result: {ints_32:?}"
+    );
+}
+
+#[test]
+fn ct_cache_key_and_eval_stats_reflect_target_endianness_and_alignment() {
+    let src = r#"
+fn main() -> Int {
+  let x = 1 + 2;
+  let y = x * 3;
+  y
+}
+"#;
+    let mut little_cfg = CompilerConfig::default();
+    little_cfg.target.word_size_bits = 64;
+    little_cfg.target.endianness = Endianness::Little;
+    little_cfg.target.pointer_alignment = 8;
+    let mut big_cfg = CompilerConfig::default();
+    big_cfg.target.word_size_bits = 64;
+    big_cfg.target.endianness = Endianness::Big;
+    big_cfg.target.pointer_alignment = 16;
+
+    let mut little_interner = Interner::new();
+    let little_residual = Compiler::new(little_cfg).compile_source_v0(
+        src,
+        SourceId::from_u32(0),
+        &mut little_interner,
+    );
+    let mut big_interner = Interner::new();
+    let big_residual =
+        Compiler::new(big_cfg).compile_source_v0(src, SourceId::from_u32(1), &mut big_interner);
+
+    assert_eq!(little_residual.ct().cache_key.target_endianness, "little");
+    assert_eq!(big_residual.ct().cache_key.target_endianness, "big");
+    assert_eq!(little_residual.ct().cache_key.target_pointer_alignment, 8);
+    assert_eq!(big_residual.ct().cache_key.target_pointer_alignment, 16);
+    assert_ne!(
+        little_residual.ct().cache_key,
+        big_residual.ct().cache_key,
+        "cache key must vary across endianness/alignment changes"
+    );
+
+    let mut ints_little = little_residual
+        .ct()
+        .ct_cache
+        .values()
+        .filter_map(|lit| match lit {
+            Literal::Int(value) => Some(*value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut ints_big = big_residual
+        .ct()
+        .ct_cache
+        .values()
+        .filter_map(|lit| match lit {
+            Literal::Int(value) => Some(*value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    ints_little.sort_unstable();
+    ints_big.sort_unstable();
+    assert_eq!(
+        ints_little, ints_big,
+        "for pure integer arithmetic, endianness/alignment should not change folded values"
+    );
+    assert_eq!(
+        little_residual.ct().eval_stats,
+        big_residual.ct().eval_stats,
+        "evaluator instrumentation should be stable when semantics are unchanged"
     );
 }
 
