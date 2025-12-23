@@ -1,5 +1,5 @@
 use cielo::common::diagnostics::DiagnosticBag;
-use cielo::common::ids::{EffectLabelId, ExprId, FuncId, SourceId, SymbolId, TypeId, VarId};
+use cielo::common::ids::{EffectLabelId, FuncId, SourceId, SymbolId, TypeId, VarId};
 use cielo::common::span::Span;
 use cielo::common::symbols::Interner;
 use cielo::ir::core::{
@@ -11,7 +11,6 @@ use cielo::pipeline::phases::{
     BranchDecision, BtaClassified, BtaTables, CtPropagationTables, Knownness,
     MonomorphizationSummary, Reason, SemanticTables, Stage,
 };
-use cielo::pipeline::provenance::runtime_provenance_lines;
 use cielo::sema::effect::SortedEffectRow;
 use cielo::sema::ty::Persistability;
 use cielo::{Compiler, CompilerConfig};
@@ -1202,7 +1201,7 @@ fn residualize_prunes_match_through_let_alias_chain_with_binder_materialization(
 }
 
 #[test]
-fn v1_example_snapshot_matches_expected_registration_and_staging_counts() {
+fn v1_example_contract_oracle_matches_effect_and_staging_intent() {
     let src = include_str!("../examples/v1_test.cielo");
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
@@ -1235,6 +1234,22 @@ fn v1_example_snapshot_matches_expected_registration_and_staging_counts() {
         core.program().effects()[1].operations[0].param_types.len(),
         0
     );
+    let console_effect = core
+        .program()
+        .effects()
+        .iter()
+        .find_map(|effect| {
+            (interner.resolve(effect.name) == Some("Console")).then_some(effect.label)
+        })
+        .expect("Console label");
+    let local_state_effect = core
+        .program()
+        .effects()
+        .iter()
+        .find_map(|effect| {
+            (interner.resolve(effect.name) == Some("LocalState")).then_some(effect.label)
+        })
+        .expect("LocalState label");
 
     let expected_names = ["seed", "bump", "local_step", "io_step", "main"];
     let observed_names = core
@@ -1257,63 +1272,144 @@ fn v1_example_snapshot_matches_expected_registration_and_staging_counts() {
     assert!(core.program().functions()[4].declared_effects.is_empty());
 
     let residual = compiler.run_v0_core_pipeline(core);
-    let typed_exprs = residual
-        .sema()
-        .type_of_expr
-        .iter()
-        .filter(|entry| entry.is_some())
-        .count();
-    assert_eq!(typed_exprs, 39);
-    assert_eq!(residual.sema().type_of_expr.len(), 39);
-
-    let effectful_stmts = residual
-        .sema()
-        .effects_of_stmt
-        .iter()
-        .filter(|row| !row.is_empty())
-        .count();
-    assert_eq!(effectful_stmts, 6);
-    assert_eq!(residual.sema().effects_of_stmt.len(), 34);
-
-    let ct_count = residual
-        .bta()
-        .stage_of_expr
-        .values()
-        .filter(|stage| matches!(stage, Stage::Ct))
-        .count();
-    let rt_count = residual
-        .bta()
-        .stage_of_expr
-        .values()
-        .filter(|stage| matches!(stage, Stage::Rt(_)))
-        .count();
-    assert_eq!(ct_count, 15);
-    assert_eq!(rt_count, 24);
-    assert_eq!(residual.diagnostics().entries().len(), 0);
-
-    let e8 = runtime_provenance_lines(residual.program(), residual.bta(), ExprId::new(8), 5);
     assert_eq!(
-        e8,
-        vec![
-            " 1. e8: runtime classification has not been refined yet".to_owned(),
-            " 2. v0: parameter #1 of f1 is runtime".to_owned(),
-        ]
+        residual.diagnostics().entries().len(),
+        0,
+        "v1 example should compile without diagnostics"
     );
-    let e10 = runtime_provenance_lines(residual.program(), residual.bta(), ExprId::new(10), 5);
-    assert_eq!(
-        e10,
-        vec![
-            " 1. e10: runtime classification has not been refined yet".to_owned(),
-            " 2. e8: runtime classification has not been refined yet".to_owned(),
-            " 3. v0: parameter #1 of f1 is runtime".to_owned(),
-        ]
+
+    let func_id_named = |name: &str| {
+        residual
+            .program()
+            .functions()
+            .iter()
+            .enumerate()
+            .find_map(|(idx, function)| {
+                (interner.resolve(function.name) == Some(name)).then_some(FuncId::new(idx))
+            })
+            .unwrap_or_else(|| panic!("missing function `{name}`"))
+    };
+    let seed_id = func_id_named("seed");
+    let bump_id = func_id_named("bump");
+    let local_step_id = func_id_named("local_step");
+    let io_step_id = func_id_named("io_step");
+    let main_id = func_id_named("main");
+
+    let summary = &residual.residual().function_effect_summary;
+    assert!(
+        summary.get(&seed_id).is_some_and(SortedEffectRow::is_empty),
+        "seed is pure and should keep an empty residual effect summary"
     );
-    let e11 = runtime_provenance_lines(residual.program(), residual.bta(), ExprId::new(11), 5);
-    assert_eq!(
-        e11,
-        vec![
-            " 1. e11: runtime classification has not been refined yet".to_owned(),
-            " 2. v1: parameter #1 of f2 is runtime".to_owned(),
-        ]
+    assert!(
+        summary.get(&bump_id).is_some_and(SortedEffectRow::is_empty),
+        "bump is pure and should keep an empty residual effect summary"
+    );
+    assert!(
+        summary
+            .get(&local_step_id)
+            .is_some_and(|row| row.contains(local_state_effect)),
+        "local_step should retain LocalState in residual effect summary"
+    );
+    assert!(
+        summary
+            .get(&io_step_id)
+            .is_some_and(|row| row.contains(console_effect)),
+        "io_step should retain Console in residual effect summary"
+    );
+    assert!(
+        summary.get(&main_id).is_some_and(SortedEffectRow::is_empty),
+        "main handlers discharge LocalState/Console so main residual summary should be empty"
+    );
+
+    let main_body = residual
+        .program()
+        .function(main_id)
+        .expect("main function")
+        .body;
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![main_body];
+    let mut saw_local_step_call = false;
+    let mut saw_io_step_call = false;
+    let mut saw_bump_call = false;
+    while let Some(stmt_id) = stack.pop() {
+        if !seen.insert(stmt_id) {
+            continue;
+        }
+        let Some(stmt) = residual.program().stmt(stmt_id) else {
+            continue;
+        };
+        if let StmtKind::Call {
+            callee, effects, ..
+        } = &stmt.kind
+        {
+            if *callee == local_step_id {
+                saw_local_step_call = true;
+                assert!(
+                    effects.contains(local_state_effect),
+                    "main->local_step call should carry LocalState effect row"
+                );
+            }
+            if *callee == io_step_id {
+                saw_io_step_call = true;
+                assert!(
+                    effects.contains(console_effect),
+                    "main->io_step call should carry Console effect row"
+                );
+            }
+            if *callee == bump_id {
+                saw_bump_call = true;
+                assert!(
+                    effects.is_empty(),
+                    "main->bump call should stay pure after discharge path"
+                );
+            }
+        }
+        for expr_id in stmt.child_exprs() {
+            let Some(expr) = residual.program().expr(expr_id) else {
+                continue;
+            };
+            if let ExprKind::PureCall { callee, .. } = expr.kind
+                && callee == bump_id
+            {
+                saw_bump_call = true;
+            }
+        }
+        stack.extend(stmt.child_stmts());
+    }
+    assert!(saw_local_step_call, "main should call local_step");
+    assert!(saw_io_step_call, "main should call io_step");
+    assert!(saw_bump_call, "main should call bump");
+
+    assert!(
+        residual
+            .bta()
+            .stage_of_expr
+            .values()
+            .any(|stage| matches!(stage, Stage::Rt(Reason::UserForcedRuntime))),
+        "@runtime block in example should force at least one expression to runtime"
+    );
+    assert!(
+        residual
+            .bta()
+            .stage_of_expr
+            .values()
+            .any(|stage| matches!(stage, Stage::Ct)),
+        "example should still contain CT expressions"
+    );
+    assert!(
+        residual
+            .bta()
+            .stage_of_expr
+            .values()
+            .any(|stage| matches!(stage, Stage::Rt(_))),
+        "example should still contain RT expressions"
+    );
+    assert!(
+        !residual
+            .bta()
+            .stage_of_expr
+            .values()
+            .any(|stage| matches!(stage, Stage::Rt(Reason::NotPersistable(_)))),
+        "example should not trigger non-persistable boundary staging failures"
     );
 }
