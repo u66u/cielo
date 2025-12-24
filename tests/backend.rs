@@ -580,9 +580,49 @@ fn main() -> Int {
         linear_stmt_graph_contains_add_rhs_int(&compiled.linear, main.body, 1),
         "non-tail code after resume should be preserved"
     );
+}
+
+#[test]
+fn keeps_resume_after_intermediate_effect_on_control_path() {
+    let src = r#"
+effect LocalState { fn tick() -> Int }
+effect Console { fn print(s: String) -> () }
+fn main() -> Int {
+  let x = handle { do LocalState.tick(); 9 } with LocalState {
+    | tick(resume) => {
+      do Console.print("edge");
+      resume(41)
+    }
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let main = compiled
+        .linear
+        .functions
+        .iter()
+        .find(|function| interner.resolve(function.name) == Some("main"))
+        .expect("main function");
+
     assert!(
-        linear_stmt_graph_tail_resume_wrapper_count(&compiled.linear, main.body) == 0,
-        "non-tail resumptions should not collapse into the tail identity-wrapper shape"
+        !compiled
+            .residual
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|diag| diag.code == "LINEARIZE_DIRECT_RESUME_NON_TAIL"),
+        "intermediate-effect resume path should classify as control, not direct"
+    );
+    assert!(
+        linear_stmt_graph_contains_perform_effect(&compiled.linear, main.body, 1),
+        "non-handled intermediate effect in clause should be preserved on linear path"
+    );
+    assert!(
+        linear_stmt_graph_tail_resume_wrapper_count(&compiled.linear, main.body) >= 2,
+        "control-path resumptions should not collapse to the direct-tail wrapper shape"
     );
 }
 
