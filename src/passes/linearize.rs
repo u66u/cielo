@@ -629,7 +629,9 @@ fn lower_stmt_under_handler(
                 continuation
             };
 
-            if is_identity_return_of_var(program, *next, *result) {
+            if is_identity_return_of_var(program, *next, *result)
+                && matches!(active_ctx.clause_convention, ClauseConvention::Direct)
+            {
                 return continuation;
             }
 
@@ -989,13 +991,9 @@ fn is_tail_resumptive_stmt(
                     && is_tail_resumptive_stmt(program, *next, resume_var, memo, visiting)
             }
         }
-        StmtKind::Call { args, next, .. } | StmtKind::Perform { args, next, .. } => {
-            !args
-                .iter()
-                .copied()
-                .any(|arg| expr_mentions_var(program, arg, resume_var))
-                && is_tail_resumptive_stmt(program, *next, resume_var, memo, visiting)
-        }
+        // Conservatively reject direct-tail classification through intermediate call/effect nodes.
+        // This mirrors the reference tail-resumption caveat for effectful/control-sensitive paths.
+        StmtKind::Call { .. } | StmtKind::Perform { .. } => false,
         StmtKind::Resume {
             result,
             resume,
