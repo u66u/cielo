@@ -565,7 +565,12 @@ fn emit_literal(
         Literal::Int(value) => scalar_pool
             .symbol_for(ScalarLiteralKey::Int(*value))
             .map_or_else(|| format!("cv_int({value})"), |symbol| symbol.to_owned()),
-        Literal::Float(value) => format!("cv_float({value})"),
+        Literal::Float(value) => scalar_pool
+            .symbol_for(ScalarLiteralKey::Float(value.to_bits()))
+            .map_or_else(
+                || format!("cv_float({})", format_float_literal(*value)),
+                |symbol| symbol.to_owned(),
+            ),
         Literal::Char(value) => scalar_pool
             .symbol_for(ScalarLiteralKey::Char(*value))
             .map_or_else(
@@ -733,6 +738,14 @@ fn escape_c_string(raw: &str) -> String {
     out
 }
 
+fn format_float_literal(value: f64) -> String {
+    let mut text = format!("{value:?}");
+    if !text.contains('.') && !text.contains('e') && !text.contains('E') {
+        text.push_str(".0");
+    }
+    text
+}
+
 fn emit_indent(out: &mut String, level: usize) {
     for _ in 0..level {
         out.push_str("    ");
@@ -838,6 +851,7 @@ enum ScalarLiteralKey {
     Bool(bool),
     Int(i64),
     Char(char),
+    Float(u64),
 }
 
 impl ScalarLiteralKey {
@@ -846,6 +860,7 @@ impl ScalarLiteralKey {
             Literal::Bool(value) => Some(Self::Bool(*value)),
             Literal::Int(value) => Some(Self::Int(*value)),
             Literal::Char(value) => Some(Self::Char(*value)),
+            Literal::Float(value) if value.is_finite() => Some(Self::Float(value.to_bits())),
             Literal::Unit | Literal::Float(_) | Literal::String(_) => None,
         }
     }
@@ -883,6 +898,7 @@ enum CtorFieldKey {
     Bool(bool),
     Int(i64),
     Char(char),
+    Float(u64),
     String(String),
 }
 
@@ -893,6 +909,7 @@ impl CtorFieldKey {
             Literal::Bool(value) => Some(Self::Bool(*value)),
             Literal::Int(value) => Some(Self::Int(*value)),
             Literal::Char(value) => Some(Self::Char(*value)),
+            Literal::Float(value) if value.is_finite() => Some(Self::Float(value.to_bits())),
             Literal::String(value) => Some(Self::String(value.clone())),
             Literal::Float(_) => None,
         }
@@ -909,6 +926,10 @@ impl CtorFieldKey {
             CtorFieldKey::Char(value) => {
                 format!("{{ .tag = CV_CHAR, .as.c = {}u }}", *value as u32)
             }
+            CtorFieldKey::Float(bits) => {
+                let value = f64::from_bits(*bits);
+                format!("{{ .tag = CV_FLOAT, .as.f = {} }}", format_float_literal(value))
+            }
             CtorFieldKey::String(value) => {
                 format!(
                     "{{ .tag = CV_STRING, .as.s = \"{}\" }}",
@@ -924,6 +945,7 @@ impl CtorFieldKey {
             CtorFieldKey::Bool(_) => 1,
             CtorFieldKey::Int(_) => 8,
             CtorFieldKey::Char(_) => 4,
+            CtorFieldKey::Float(_) => 8,
             CtorFieldKey::String(value) => value.len().saturating_add(1),
         }
     }
@@ -1092,6 +1114,10 @@ fn emit_scalar_const_pool(out: &mut String, pool: &ScalarConstPool) {
             ScalarLiteralKey::Int(value) => format!("{{ .tag = CV_INT, .as.i = {value} }}"),
             ScalarLiteralKey::Char(value) => {
                 format!("{{ .tag = CV_CHAR, .as.c = {}u }}", value as u32)
+            }
+            ScalarLiteralKey::Float(bits) => {
+                let value = f64::from_bits(bits);
+                format!("{{ .tag = CV_FLOAT, .as.f = {} }}", format_float_literal(value))
             }
         };
         writeln!(out, "static const CieloValue {} = {};", entry.symbol, init)
