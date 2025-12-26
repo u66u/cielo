@@ -313,6 +313,61 @@ fn main() -> Int {
 }
 
 #[test]
+fn c_emitter_pools_repeated_runtime_float_literals() {
+    let mut interner = Interner::new();
+    let main_name = interner.intern("main");
+
+    let mut program = LinearProgram::default();
+    let first = program.push_expr(LinearExpr::Literal(Literal::Float(1.5)));
+    let second = program.push_expr(LinearExpr::Literal(Literal::Float(1.5)));
+    let zero = program.push_expr(LinearExpr::Literal(Literal::Int(0)));
+
+    let ret = program.push_stmt(LinearStmt::Return(zero));
+    let second_let = program.push_stmt(LinearStmt::Let {
+        binding: VarId::from_u32(1),
+        value: second,
+        next: ret,
+    });
+    let body = program.push_stmt(LinearStmt::Let {
+        binding: VarId::from_u32(0),
+        value: first,
+        next: second_let,
+    });
+
+    program.functions.push(LinearFunction {
+        id: LinearFuncId::new(0),
+        name: main_name,
+        params: vec![],
+        body,
+    });
+    program.entrypoints = vec![LinearFuncId::new(0)];
+
+    let emitted = emit_c_program(&program, &interner);
+
+    let pooled_symbol = emitted
+        .lines()
+        .find_map(|line| {
+            if !line.starts_with("static const CieloValue cielo_const_v_")
+                || !line.contains(".tag = CV_FLOAT")
+            {
+                return None;
+            }
+            line.split_whitespace()
+                .nth(3)
+                .map(|symbol| symbol.trim_end_matches(';').to_owned())
+        })
+        .expect("expected pooled float constant");
+
+    assert!(
+        emitted
+            .matches(format!("= {pooled_symbol};").as_str())
+            .count()
+            >= 2,
+        "pooled float literal symbol should be reused at runtime callsites"
+    );
+}
+
+#[test]
 fn c_emitter_pools_repeated_runtime_ctor_literals() {
     let src = r#"
 enum Pair { Mk(Int, Int) }
@@ -348,6 +403,67 @@ fn main() -> Int {
             .c_source
             .contains("cielo_make_ctor(\"Pair\", \"Mk\", 2"),
         "pooled repeated ctor literals should avoid repeated heap ctor construction"
+    );
+}
+
+#[test]
+fn c_emitter_pools_repeated_runtime_ctor_literals_with_float_fields() {
+    let mut interner = Interner::new();
+    let main_name = interner.intern("main");
+    let pair_name = interner.intern("PairF");
+    let mk_name = interner.intern("Mk");
+
+    let mut program = LinearProgram::default();
+    let first = program.push_expr(LinearExpr::Literal(Literal::Float(1.25)));
+    let second = program.push_expr(LinearExpr::Literal(Literal::Float(2.5)));
+    let ctor_a = program.push_expr(LinearExpr::MakeEnum {
+        ty: pair_name,
+        variant: mk_name,
+        fields: vec![first, second],
+    });
+    let ctor_b = program.push_expr(LinearExpr::MakeEnum {
+        ty: pair_name,
+        variant: mk_name,
+        fields: vec![first, second],
+    });
+    let zero = program.push_expr(LinearExpr::Literal(Literal::Int(0)));
+
+    let ret = program.push_stmt(LinearStmt::Return(zero));
+    let second_let = program.push_stmt(LinearStmt::Let {
+        binding: VarId::from_u32(1),
+        value: ctor_b,
+        next: ret,
+    });
+    let body = program.push_stmt(LinearStmt::Let {
+        binding: VarId::from_u32(0),
+        value: ctor_a,
+        next: second_let,
+    });
+
+    program.functions.push(LinearFunction {
+        id: LinearFuncId::new(0),
+        name: main_name,
+        params: vec![],
+        body,
+    });
+    program.entrypoints = vec![LinearFuncId::new(0)];
+
+    let emitted = emit_c_program(&program, &interner);
+
+    assert_eq!(
+        emitted
+            .matches("static const CieloValue cielo_const_ctor_v_")
+            .count(),
+        1,
+        "repeated runtime float ctor literals should emit one pooled ctor value"
+    );
+    assert!(
+        emitted.contains(".tag = CV_FLOAT"),
+        "pooled ctor field table should preserve float field payloads"
+    );
+    assert!(
+        !emitted.contains("cielo_make_ctor(\"PairF\", \"Mk\", 2"),
+        "pooled repeated float ctor literals should avoid repeated inline ctor construction"
     );
 }
 
