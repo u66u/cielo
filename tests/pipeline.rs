@@ -372,6 +372,63 @@ fn ct_propagate_collects_stable_eval_stats_oracle() {
 }
 
 #[test]
+fn ct_propagate_tracks_host_float_folds_explicitly() {
+    let mut program = CoreProgram::new();
+    let span = Span::synthetic();
+
+    let float_lit = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Float(1.5)),
+    });
+    let neg_float = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Unary {
+            op: cielo::ir::core::UnaryOp::Neg,
+            expr: float_lit,
+        },
+    });
+    let ret = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(neg_float),
+    });
+    let main_id = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(101),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Float),
+        declared_effects: SortedEffectRow::empty(),
+        body: ret,
+        ct_only: false,
+        span,
+    });
+    program.set_entrypoints([main_id]);
+
+    let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
+    let mono = cielo::pipeline::phases::Monomorphized::new(
+        program,
+        DiagnosticBag::default(),
+        sema,
+        MonomorphizationSummary::default(),
+    );
+    let ct = ct_propagate::run(mono, CompilerConfig::default().target);
+    let stats = ct.ct().eval_stats;
+
+    assert_eq!(
+        ct.ct().ct_cache.get(&neg_float),
+        Some(&Literal::Float(-1.5)),
+        "unary neg on float literals should still fold"
+    );
+    assert_eq!(
+        stats.folded_unary, 1,
+        "float unary fold should contribute to unary fold totals"
+    );
+    assert_eq!(
+        stats.folded_float_host, 1,
+        "host-semantics float folds should be counted explicitly"
+    );
+}
+
+#[test]
 fn residualize_skips_runtime_forced_cached_expr_even_when_literal_is_available() {
     let mut program = CoreProgram::new();
     let span = Span::synthetic();

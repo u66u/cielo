@@ -399,6 +399,56 @@ fn main() -> Int {
 }
 
 #[test]
+fn target_word_size_normalizes_ct_integer_literals() {
+    let src = r#"
+fn main() -> Int {
+  let x = 2147483648;
+  x
+}
+"#;
+    let mut interner_64 = Interner::new();
+    let residual_64 = Compiler::new(CompilerConfig::default()).compile_source_v0(
+        src,
+        SourceId::from_u32(0),
+        &mut interner_64,
+    );
+
+    let mut cfg_32 = CompilerConfig::default();
+    cfg_32.target.word_size_bits = 32;
+    let mut interner_32 = Interner::new();
+    let residual_32 =
+        Compiler::new(cfg_32).compile_source_v0(src, SourceId::from_u32(1), &mut interner_32);
+
+    let ints_64 = residual_64
+        .ct()
+        .ct_cache
+        .values()
+        .filter_map(|lit| match lit {
+            Literal::Int(value) => Some(*value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let ints_32 = residual_32
+        .ct()
+        .ct_cache
+        .values()
+        .filter_map(|lit| match lit {
+            Literal::Int(value) => Some(*value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        ints_64.contains(&2_147_483_648),
+        "64-bit targets should keep wide integer literals: {ints_64:?}"
+    );
+    assert!(
+        ints_32.contains(&-2_147_483_648),
+        "32-bit targets should normalize integer literals to target width: {ints_32:?}"
+    );
+}
+
+#[test]
 fn ct_cache_key_and_eval_stats_reflect_target_endianness_and_alignment() {
     let src = r#"
 fn main() -> Int {
