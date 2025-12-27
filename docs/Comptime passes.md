@@ -498,6 +498,7 @@ Functions using CT-only effects or taking TypeInfo arguments are CT-only. Callin
 - Persistability boundary notes:
   - 2026-03-16: residualizer gates CT embedding on BTA stage (`Ct`) + knownness (`KnownPersistable`), preventing runtime-forced/boundary-rejected embeddings.
   - 2026-03-18: C emitter pools repeated runtime scalar literals (`Int`/`Bool`/`Char`) as `static const CieloValue`.
+  - 2026-03-27: scalar/ctor pooling now includes finite `Float` literals with deterministic bit-pattern keys.
 
 ## V2 Additions
 
@@ -515,4 +516,4 @@ When the return clause varies across recursive call sites within a specialized f
 - If mutable-variable stmt forms are added to Core IR, tail-resumption gating must mirror the mutable-state caveat from `RemoveTailResumptions`.
 - Persistability/codegen expansion still pending beyond v1 scalar/string pooling:
   - structural constant pooling for ADT/aggregate serializable values
-  - explicit float pooling policy (if adopted)
+  - non-finite float pooling policy (NaN/Inf handling if adopted)
