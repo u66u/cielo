@@ -121,6 +121,10 @@ The evaluator simulates target semantics, not host. Integer arithmetic uses targ
 
 Current caveat: floating point still uses host behavior when exact target emulation is unavailable.
 
+v1.1 note:
+- Integer literals are normalized to target word width during CT folding (not only arithmetic results).
+- `CtEvalStats.folded_float_host` tracks float folds that currently rely on host FP behavior.
+
 ### Type-level CT is a separate, earlier phase
 
 Type-level CT computation (struct-from-fields, trait derivation, TypeInfo manipulation) happens during type checking, before monomorphization. BTA/residualize passes deal only with value-level CT computation.
