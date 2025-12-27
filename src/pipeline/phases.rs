@@ -129,7 +129,7 @@ impl Default for CtCacheKey {
             target_word_size_bits: 64,
             target_endianness: "little".to_owned(),
             target_pointer_alignment: 8,
-            evaluator_policy: "v1-int-wrap".to_owned(),
+            evaluator_policy: "v1-int-wrap-litnorm".to_owned(),
             compiler_version: env!("CARGO_PKG_VERSION").to_owned(),
         }
     }
@@ -144,6 +144,7 @@ pub struct CtEvalStats {
     pub folded_literals: u32,
     pub folded_unary: u32,
     pub folded_binary: u32,
+    pub folded_float_host: u32,
     pub miss_missing_inputs: u32,
     pub miss_unsupported: u32,
 }

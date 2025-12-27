@@ -321,16 +321,22 @@ fn dump_sema_summary(residual: &Residualized) {
     println!("stage ct={ct_exprs}, rt={rt_exprs}");
     println!("known local={known_local}, known persistable={known_persistable}");
     println!(
-        "ct-eval iter={}, attempts={}, hits={}, folds(lit/unary/bin)={}/{}/{}, misses(dep/unsupported)={}/{}",
+        "ct-eval iter={}, attempts={}, hits={}, folds(lit/unary/bin)={}/{}/{}, host-float-folds={}, misses(dep/unsupported)={}/{}",
         eval.iterations,
         eval.eval_attempts,
         eval.cache_hits,
         eval.folded_literals,
         eval.folded_unary,
         eval.folded_binary,
+        eval.folded_float_host,
         eval.miss_missing_inputs,
         eval.miss_unsupported
     );
+    if eval.folded_float_host > 0 {
+        println!(
+            "ct-eval caveat: float folds currently use host FP behavior (strict target emulation deferred)"
+        );
+    }
 
     if rt_exprs == 0 {
         return;

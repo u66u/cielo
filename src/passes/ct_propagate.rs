@@ -31,7 +31,7 @@ use crate::pipeline::phases::{
 };
 use crate::sema::effect::EffectFlags;
 
-const EVALUATOR_POLICY: &str = "v1-int-wrap";
+const EVALUATOR_POLICY: &str = "v1-int-wrap-litnorm";
 
 pub fn run(mono: Monomorphized, target: TargetSpec) -> CtPropagated {
     let mut ct = CtPropagationTables::default();
@@ -64,6 +64,7 @@ enum FoldKind {
     Literal,
     Unary,
     Binary,
+    UnaryHostFloat,
 }
 
 #[derive(Clone, Debug)]
@@ -79,20 +80,31 @@ fn eval_expr(
     target: TargetSpec,
 ) -> EvalOutcome {
     match &expr.kind {
-        ExprKind::Literal(value) => EvalOutcome::Folded {
-            value: value.clone(),
-            kind: FoldKind::Literal,
-        },
+        ExprKind::Literal(value) => {
+            let value = match value {
+                Literal::Int(raw) => Literal::Int(normalize_int(*raw, target)),
+                _ => value.clone(),
+            };
+            EvalOutcome::Folded {
+                value,
+                kind: FoldKind::Literal,
+            }
+        }
         ExprKind::Unary { op, expr } => {
             let Some(value) = cache.get(expr) else {
                 return EvalOutcome::MissingInputs;
             };
-            let Some(value) = eval_unary(*op, value, target) else {
+            let Some((value, used_host_float)) = eval_unary(*op, value, target) else {
                 return EvalOutcome::Unsupported;
+            };
+            let kind = if used_host_float {
+                FoldKind::UnaryHostFloat
+            } else {
+                FoldKind::Unary
             };
             EvalOutcome::Folded {
                 value,
-                kind: FoldKind::Unary,
+                kind,
             }
         }
         ExprKind::Binary { op, lhs, rhs } => {
@@ -145,6 +157,10 @@ fn compute_ct_cache(
                         FoldKind::Binary => {
                             stats.folded_binary = stats.folded_binary.saturating_add(1)
                         }
+                        FoldKind::UnaryHostFloat => {
+                            stats.folded_unary = stats.folded_unary.saturating_add(1);
+                            stats.folded_float_host = stats.folded_float_host.saturating_add(1);
+                        }
                     }
                     changed = true;
                 }
@@ -163,13 +179,13 @@ fn compute_ct_cache(
     (cache, stats)
 }
 
-fn eval_unary(op: UnaryOp, value: &Literal, target: TargetSpec) -> Option<Literal> {
+fn eval_unary(op: UnaryOp, value: &Literal, target: TargetSpec) -> Option<(Literal, bool)> {
     match (op, value) {
         (UnaryOp::Neg, Literal::Int(v)) => {
-            Some(Literal::Int(normalize_int(v.wrapping_neg(), target)))
+            Some((Literal::Int(normalize_int(v.wrapping_neg(), target)), false))
         }
-        (UnaryOp::Neg, Literal::Float(v)) => Some(Literal::Float(-v)),
-        (UnaryOp::Not, Literal::Bool(v)) => Some(Literal::Bool(!v)),
+        (UnaryOp::Neg, Literal::Float(v)) => Some((Literal::Float(-v), true)),
+        (UnaryOp::Not, Literal::Bool(v)) => Some((Literal::Bool(!v), false)),
         _ => None,
     }
 }
