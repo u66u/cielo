@@ -11,10 +11,16 @@ use cielo::frontend::ast::{Item, Program};
 use cielo::ir::core::CoreProgram;
 use cielo::passes::lowering::LowerConfig;
 use cielo::passes::{c_emit, handler_specialize, linearize};
+use cielo::pipeline::ct_invalidation::{
+    CtDepSnapshot, CtInvalidationReason, diff as diff_ct_invalidation,
+    load_snapshot as load_ct_snapshot, save_snapshot as save_ct_snapshot,
+    sidecar_path as ct_sidecar_path,
+};
 use cielo::pipeline::phases::{Residualized, Stage};
 use cielo::pipeline::provenance::runtime_provenance_lines;
 use cielo::pipeline::staging_diff::{
-    SnapshotStage, collect_snapshot, diff_snapshots, load_snapshot, save_snapshot,
+    SnapshotStage, collect_snapshot, diff_snapshots, load_snapshot as load_stage_snapshot,
+    save_snapshot as save_stage_snapshot,
 };
 use cielo::{Compiler, CompilerConfig};
 
@@ -369,7 +375,7 @@ fn dump_sema_summary(residual: &Residualized) {
 
 fn emit_staging_diff(snapshot_path: &Path, residual: &Residualized) {
     let current = collect_snapshot(residual.program(), residual.bta());
-    let previous = load_snapshot(snapshot_path).unwrap_or_default();
+    let previous = load_stage_snapshot(snapshot_path).unwrap_or_default();
     let changes = diff_snapshots(previous.as_slice(), current.as_slice());
 
     println!("=== Staging Diff ===");
@@ -401,11 +407,37 @@ fn emit_staging_diff(snapshot_path: &Path, residual: &Residualized) {
         }
     }
 
-    if let Err(err) = save_snapshot(snapshot_path, current.as_slice()) {
+    if let Err(err) = save_stage_snapshot(snapshot_path, current.as_slice()) {
         eprintln!(
             "failed to persist staging snapshot {}: {err}",
             snapshot_path.display()
         );
+    }
+
+    let dep_path = ct_sidecar_path(snapshot_path);
+    let previous_ct = load_ct_snapshot(dep_path.as_path()).unwrap_or_default();
+    let mut current_ct = CtDepSnapshot {
+        cache_key: residual.ct().cache_key.clone(),
+        file_deps: residual.ct().file_deps.clone(),
+    };
+    current_ct.file_deps.sort_by(|lhs, rhs| {
+        lhs.path
+            .cmp(&rhs.path)
+            .then(lhs.content_hash.cmp(&rhs.content_hash))
+    });
+    let invalidations = diff_ct_invalidation(&previous_ct, &current_ct);
+
+    println!("=== ComptimeReadFiles Invalidation ===");
+    if invalidations.is_empty() {
+        println!("(no invalidations)");
+    } else {
+        for reason in &invalidations {
+            println!("- {}", invalidation_text(reason));
+        }
+    }
+
+    if let Err(err) = save_ct_snapshot(dep_path.as_path(), &current_ct) {
+        eprintln!("failed to persist ct dependency snapshot {}: {err}", dep_path.display());
     }
 }
 
@@ -413,6 +445,37 @@ fn stage_text(stage: SnapshotStage) -> &'static str {
     match stage {
         SnapshotStage::Ct => "CT",
         SnapshotStage::Rt => "RT",
+    }
+}
+
+fn invalidation_text(reason: &CtInvalidationReason) -> String {
+    match reason {
+        CtInvalidationReason::TargetWordSizeChanged { before, after } => {
+            format!("target word size changed: {before} -> {after}")
+        }
+        CtInvalidationReason::TargetEndiannessChanged { before, after } => {
+            format!("target endianness changed: {before} -> {after}")
+        }
+        CtInvalidationReason::TargetAlignmentChanged { before, after } => {
+            format!("target pointer alignment changed: {before} -> {after}")
+        }
+        CtInvalidationReason::EvaluatorPolicyChanged { before, after } => {
+            format!("ct evaluator policy changed: {before} -> {after}")
+        }
+        CtInvalidationReason::CompilerVersionChanged { before, after } => {
+            format!("compiler version changed: {before} -> {after}")
+        }
+        CtInvalidationReason::FileAdded { path, content_hash } => {
+            format!("dependency added: {path} ({content_hash})")
+        }
+        CtInvalidationReason::FileRemoved { path, content_hash } => {
+            format!("dependency removed: {path} ({content_hash})")
+        }
+        CtInvalidationReason::FileChanged {
+            path,
+            before_hash,
+            after_hash,
+        } => format!("dependency changed: {path} ({before_hash} -> {after_hash})"),
     }
 }
 
