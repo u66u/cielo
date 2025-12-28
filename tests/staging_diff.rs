@@ -1,7 +1,17 @@
 use cielo::pipeline::staging_diff::{
-    SnapshotStage, StageSnapshotEntry, diff_snapshots, load_snapshot, save_snapshot,
+    SnapshotStage, StageSnapshotEntry, collect_snapshot, diff_snapshots, load_snapshot,
+    save_snapshot,
 };
+use cielo::common::ids::{ExprId, SourceId, SymbolId};
+use cielo::common::span::Span;
+use cielo::ir::core::{
+    BinaryOp, CoreProgram, CoreTypeRef, ExprKind, ExprNode, FunctionDecl, Literal,
+    PrimitiveTypeRef, StmtKind, StmtNode,
+};
+use cielo::pipeline::phases::{BtaTables, Stage};
+use cielo::sema::effect::SortedEffectRow;
 use std::fs;
+use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -53,4 +63,87 @@ fn staging_snapshot_roundtrip_is_stable() {
     let loaded = load_snapshot(path.as_path()).expect("load");
     fs::remove_file(path).expect("cleanup");
     assert_eq!(loaded, entries);
+}
+
+#[test]
+fn collect_snapshot_stable_ids_ignore_expr_index_churn() {
+    fn build_program(reverse_literals: bool) -> (CoreProgram, BtaTables) {
+        let mut program = CoreProgram::new();
+        let source = SourceId::from_u32(33);
+        let one_span = Span::new(source, 0, 1);
+        let two_span = Span::new(source, 2, 3);
+        let add_span = Span::new(source, 4, 5);
+
+        let (one, two) = if reverse_literals {
+            let two = program.push_expr(ExprNode {
+                span: two_span,
+                kind: ExprKind::Literal(Literal::Int(2)),
+            });
+            let one = program.push_expr(ExprNode {
+                span: one_span,
+                kind: ExprKind::Literal(Literal::Int(1)),
+            });
+            (one, two)
+        } else {
+            let one = program.push_expr(ExprNode {
+                span: one_span,
+                kind: ExprKind::Literal(Literal::Int(1)),
+            });
+            let two = program.push_expr(ExprNode {
+                span: two_span,
+                kind: ExprKind::Literal(Literal::Int(2)),
+            });
+            (one, two)
+        };
+
+        let add = program.push_expr(ExprNode {
+            span: add_span,
+            kind: ExprKind::Binary {
+                op: BinaryOp::Add,
+                lhs: one,
+                rhs: two,
+            },
+        });
+        let ret = program.push_stmt(StmtNode {
+            span: add_span,
+            kind: StmtKind::Return(add),
+        });
+        let main_id = program.add_function(FunctionDecl {
+            name: SymbolId::from_u32(1),
+            params: Vec::new(),
+            param_types: Vec::new(),
+            return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+            declared_effects: SortedEffectRow::empty(),
+            body: ret,
+            ct_only: false,
+            span: add_span,
+        });
+        program.set_entrypoints([main_id]);
+
+        let mut bta = BtaTables::default();
+        for idx in 0..program.exprs().len() {
+            bta.stage_of_expr.insert(ExprId::new(idx), Stage::Ct);
+        }
+        (program, bta)
+    }
+
+    let (program_a, bta_a) = build_program(false);
+    let (program_b, bta_b) = build_program(true);
+    let ids_a = collect_snapshot(&program_a, &bta_a)
+        .into_iter()
+        .map(|entry| entry.stable_id)
+        .collect::<BTreeSet<_>>();
+    let ids_b = collect_snapshot(&program_b, &bta_b)
+        .into_iter()
+        .map(|entry| entry.stable_id)
+        .collect::<BTreeSet<_>>();
+
+    assert_eq!(
+        ids_a, ids_b,
+        "stable snapshot IDs should remain equal when expr insertion order changes"
+    );
+    assert!(
+        ids_a.iter().all(|id| !id.starts_with('e')),
+        "stable IDs should no longer embed fragile ExprId indexes"
+    );
 }
