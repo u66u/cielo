@@ -32,6 +32,7 @@ pub struct StageDiff {
 }
 
 pub fn collect_snapshot(program: &CoreProgram, bta: &BtaTables) -> Vec<StageSnapshotEntry> {
+    let fingerprints = collect_expr_fingerprints(program);
     let mut entries = Vec::new();
     for (idx, expr) in program.exprs().iter().enumerate() {
         let expr_id = ExprId::new(idx);
@@ -46,7 +47,12 @@ pub fn collect_snapshot(program: &CoreProgram, bta: &BtaTables) -> Vec<StageSnap
             Stage::Ct => String::new(),
             Stage::Rt(reason) => reason_text(reason),
         };
-        let stable_id = stable_expr_id(expr_id, expr.span.start, expr.span.end, &expr.kind);
+        let stable_id = stable_expr_id(
+            expr.span.start,
+            expr.span.end,
+            &expr.kind,
+            fingerprints.get(idx).copied().unwrap_or_default(),
+        );
         entries.push(StageSnapshotEntry {
             stable_id,
             stage: stage_tag,
@@ -139,13 +145,13 @@ fn as_map(entries: &[StageSnapshotEntry]) -> BTreeMap<String, StageSnapshotEntry
         .collect()
 }
 
-fn stable_expr_id(expr_id: ExprId, start: u32, end: u32, kind: &ExprKind) -> String {
+fn stable_expr_id(start: u32, end: u32, kind: &ExprKind, fingerprint: u64) -> String {
     format!(
-        "e{}@{}-{}:{}",
-        expr_id.as_u32(),
+        "{}-{}:{}:{:016x}",
         start,
         end,
-        expr_kind_tag(kind)
+        expr_kind_tag(kind),
+        fingerprint
     )
 }
 
@@ -179,5 +185,114 @@ fn reason_text(reason: Reason) -> String {
         Reason::NotPersistable(ty) => format!("non-persistable-t{}", ty.as_u32()),
         Reason::UserForcedRuntime => "forced-runtime".to_owned(),
         Reason::CtOnlyWithRuntimeArgs(func) => format!("ct-only-f{}", func.as_u32()),
+    }
+}
+
+fn collect_expr_fingerprints(program: &CoreProgram) -> Vec<u64> {
+    let mut memo = vec![None; program.exprs().len()];
+    let mut visiting = vec![false; program.exprs().len()];
+    for idx in 0..program.exprs().len() {
+        let expr_id = ExprId::new(idx);
+        let _ = expr_fingerprint(program, expr_id, &mut memo, &mut visiting);
+    }
+    memo.into_iter().map(|entry| entry.unwrap_or_default()).collect()
+}
+
+fn expr_fingerprint(
+    program: &CoreProgram,
+    expr_id: ExprId,
+    memo: &mut [Option<u64>],
+    visiting: &mut [bool],
+) -> u64 {
+    if let Some(value) = memo.get(expr_id.index()).copied().flatten() {
+        return value;
+    }
+    if visiting.get(expr_id.index()).copied().unwrap_or(false) {
+        return 0;
+    }
+    if expr_id.index() >= visiting.len() || expr_id.index() >= memo.len() {
+        return 0;
+    }
+    visiting[expr_id.index()] = true;
+
+    let value = if let Some(expr) = program.expr(expr_id) {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        expr.span.start.hash(&mut hasher);
+        expr.span.end.hash(&mut hasher);
+        expr_kind_tag(&expr.kind).hash(&mut hasher);
+        match &expr.kind {
+            ExprKind::Var(var) => var.as_u32().hash(&mut hasher),
+            ExprKind::Literal(literal) => hash_literal(literal, &mut hasher),
+            ExprKind::Unary { op, expr } => {
+                std::mem::discriminant(op).hash(&mut hasher);
+                expr_fingerprint(program, *expr, memo, visiting).hash(&mut hasher);
+            }
+            ExprKind::Binary { op, lhs, rhs } => {
+                std::mem::discriminant(op).hash(&mut hasher);
+                expr_fingerprint(program, *lhs, memo, visiting).hash(&mut hasher);
+                expr_fingerprint(program, *rhs, memo, visiting).hash(&mut hasher);
+            }
+            ExprKind::PureCall { callee, args } => {
+                callee.as_u32().hash(&mut hasher);
+                for arg in args {
+                    expr_fingerprint(program, *arg, memo, visiting).hash(&mut hasher);
+                }
+            }
+            ExprKind::MakeStruct { ty, fields } => {
+                ty.as_u32().hash(&mut hasher);
+                for field in fields {
+                    expr_fingerprint(program, *field, memo, visiting).hash(&mut hasher);
+                }
+            }
+            ExprKind::MakeEnum {
+                ty,
+                variant,
+                fields,
+            } => {
+                ty.as_u32().hash(&mut hasher);
+                variant.as_u32().hash(&mut hasher);
+                for field in fields {
+                    expr_fingerprint(program, *field, memo, visiting).hash(&mut hasher);
+                }
+            }
+            ExprKind::Error(error) => {
+                error.span.start.hash(&mut hasher);
+                error.span.end.hash(&mut hasher);
+                error.message.hash(&mut hasher);
+            }
+        }
+        hasher.finish()
+    } else {
+        0
+    };
+
+    visiting[expr_id.index()] = false;
+    memo[expr_id.index()] = Some(value);
+    value
+}
+
+fn hash_literal<H: Hasher>(literal: &crate::ir::core::Literal, hasher: &mut H) {
+    match literal {
+        crate::ir::core::Literal::Unit => 0u8.hash(hasher),
+        crate::ir::core::Literal::Bool(value) => {
+            1u8.hash(hasher);
+            value.hash(hasher);
+        }
+        crate::ir::core::Literal::Int(value) => {
+            2u8.hash(hasher);
+            value.hash(hasher);
+        }
+        crate::ir::core::Literal::Float(value) => {
+            3u8.hash(hasher);
+            value.to_bits().hash(hasher);
+        }
+        crate::ir::core::Literal::Char(value) => {
+            4u8.hash(hasher);
+            value.hash(hasher);
+        }
+        crate::ir::core::Literal::String(value) => {
+            5u8.hash(hasher);
+            value.hash(hasher);
+        }
     }
 }
