@@ -102,10 +102,7 @@ fn eval_expr(
             } else {
                 FoldKind::Unary
             };
-            EvalOutcome::Folded {
-                value,
-                kind,
-            }
+            EvalOutcome::Folded { value, kind }
         }
         ExprKind::Binary { op, lhs, rhs } => {
             let Some(left) = cache.get(lhs) else {

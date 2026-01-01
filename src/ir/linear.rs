@@ -105,9 +105,7 @@ impl LinearStmtNode {
             LinearStmt::PureCall { args, .. }
             | LinearStmt::DirectCall { args, .. }
             | LinearStmt::ControlCall { args, .. }
-            | LinearStmt::Perform { args, .. } => {
-                args.iter().copied().collect()
-            }
+            | LinearStmt::Perform { args, .. } => args.iter().copied().collect(),
             LinearStmt::Val { .. }
             | LinearStmt::Handle { .. }
             | LinearStmt::Stage { .. }

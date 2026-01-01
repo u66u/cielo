@@ -174,6 +174,7 @@ fn hash_reason(reason: &str) -> u64 {
     hasher.finish()
 }
 
+// impl fmt is probably cleaner
 fn reason_text(reason: Reason) -> String {
     match reason {
         Reason::UnclassifiedRuntime => "unclassified-runtime".to_owned(),
@@ -195,7 +196,9 @@ fn collect_expr_fingerprints(program: &CoreProgram) -> Vec<u64> {
         let expr_id = ExprId::new(idx);
         let _ = expr_fingerprint(program, expr_id, &mut memo, &mut visiting);
     }
-    memo.into_iter().map(|entry| entry.unwrap_or_default()).collect()
+    memo.into_iter()
+        .map(|entry| entry.unwrap_or_default())
+        .collect()
 }
 
 fn expr_fingerprint(

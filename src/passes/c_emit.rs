@@ -928,7 +928,10 @@ impl CtorFieldKey {
             }
             CtorFieldKey::Float(bits) => {
                 let value = f64::from_bits(*bits);
-                format!("{{ .tag = CV_FLOAT, .as.f = {} }}", format_float_literal(value))
+                format!(
+                    "{{ .tag = CV_FLOAT, .as.f = {} }}",
+                    format_float_literal(value)
+                )
             }
             CtorFieldKey::String(value) => {
                 format!(
@@ -1117,7 +1120,10 @@ fn emit_scalar_const_pool(out: &mut String, pool: &ScalarConstPool) {
             }
             ScalarLiteralKey::Float(bits) => {
                 let value = f64::from_bits(bits);
-                format!("{{ .tag = CV_FLOAT, .as.f = {} }}", format_float_literal(value))
+                format!(
+                    "{{ .tag = CV_FLOAT, .as.f = {} }}",
+                    format_float_literal(value)
+                )
             }
         };
         writeln!(out, "static const CieloValue {} = {};", entry.symbol, init)

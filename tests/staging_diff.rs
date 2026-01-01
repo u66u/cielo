@@ -1,7 +1,3 @@
-use cielo::pipeline::staging_diff::{
-    SnapshotStage, StageSnapshotEntry, collect_snapshot, diff_snapshots, load_snapshot,
-    save_snapshot,
-};
 use cielo::common::ids::{ExprId, SourceId, SymbolId};
 use cielo::common::span::Span;
 use cielo::ir::core::{
@@ -9,9 +5,13 @@ use cielo::ir::core::{
     PrimitiveTypeRef, StmtKind, StmtNode,
 };
 use cielo::pipeline::phases::{BtaTables, Stage};
+use cielo::pipeline::staging_diff::{
+    SnapshotStage, StageSnapshotEntry, collect_snapshot, diff_snapshots, load_snapshot,
+    save_snapshot,
+};
 use cielo::sema::effect::SortedEffectRow;
-use std::fs;
 use std::collections::BTreeSet;
+use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]

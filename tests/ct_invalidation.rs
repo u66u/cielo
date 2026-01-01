@@ -6,13 +6,7 @@ use cielo::pipeline::ct_invalidation::{
 };
 use cielo::pipeline::phases::{CtCacheKey, CtFileDep};
 
-fn key(
-    word_size: u8,
-    endianness: &str,
-    alignment: u8,
-    policy: &str,
-    version: &str,
-) -> CtCacheKey {
+fn key(word_size: u8, endianness: &str, alignment: u8, policy: &str, version: &str) -> CtCacheKey {
     CtCacheKey {
         target_word_size_bits: word_size,
         target_endianness: endianness.to_owned(),

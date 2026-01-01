@@ -41,10 +41,8 @@ pub fn run(mut bta: BtaClassified) -> Residualized {
         .collect::<Vec<_>>();
     apply_ct_residualization(bta.program_mut(), &ct_tables, &bta_tables);
 
-    let function_effect_summary = collect_function_effect_summary(
-        &pre_residual_function_roots,
-        &bta.sema().effects_of_stmt,
-    );
+    let function_effect_summary =
+        collect_function_effect_summary(&pre_residual_function_roots, &bta.sema().effects_of_stmt);
     rewrite_call_effect_rows(bta.program_mut(), &function_effect_summary);
     erase_function_effect_annotations(bta.program_mut());
     bta.into_residualized(ResidualTables {
@@ -90,11 +88,7 @@ fn rewrite_call_effect_rows(
     }
 }
 
-fn apply_ct_residualization(
-    program: &mut CoreProgram,
-    ct: &CtPropagationTables,
-    bta: &BtaTables,
-) {
+fn apply_ct_residualization(program: &mut CoreProgram, ct: &CtPropagationTables, bta: &BtaTables) {
     for (expr_id, value) in ct.ct_cache.iter() {
         if !should_embed_ct_value(expr_id, bta) {
             continue;

@@ -550,7 +550,12 @@ impl HandlerShapeKey {
         let mut ret_scope = ScopeCanon::default();
         let _ = ret_scope.bind(handler.return_param);
         let mut return_body = Vec::new();
-        push_stmt_shape(program, handler.return_body, &mut ret_scope, &mut return_body);
+        push_stmt_shape(
+            program,
+            handler.return_body,
+            &mut ret_scope,
+            &mut return_body,
+        );
 
         let clauses = handler
             .clauses
@@ -849,9 +854,7 @@ fn stage_shape_tag(stage: crate::ir::core::StageDirective) -> ShapeTag {
 }
 
 fn push_count(len: usize, out: &mut Vec<ShapeToken>) {
-    out.push(ShapeToken::Count(
-        u32::try_from(len).unwrap_or(u32::MAX),
-    ));
+    out.push(ShapeToken::Count(u32::try_from(len).unwrap_or(u32::MAX)));
 }
 
 fn clone_stmt_graph(

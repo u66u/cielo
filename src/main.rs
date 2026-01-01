@@ -437,7 +437,10 @@ fn emit_staging_diff(snapshot_path: &Path, residual: &Residualized) {
     }
 
     if let Err(err) = save_ct_snapshot(dep_path.as_path(), &current_ct) {
-        eprintln!("failed to persist ct dependency snapshot {}: {err}", dep_path.display());
+        eprintln!(
+            "failed to persist ct dependency snapshot {}: {err}",
+            dep_path.display()
+        );
     }
 }
 
