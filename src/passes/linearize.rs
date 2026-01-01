@@ -948,6 +948,7 @@ fn classify_clause_convention(program: &CoreProgram, clause: &HandlerClause) -> 
     }
 }
 
+/// this is like 85-90% of cases
 fn is_tail_resumptive_clause(program: &CoreProgram, stmt_id: StmtId, resume_var: VarId) -> bool {
     let mut memo = HashMap::new();
     let mut visiting = HashSet::new();
