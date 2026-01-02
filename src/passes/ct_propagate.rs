@@ -20,12 +20,17 @@
 use std::collections::HashSet;
 use std::fs;
 use std::hash::{Hash, Hasher};
+use std::path::Path as FsPath;
 use std::path::Path;
 
 use crate::common::densemap::DenseMap;
 use crate::common::ids::ExprId;
 use crate::ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, OpCategory, UnaryOp};
 use crate::pipeline::compiler::{Endianness, TargetSpec};
+use crate::pipeline::ct_query_cache::{
+    CtQueryCacheSnapshot, deps_match, fingerprint_program, load_snapshot as load_query_snapshot,
+    normalized_file_deps, save_snapshot as save_query_snapshot,
+};
 use crate::pipeline::phases::{
     CtCacheKey, CtEvalStats, CtFileDep, CtPropagated, CtPropagationTables, Monomorphized,
 };
@@ -34,13 +39,48 @@ use crate::sema::effect::EffectFlags;
 const EVALUATOR_POLICY: &str = "v1-int-wrap-litnorm";
 
 pub fn run(mono: Monomorphized, target: TargetSpec) -> CtPropagated {
+    run_with_query_cache(mono, target, None)
+}
+
+pub fn run_with_query_cache(
+    mono: Monomorphized,
+    target: TargetSpec,
+    query_cache_path: Option<&FsPath>,
+) -> CtPropagated {
     let mut ct = CtPropagationTables::default();
     ct.cache_key = build_cache_key(target);
     ct.file_deps = collect_file_deps(mono.program(), mono.sema());
+    ct.file_deps = normalized_file_deps(ct.file_deps);
 
-    let (ct_cache, eval_stats) = compute_ct_cache(mono.program(), target);
-    ct.ct_cache = ct_cache;
-    ct.eval_stats = eval_stats;
+    let mut used_query_cache = false;
+    if let Some(path) = query_cache_path {
+        let program_fingerprint = fingerprint_program(mono.program());
+        if let Ok(snapshot) = load_query_snapshot(path)
+            && snapshot.program_fingerprint == program_fingerprint
+            && snapshot.cache_key == ct.cache_key
+            && deps_match(snapshot.file_deps.as_slice(), ct.file_deps.as_slice())
+        {
+            ct.ct_cache = snapshot.ct_cache;
+            used_query_cache = true;
+            ct.eval_stats.iterations = 1;
+            ct.eval_stats.cache_hits = ct.ct_cache.len().try_into().unwrap_or(u32::MAX);
+        }
+    }
+
+    if !used_query_cache {
+        let (ct_cache, eval_stats) = compute_ct_cache(mono.program(), target);
+        ct.ct_cache = ct_cache;
+        ct.eval_stats = eval_stats;
+        if let Some(path) = query_cache_path {
+            let snapshot = CtQueryCacheSnapshot {
+                cache_key: ct.cache_key.clone(),
+                file_deps: ct.file_deps.clone(),
+                program_fingerprint: fingerprint_program(mono.program()),
+                ct_cache: ct.ct_cache.clone(),
+            };
+            let _ = save_query_snapshot(path, &snapshot);
+        }
+    }
 
     ct.branch_decisions = ct
         .ct_cache

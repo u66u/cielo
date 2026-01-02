@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::common::diagnostics::DiagnosticBag;
 use crate::common::ids::SourceId;
 use crate::common::symbols::Interner;
@@ -43,9 +45,19 @@ impl Default for TargetSpec {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CompilerConfig {
     pub target: TargetSpec,
+    pub ct_query_cache_path: Option<PathBuf>,
+}
+
+impl Default for CompilerConfig {
+    fn default() -> Self {
+        Self {
+            target: TargetSpec::default(),
+            ct_query_cache_path: None,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -66,22 +78,19 @@ impl Compiler {
     }
 
     pub fn config(&self) -> CompilerConfig {
-        self.config
+        self.config.clone()
     }
 
     pub fn bootstrap_core(&self, program: CoreProgram) -> CoreBuilt {
-        let _ = self.config;
         CoreBuilt::new(program, DiagnosticBag::default())
     }
 
     pub fn parse(&self, source: &str, source_id: SourceId, interner: &mut Interner) -> Parsed {
-        let _ = self.config;
         let parsed = parse_source(source, source_id, interner);
         Parsed::new(parsed.program, parsed.diagnostics)
     }
 
     pub fn lower_parsed_to_core(&self, parsed: Parsed) -> CoreBuilt {
-        let _ = self.config;
         let lowered = lower_program(parsed.ast(), LowerConfig::default());
         parsed.into_core_built(lowered.program, lowered.diagnostics)
     }
@@ -91,7 +100,6 @@ impl Compiler {
         parsed: Parsed,
         config: LowerConfig,
     ) -> CoreBuilt {
-        let _ = self.config;
         let lowered = lower_program(parsed.ast(), config);
         parsed.into_core_built(lowered.program, lowered.diagnostics)
     }
@@ -149,21 +157,22 @@ impl Compiler {
     }
 
     fn monomorphize(&self, typed: Typed) -> Monomorphized {
-        let _ = self.config.target;
         monomorphize::run(typed)
     }
 
     fn ct_propagate(&self, mono: Monomorphized) -> CtPropagated {
-        ct_propagate::run(mono, self.config.target)
+        ct_propagate::run_with_query_cache(
+            mono,
+            self.config.target,
+            self.config.ct_query_cache_path.as_deref(),
+        )
     }
 
     fn classify_staging(&self, ct: CtPropagated) -> BtaClassified {
-        let _ = self.config.target;
         bta::run(ct)
     }
 
     fn residualize(&self, bta: BtaClassified) -> Residualized {
-        let _ = self.config.target;
         residualize::run(bta)
     }
 }

@@ -16,6 +16,7 @@ use cielo::pipeline::ct_invalidation::{
     load_snapshot as load_ct_snapshot, save_snapshot as save_ct_snapshot,
     sidecar_path as ct_sidecar_path,
 };
+use cielo::pipeline::ct_query_cache::sidecar_path as query_cache_sidecar_path;
 use cielo::pipeline::phases::{Residualized, Stage};
 use cielo::pipeline::provenance::runtime_provenance_lines;
 use cielo::pipeline::staging_diff::{
@@ -71,7 +72,11 @@ enum DumpKind {
 
 fn main() {
     let cli = Cli::parse();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let mut config = CompilerConfig::default();
+    if cli.staging_diff {
+        config.ct_query_cache_path = Some(query_cache_sidecar_path(cli.staging_snapshot.as_path()));
+    }
+    let compiler = Compiler::new(config);
     let target = compiler.config().target;
     println!(
         "cielo bootstrap ready (target: {}-bit {:?})",
