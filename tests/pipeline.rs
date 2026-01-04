@@ -651,6 +651,110 @@ fn bta_not_persistable_diagnostic_points_to_boundary_stmt_span() {
         diag.message.contains("statement s"),
         "diagnostic message should identify the boundary statement id"
     );
+    assert!(
+        diag.message.contains("return-value"),
+        "diagnostic message should include the boundary crossing role"
+    );
+}
+
+#[test]
+fn bta_not_persistable_diagnostic_reports_call_arg_boundary_role() {
+    let mut program = CoreProgram::new();
+    let source = SourceId::from_u32(18);
+    let span = Span::new(source, 10, 20);
+
+    let one = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(1)),
+    });
+    let two = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(2)),
+    });
+    let non_persistable_ct_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Add,
+            lhs: one,
+            rhs: two,
+        },
+    });
+
+    let helper_ret_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(0)),
+    });
+    let helper_ret_stmt = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(helper_ret_expr),
+    });
+    let helper_fn = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(2),
+        params: vec![VarId::from_u32(0)],
+        param_types: vec![CoreTypeRef::Primitive(PrimitiveTypeRef::Int)],
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::empty(),
+        body: helper_ret_stmt,
+        ct_only: false,
+        span,
+    });
+
+    let ret_var = VarId::from_u32(1);
+    let ret_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Var(ret_var),
+    });
+    let ret_stmt = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(ret_expr),
+    });
+    let call_stmt = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Call {
+            result: ret_var,
+            callee: helper_fn,
+            args: vec![non_persistable_ct_expr],
+            effects: SortedEffectRow::empty(),
+            next: ret_stmt,
+        },
+    });
+
+    let main_fn = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(1),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::empty(),
+        body: call_stmt,
+        ct_only: false,
+        span,
+    });
+    program.set_entrypoints([main_fn]);
+
+    let mut sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
+    sema.type_of_expr[non_persistable_ct_expr.index()] = Some(TypeId::new(0));
+    sema.persistability_of_type = vec![Persistability::NonPersistable];
+
+    let mut ct = CtPropagationTables::default();
+    let _ = ct.ct_cache.insert(non_persistable_ct_expr, Literal::Int(3));
+    let classified = bta::run(cielo::pipeline::phases::CtPropagated::new(
+        program,
+        DiagnosticBag::default(),
+        sema,
+        MonomorphizationSummary::default(),
+        ct,
+    ));
+    let diag = classified
+        .diagnostics()
+        .entries()
+        .iter()
+        .find(|diag| diag.code == "BTA_NOT_PERSISTABLE_BOUNDARY")
+        .expect("boundary diagnostic");
+
+    assert!(
+        diag.message.contains("call-arg#0"),
+        "diagnostic should report exact call-argument boundary role"
+    );
 }
 
 #[test]
