@@ -85,12 +85,18 @@ fn enforce_persistability_boundaries(
         let _ = bta
             .stage_of_expr
             .insert(expr_id, Stage::Rt(Reason::NotPersistable(type_id)));
-        let boundary_stmt = uses.first_boundary_stmt(expr_id);
-        let boundary_span = boundary_stmt
-            .and_then(|stmt_id| program.stmt(stmt_id).map(|stmt| stmt.span))
+        let boundary_use = uses.first_boundary_use(expr_id);
+        let boundary_span = boundary_use
+            .and_then(|boundary| program.stmt(boundary.stmt_id).map(|stmt| stmt.span))
             .unwrap_or(expr.span);
-        let boundary_hint = boundary_stmt
-            .map(|stmt_id| format!(" at statement s{}", stmt_id.as_u32()))
+        let boundary_hint = boundary_use
+            .map(|boundary| {
+                format!(
+                    " at statement s{} via {}",
+                    boundary.stmt_id.as_u32(),
+                    boundary.kind.describe()
+                )
+            })
             .unwrap_or_default();
         diagnostics.error(
             "BTA_NOT_PERSISTABLE_BOUNDARY",
@@ -108,7 +114,7 @@ fn enforce_persistability_boundaries(
 #[derive(Clone, Debug)]
 struct ExprUseIndex {
     expr_parents: Vec<Vec<ExprId>>,
-    stmt_uses: Vec<Vec<StmtId>>,
+    stmt_uses: Vec<Vec<BoundaryUse>>,
 }
 
 impl ExprUseIndex {
@@ -147,10 +153,61 @@ impl ExprUseIndex {
         let mut stmt_uses = vec![Vec::new(); expr_count];
         for (stmt_idx, stmt) in program.stmts().iter().enumerate() {
             let stmt_id = StmtId::new(stmt_idx);
-            for expr in stmt.child_exprs() {
-                if expr.index() < expr_count {
-                    stmt_uses[expr.index()].push(stmt_id);
+            match &stmt.kind {
+                StmtKind::Return(expr) => {
+                    push_stmt_use(&mut stmt_uses, expr_count, *expr, stmt_id, BoundaryUseKind::ReturnValue);
                 }
+                StmtKind::Let { value, .. } => {
+                    push_stmt_use(&mut stmt_uses, expr_count, *value, stmt_id, BoundaryUseKind::LetValue);
+                }
+                StmtKind::Call { args, .. } => {
+                    for (arg_idx, arg) in args.iter().copied().enumerate() {
+                        push_stmt_use(
+                            &mut stmt_uses,
+                            expr_count,
+                            arg,
+                            stmt_id,
+                            BoundaryUseKind::CallArg(arg_idx),
+                        );
+                    }
+                }
+                StmtKind::Resume { arg, .. } => {
+                    push_stmt_use(&mut stmt_uses, expr_count, *arg, stmt_id, BoundaryUseKind::ResumeArg);
+                }
+                StmtKind::If { cond, .. } => {
+                    push_stmt_use(
+                        &mut stmt_uses,
+                        expr_count,
+                        *cond,
+                        stmt_id,
+                        BoundaryUseKind::IfCondition,
+                    );
+                }
+                StmtKind::Match { scrutinee, .. } => {
+                    push_stmt_use(
+                        &mut stmt_uses,
+                        expr_count,
+                        *scrutinee,
+                        stmt_id,
+                        BoundaryUseKind::MatchScrutinee,
+                    );
+                }
+                StmtKind::Perform { args, .. } => {
+                    for (arg_idx, arg) in args.iter().copied().enumerate() {
+                        push_stmt_use(
+                            &mut stmt_uses,
+                            expr_count,
+                            arg,
+                            stmt_id,
+                            BoundaryUseKind::PerformArg(arg_idx),
+                        );
+                    }
+                }
+                StmtKind::Val { .. }
+                | StmtKind::Handle { .. }
+                | StmtKind::Stage { .. }
+                | StmtKind::Hole { .. }
+                | StmtKind::Error(_) => {}
             }
         }
 
@@ -160,26 +217,69 @@ impl ExprUseIndex {
         }
     }
 
-    fn first_boundary_stmt(&self, expr_id: ExprId) -> Option<StmtId> {
+    fn first_boundary_use(&self, expr_id: ExprId) -> Option<BoundaryUse> {
         let mut stack = vec![expr_id];
         let mut seen = HashSet::new();
         while let Some(current) = stack.pop() {
             if !seen.insert(current) {
                 continue;
             }
-            if let Some(stmt_id) = self
+            if let Some(boundary_use) = self
                 .stmt_uses
                 .get(current.index())
                 .and_then(|uses| uses.first())
                 .copied()
             {
-                return Some(stmt_id);
+                return Some(boundary_use);
             }
             if let Some(parents) = self.expr_parents.get(current.index()) {
                 stack.extend(parents.iter().copied());
             }
         }
         None
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BoundaryUse {
+    stmt_id: StmtId,
+    kind: BoundaryUseKind,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum BoundaryUseKind {
+    ReturnValue,
+    LetValue,
+    CallArg(usize),
+    PerformArg(usize),
+    ResumeArg,
+    IfCondition,
+    MatchScrutinee,
+}
+
+impl BoundaryUseKind {
+    fn describe(self) -> String {
+        match self {
+            Self::ReturnValue => "return-value".to_owned(),
+            Self::LetValue => "let-value".to_owned(),
+            Self::CallArg(index) => format!("call-arg#{index}"),
+            Self::PerformArg(index) => format!("perform-arg#{index}"),
+            Self::ResumeArg => "resume-arg".to_owned(),
+            Self::IfCondition => "if-condition".to_owned(),
+            Self::MatchScrutinee => "match-scrutinee".to_owned(),
+        }
+    }
+}
+
+fn push_stmt_use(
+    stmt_uses: &mut [Vec<BoundaryUse>],
+    expr_count: usize,
+    expr: ExprId,
+    stmt_id: StmtId,
+    kind: BoundaryUseKind,
+) {
+    if expr.index() < expr_count {
+        stmt_uses[expr.index()].push(BoundaryUse { stmt_id, kind });
     }
 }
 
