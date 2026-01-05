@@ -758,6 +758,120 @@ fn residualize_skips_runtime_forced_cached_expr_even_when_literal_is_available()
 }
 
 #[test]
+fn residualize_recomputes_function_effect_summary_from_rewritten_ir() {
+    let mut program = CoreProgram::new();
+    let span = Span::synthetic();
+    let effect = EffectLabelId::from_u32(0);
+
+    let cond = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Bool(false)),
+    });
+    let zero = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(0)),
+    });
+    let one = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(1)),
+    });
+    let call_result_var = VarId::from_u32(10);
+    let call_result_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Var(call_result_var),
+    });
+
+    let callee_then_ret = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(zero),
+    });
+    let callee_then = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Perform {
+            result: None,
+            effect,
+            operation: SymbolId::from_u32(701),
+            args: Vec::new(),
+            next: callee_then_ret,
+        },
+    });
+    let callee_else = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(one),
+    });
+    let callee_body = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::If {
+            cond,
+            then_branch: callee_then,
+            else_branch: callee_else,
+        },
+    });
+    let callee_id = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(700),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::singleton(effect),
+        body: callee_body,
+        ct_only: false,
+        span,
+    });
+
+    let main_ret = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(call_result_expr),
+    });
+    let main_body = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Call {
+            result: call_result_var,
+            callee: callee_id,
+            args: Vec::new(),
+            effects: SortedEffectRow::singleton(effect),
+            next: main_ret,
+        },
+    });
+    let main_id = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(702),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::empty(),
+        body: main_body,
+        ct_only: false,
+        span,
+    });
+    program.set_entrypoints([main_id]);
+
+    let mut sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
+    sema.effects_of_stmt[callee_body.index()] = SortedEffectRow::singleton(effect);
+    let classified = BtaClassified::new(
+        program,
+        DiagnosticBag::default(),
+        sema,
+        MonomorphizationSummary::default(),
+        CtPropagationTables::default(),
+        BtaTables::default(),
+    );
+    let residual = residualize::run(classified);
+
+    assert_eq!(
+        residual.residual().function_effect_summary.get(&callee_id),
+        Some(&SortedEffectRow::empty()),
+        "callee summary should follow pruned residual body, not stale pre-residual stmt effects"
+    );
+    let call_effects = match residual.program().stmt(main_body).map(|stmt| &stmt.kind) {
+        Some(StmtKind::Call { effects, .. }) => effects,
+        other => panic!("expected main body to remain a call, got {other:?}"),
+    };
+    assert!(
+        call_effects.is_empty(),
+        "call effect row should be rewritten from recomputed residual function summary"
+    );
+}
+
+#[test]
 fn bta_marks_ct_expr_runtime_when_type_is_non_persistable() {
     let mut program = CoreProgram::new();
     let span = Span::synthetic();
