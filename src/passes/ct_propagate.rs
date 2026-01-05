@@ -104,12 +104,15 @@ enum FoldKind {
     Literal,
     Unary,
     Binary,
-    UnaryHostFloat,
 }
 
 #[derive(Clone, Debug)]
 enum EvalOutcome {
-    Folded { value: Literal, kind: FoldKind },
+    Folded {
+        value: Literal,
+        kind: FoldKind,
+        used_host_float: bool,
+    },
     MissingInputs,
     Unsupported,
 }
@@ -128,6 +131,7 @@ fn eval_expr(
             EvalOutcome::Folded {
                 value,
                 kind: FoldKind::Literal,
+                used_host_float: false,
             }
         }
         ExprKind::Unary { op, expr } => {
@@ -137,12 +141,11 @@ fn eval_expr(
             let Some((value, used_host_float)) = eval_unary(*op, value, target) else {
                 return EvalOutcome::Unsupported;
             };
-            let kind = if used_host_float {
-                FoldKind::UnaryHostFloat
-            } else {
-                FoldKind::Unary
-            };
-            EvalOutcome::Folded { value, kind }
+            EvalOutcome::Folded {
+                value,
+                kind: FoldKind::Unary,
+                used_host_float,
+            }
         }
         ExprKind::Binary { op, lhs, rhs } => {
             let Some(left) = cache.get(lhs) else {
@@ -151,12 +154,13 @@ fn eval_expr(
             let Some(right) = cache.get(rhs) else {
                 return EvalOutcome::MissingInputs;
             };
-            let Some(value) = eval_binary(*op, left, right, target) else {
+            let Some((value, used_host_float)) = eval_binary(*op, left, right, target) else {
                 return EvalOutcome::Unsupported;
             };
             EvalOutcome::Folded {
                 value,
                 kind: FoldKind::Binary,
+                used_host_float,
             }
         }
         _ => EvalOutcome::Unsupported,
@@ -181,7 +185,11 @@ fn compute_ct_cache(
             }
             stats.eval_attempts = stats.eval_attempts.saturating_add(1);
             match eval_expr(expr, &cache, target) {
-                EvalOutcome::Folded { value, kind } => {
+                EvalOutcome::Folded {
+                    value,
+                    kind,
+                    used_host_float,
+                } => {
                     let _ = cache.insert(expr_id, value);
                     stats.cache_inserts = stats.cache_inserts.saturating_add(1);
                     match kind {
@@ -194,10 +202,9 @@ fn compute_ct_cache(
                         FoldKind::Binary => {
                             stats.folded_binary = stats.folded_binary.saturating_add(1)
                         }
-                        FoldKind::UnaryHostFloat => {
-                            stats.folded_unary = stats.folded_unary.saturating_add(1);
-                            stats.folded_float_host = stats.folded_float_host.saturating_add(1);
-                        }
+                    }
+                    if used_host_float {
+                        stats.folded_float_host = stats.folded_float_host.saturating_add(1);
                     }
                     changed = true;
                 }
@@ -232,23 +239,40 @@ fn eval_binary(
     left: &Literal,
     right: &Literal,
     target: TargetSpec,
-) -> Option<Literal> {
+) -> Option<(Literal, bool)> {
     match (op.category(), left, right) {
         (OpCategory::Arithmetic, Literal::Int(a), Literal::Int(b)) => {
             let lhs = normalize_int(*a, target);
             let rhs = normalize_int(*b, target);
             match op {
-                BinaryOp::Add => Some(Literal::Int(normalize_int(lhs.wrapping_add(rhs), target))),
-                BinaryOp::Sub => Some(Literal::Int(normalize_int(lhs.wrapping_sub(rhs), target))),
-                BinaryOp::Mul => Some(Literal::Int(normalize_int(lhs.wrapping_mul(rhs), target))),
+                BinaryOp::Add => {
+                    Some((Literal::Int(normalize_int(lhs.wrapping_add(rhs), target)), false))
+                }
+                BinaryOp::Sub => {
+                    Some((Literal::Int(normalize_int(lhs.wrapping_sub(rhs), target)), false))
+                }
+                BinaryOp::Mul => {
+                    Some((Literal::Int(normalize_int(lhs.wrapping_mul(rhs), target)), false))
+                }
                 BinaryOp::Div if rhs != 0 => lhs
                     .checked_div(rhs)
-                    .map(|value| Literal::Int(normalize_int(value, target))),
+                    .map(|value| (Literal::Int(normalize_int(value, target)), false)),
                 BinaryOp::Mod if rhs != 0 => lhs
                     .checked_rem(rhs)
-                    .map(|value| Literal::Int(normalize_int(value, target))),
+                    .map(|value| (Literal::Int(normalize_int(value, target)), false)),
                 _ => None,
             }
+        }
+        (OpCategory::Arithmetic, Literal::Float(a), Literal::Float(b)) => {
+            let value = match op {
+                BinaryOp::Add => Some(*a + *b),
+                BinaryOp::Sub => Some(*a - *b),
+                BinaryOp::Mul => Some(*a * *b),
+                BinaryOp::Div if *b != 0.0 => Some(*a / *b),
+                BinaryOp::Mod if *b != 0.0 => Some(*a % *b),
+                _ => None,
+            }?;
+            Some((Literal::Float(value), true))
         }
         (OpCategory::Comparison, Literal::Int(a), Literal::Int(b)) => {
             let lhs = normalize_int(*a, target);
@@ -260,7 +284,27 @@ fn eval_binary(
                 BinaryOp::Ge => lhs >= rhs,
                 _ => return None,
             };
-            Some(Literal::Bool(value))
+            Some((Literal::Bool(value), false))
+        }
+        (OpCategory::Comparison, Literal::Float(a), Literal::Float(b)) => {
+            let value = match op {
+                BinaryOp::Lt => *a < *b,
+                BinaryOp::Le => *a <= *b,
+                BinaryOp::Gt => *a > *b,
+                BinaryOp::Ge => *a >= *b,
+                _ => return None,
+            };
+            Some((Literal::Bool(value), true))
+        }
+        (OpCategory::Comparison, Literal::Char(a), Literal::Char(b)) => {
+            let value = match op {
+                BinaryOp::Lt => *a < *b,
+                BinaryOp::Le => *a <= *b,
+                BinaryOp::Gt => *a > *b,
+                BinaryOp::Ge => *a >= *b,
+                _ => return None,
+            };
+            Some((Literal::Bool(value), false))
         }
         (OpCategory::Equality, Literal::Int(a), Literal::Int(b)) => {
             let lhs = normalize_int(*a, target);
@@ -270,7 +314,47 @@ fn eval_binary(
                 BinaryOp::Ne => lhs != rhs,
                 _ => return None,
             };
-            Some(Literal::Bool(value))
+            Some((Literal::Bool(value), false))
+        }
+        (OpCategory::Equality, Literal::Bool(a), Literal::Bool(b)) => {
+            let value = match op {
+                BinaryOp::Eq => *a == *b,
+                BinaryOp::Ne => *a != *b,
+                _ => return None,
+            };
+            Some((Literal::Bool(value), false))
+        }
+        (OpCategory::Equality, Literal::Float(a), Literal::Float(b)) => {
+            let value = match op {
+                BinaryOp::Eq => *a == *b,
+                BinaryOp::Ne => *a != *b,
+                _ => return None,
+            };
+            Some((Literal::Bool(value), true))
+        }
+        (OpCategory::Equality, Literal::Char(a), Literal::Char(b)) => {
+            let value = match op {
+                BinaryOp::Eq => *a == *b,
+                BinaryOp::Ne => *a != *b,
+                _ => return None,
+            };
+            Some((Literal::Bool(value), false))
+        }
+        (OpCategory::Equality, Literal::String(a), Literal::String(b)) => {
+            let value = match op {
+                BinaryOp::Eq => *a == *b,
+                BinaryOp::Ne => *a != *b,
+                _ => return None,
+            };
+            Some((Literal::Bool(value), false))
+        }
+        (OpCategory::Equality, Literal::Unit, Literal::Unit) => {
+            let value = match op {
+                BinaryOp::Eq => true,
+                BinaryOp::Ne => false,
+                _ => return None,
+            };
+            Some((Literal::Bool(value), false))
         }
         (OpCategory::Logical, Literal::Bool(a), Literal::Bool(b)) => {
             let value = match op {
@@ -278,7 +362,7 @@ fn eval_binary(
                 BinaryOp::Or => *a || *b,
                 _ => return None,
             };
-            Some(Literal::Bool(value))
+            Some((Literal::Bool(value), false))
         }
         _ => None,
     }
