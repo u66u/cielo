@@ -33,16 +33,9 @@ use crate::sema::effect::SortedEffectRow;
 pub fn run(mut bta: BtaClassified) -> Residualized {
     let ct_tables = bta.ct().clone();
     let bta_tables = bta.bta().clone();
-    let pre_residual_function_roots = bta
-        .program()
-        .functions()
-        .iter()
-        .map(|function| function.body)
-        .collect::<Vec<_>>();
     apply_ct_residualization(bta.program_mut(), &ct_tables, &bta_tables);
 
-    let function_effect_summary =
-        collect_function_effect_summary(&pre_residual_function_roots, &bta.sema().effects_of_stmt);
+    let function_effect_summary = collect_function_effect_summary(bta.program());
     rewrite_call_effect_rows(bta.program_mut(), &function_effect_summary);
     erase_function_effect_annotations(bta.program_mut());
     bta.into_residualized(ResidualTables {
@@ -50,21 +43,140 @@ pub fn run(mut bta: BtaClassified) -> Residualized {
     })
 }
 
-fn collect_function_effect_summary(
-    function_roots: &[StmtId],
-    stmt_effects: &[SortedEffectRow],
-) -> HashMap<FuncId, SortedEffectRow> {
-    function_roots
-        .iter()
+fn collect_function_effect_summary(program: &CoreProgram) -> HashMap<FuncId, SortedEffectRow> {
+    let function_count = program.functions().len();
+    let mut summaries = vec![SortedEffectRow::empty(); function_count];
+    let max_iters = function_count
+        .saturating_mul(program.effects().len().max(1).saturating_add(1))
+        .max(1);
+
+    for _ in 0..max_iters {
+        let mut changed = false;
+        for (idx, function) in program.functions().iter().enumerate() {
+            let mut memo = HashMap::new();
+            let mut visiting = HashSet::new();
+            let recomputed =
+                infer_stmt_effects(program, function.body, &summaries, &mut memo, &mut visiting);
+            if recomputed != summaries[idx] {
+                summaries[idx] = recomputed;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    summaries
+        .into_iter()
         .enumerate()
-        .map(|(idx, root_stmt)| {
-            let row = stmt_effects
-                .get(root_stmt.index())
+        .map(|(idx, row)| (FuncId::new(idx), row))
+        .collect()
+}
+
+fn infer_stmt_effects(
+    program: &CoreProgram,
+    stmt_id: StmtId,
+    summaries: &[SortedEffectRow],
+    memo: &mut HashMap<StmtId, SortedEffectRow>,
+    visiting: &mut HashSet<StmtId>,
+) -> SortedEffectRow {
+    if let Some(cached) = memo.get(&stmt_id).cloned() {
+        return cached;
+    }
+    if !visiting.insert(stmt_id) {
+        return SortedEffectRow::empty();
+    }
+
+    let row = match program.stmt(stmt_id).map(|stmt| &stmt.kind) {
+        Some(StmtKind::Return(_) | StmtKind::Hole { .. } | StmtKind::Error(_)) => {
+            SortedEffectRow::empty()
+        }
+        Some(StmtKind::Let { next, .. }) | Some(StmtKind::Resume { next, .. }) => {
+            infer_stmt_effects(program, *next, summaries, memo, visiting)
+        }
+        Some(StmtKind::Val { value, next, .. }) => {
+            let value_row = infer_stmt_effects(program, *value, summaries, memo, visiting);
+            let next_row = infer_stmt_effects(program, *next, summaries, memo, visiting);
+            value_row.union(&next_row)
+        }
+        Some(StmtKind::Call { callee, next, .. }) => {
+            let callee_row = summaries
+                .get(callee.index())
                 .cloned()
                 .unwrap_or_else(SortedEffectRow::empty);
-            (FuncId::new(idx), row)
-        })
-        .collect()
+            let next_row = infer_stmt_effects(program, *next, summaries, memo, visiting);
+            callee_row.union(&next_row)
+        }
+        Some(StmtKind::Perform { effect, next, .. }) => {
+            let perform_row = SortedEffectRow::singleton(*effect);
+            let next_row = infer_stmt_effects(program, *next, summaries, memo, visiting);
+            perform_row.union(&next_row)
+        }
+        Some(StmtKind::If {
+            then_branch,
+            else_branch,
+            ..
+        }) => {
+            let then_row = infer_stmt_effects(program, *then_branch, summaries, memo, visiting);
+            let else_row = infer_stmt_effects(program, *else_branch, summaries, memo, visiting);
+            then_row.union(&else_row)
+        }
+        Some(StmtKind::Match { arms, default, .. }) => {
+            let mut row = SortedEffectRow::empty();
+            for arm in arms {
+                row = row.union(&infer_stmt_effects(program, arm.body, summaries, memo, visiting));
+            }
+            if let Some(default_stmt) = default {
+                row = row.union(&infer_stmt_effects(
+                    program,
+                    *default_stmt,
+                    summaries,
+                    memo,
+                    visiting,
+                ));
+            }
+            row
+        }
+        Some(StmtKind::Handle {
+            handler,
+            body,
+            next,
+        }) => {
+            let mut row = infer_stmt_effects(program, *body, summaries, memo, visiting);
+            if let Some(handled_effect) = program.handlers().get(handler.index()).map(|h| h.effect) {
+                row = row.subtract(&SortedEffectRow::singleton(handled_effect));
+            }
+            if let Some(next_stmt) = next {
+                row = row.union(&infer_stmt_effects(
+                    program,
+                    *next_stmt,
+                    summaries,
+                    memo,
+                    visiting,
+                ));
+            }
+            row
+        }
+        Some(StmtKind::Stage { body, next, .. }) => {
+            let mut row = infer_stmt_effects(program, *body, summaries, memo, visiting);
+            if let Some(next_stmt) = next {
+                row = row.union(&infer_stmt_effects(
+                    program,
+                    *next_stmt,
+                    summaries,
+                    memo,
+                    visiting,
+                ));
+            }
+            row
+        }
+        None => SortedEffectRow::empty(),
+    };
+
+    visiting.remove(&stmt_id);
+    memo.insert(stmt_id, row.clone());
+    row
 }
 
 fn rewrite_call_effect_rows(
