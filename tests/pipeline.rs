@@ -429,6 +429,259 @@ fn ct_propagate_tracks_host_float_folds_explicitly() {
 }
 
 #[test]
+fn ct_propagate_folds_float_binary_surface_and_counts_host_float_folds() {
+    let mut program = CoreProgram::new();
+    let span = Span::synthetic();
+
+    let lhs = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Float(1.25)),
+    });
+    let rhs = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Float(0.5)),
+    });
+    let add = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Add,
+            lhs,
+            rhs,
+        },
+    });
+    let sub = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Sub,
+            lhs,
+            rhs,
+        },
+    });
+    let mul = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Mul,
+            lhs,
+            rhs,
+        },
+    });
+    let div = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Div,
+            lhs,
+            rhs,
+        },
+    });
+    let rem = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Mod,
+            lhs,
+            rhs,
+        },
+    });
+    let lt = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Lt,
+            lhs,
+            rhs,
+        },
+    });
+    let ge = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Ge,
+            lhs,
+            rhs,
+        },
+    });
+    let eq = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Eq,
+            lhs,
+            rhs,
+        },
+    });
+    let ne = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Ne,
+            lhs,
+            rhs,
+        },
+    });
+    let ret = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(ne),
+    });
+    let main_id = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(102),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Bool),
+        declared_effects: SortedEffectRow::empty(),
+        body: ret,
+        ct_only: false,
+        span,
+    });
+    program.set_entrypoints([main_id]);
+
+    let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
+    let mono = cielo::pipeline::phases::Monomorphized::new(
+        program,
+        DiagnosticBag::default(),
+        sema,
+        MonomorphizationSummary::default(),
+    );
+    let ct = ct_propagate::run(mono, CompilerConfig::default().target);
+    let stats = ct.ct().eval_stats;
+
+    assert_eq!(ct.ct().ct_cache.get(&add), Some(&Literal::Float(1.75)));
+    assert_eq!(ct.ct().ct_cache.get(&sub), Some(&Literal::Float(0.75)));
+    assert_eq!(ct.ct().ct_cache.get(&mul), Some(&Literal::Float(0.625)));
+    assert_eq!(ct.ct().ct_cache.get(&div), Some(&Literal::Float(2.5)));
+    assert_eq!(ct.ct().ct_cache.get(&rem), Some(&Literal::Float(0.25)));
+    assert_eq!(ct.ct().ct_cache.get(&lt), Some(&Literal::Bool(false)));
+    assert_eq!(ct.ct().ct_cache.get(&ge), Some(&Literal::Bool(true)));
+    assert_eq!(ct.ct().ct_cache.get(&eq), Some(&Literal::Bool(false)));
+    assert_eq!(ct.ct().ct_cache.get(&ne), Some(&Literal::Bool(true)));
+
+    assert_eq!(stats.folded_binary, 9, "all float binary forms should fold");
+    assert_eq!(
+        stats.folded_float_host, 9,
+        "all folded float binary forms should be tracked as host-float folds"
+    );
+}
+
+#[test]
+fn ct_propagate_folds_non_numeric_equality_and_leaves_mixed_types_unresolved() {
+    let mut program = CoreProgram::new();
+    let span = Span::synthetic();
+
+    let bool_true = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Bool(true)),
+    });
+    let bool_false = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Bool(false)),
+    });
+    let char_a = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Char('a')),
+    });
+    let char_b = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Char('b')),
+    });
+    let string_x = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::String("x".to_owned())),
+    });
+    let string_y = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::String("y".to_owned())),
+    });
+    let unit_lhs = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Unit),
+    });
+    let unit_rhs = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Unit),
+    });
+    let int_one = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(1)),
+    });
+    let bool_eq = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Eq,
+            lhs: bool_true,
+            rhs: bool_false,
+        },
+    });
+    let char_ge = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Ge,
+            lhs: char_b,
+            rhs: char_a,
+        },
+    });
+    let string_ne = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Ne,
+            lhs: string_x,
+            rhs: string_y,
+        },
+    });
+    let unit_eq = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Eq,
+            lhs: unit_lhs,
+            rhs: unit_rhs,
+        },
+    });
+    let mixed_eq = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Eq,
+            lhs: int_one,
+            rhs: bool_true,
+        },
+    });
+    let ret = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(unit_eq),
+    });
+    let main_id = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(103),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Bool),
+        declared_effects: SortedEffectRow::empty(),
+        body: ret,
+        ct_only: false,
+        span,
+    });
+    program.set_entrypoints([main_id]);
+
+    let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
+    let mono = cielo::pipeline::phases::Monomorphized::new(
+        program,
+        DiagnosticBag::default(),
+        sema,
+        MonomorphizationSummary::default(),
+    );
+    let ct = ct_propagate::run(mono, CompilerConfig::default().target);
+    let stats = ct.ct().eval_stats;
+
+    assert_eq!(ct.ct().ct_cache.get(&bool_eq), Some(&Literal::Bool(false)));
+    assert_eq!(ct.ct().ct_cache.get(&char_ge), Some(&Literal::Bool(true)));
+    assert_eq!(ct.ct().ct_cache.get(&string_ne), Some(&Literal::Bool(true)));
+    assert_eq!(ct.ct().ct_cache.get(&unit_eq), Some(&Literal::Bool(true)));
+    assert!(
+        !ct.ct().ct_cache.contains_key(&mixed_eq),
+        "mixed-type equality should remain unresolved in ct cache"
+    );
+    assert_eq!(
+        stats.folded_float_host, 0,
+        "non-float folds should not increment host-float counters"
+    );
+    assert!(
+        stats.miss_unsupported >= 1,
+        "mixed-type equality should produce unsupported misses"
+    );
+}
+
+#[test]
 fn residualize_skips_runtime_forced_cached_expr_even_when_literal_is_available() {
     let mut program = CoreProgram::new();
     let span = Span::synthetic();
