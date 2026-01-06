@@ -500,10 +500,15 @@ Functions using CT-only effects or taking TypeInfo arguments are CT-only. Callin
   - 2026-03-18: C emitter pools repeated runtime scalar literals (`Int`/`Bool`/`Char`) as `static const CieloValue`.
   - 2026-03-27: scalar/ctor pooling now includes finite `Float` literals with deterministic bit-pattern keys.
   - 2026-04-04: non-persistable boundary diagnostics now report exact boundary roles (for example `call-arg#0`, `return-value`) in addition to statement ids/spans.
+- Residual effect-summary notes:
+  - 2026-04-05: residualizer now recomputes `FuncId -> EffectRow` from rewritten residual IR (fixpoint over call edges + handler subtraction), then rewrites call-site effect rows from that result.
 - Incremental staging/invalidation notes:
   - 2026-03-28: staging snapshot IDs now use span+kind+structural expression fingerprint (index-free), reducing false churn under expr-index renumbering.
   - 2026-03-28: `ComptimeReadFiles` invalidation reasons are persisted in a sidecar snapshot (`.ctdeps.tsv`) and surfaced as explicit key/dependency deltas (added/removed/changed + cache-key field changes).
   - 2026-04-03: CT propagation now supports a persistent query-cache sidecar (`.ctquery.tsv`) keyed by `{CtCacheKey + normalized file deps + program fingerprint}` and restores cached CT results when keys match.
+- CT evaluator notes:
+  - 2026-04-05: CT fold coverage now includes float arithmetic/comparison/equality and non-numeric equality (`Bool`/`Char`/`String`/`Unit`); `folded_float_host` counts all host-float folds, not only unary negation.
+  - 2026-04-06: host-float folds are finite-only. Non-finite inputs/results (`NaN`/`Inf`) are left unresolved to keep cross-target behavior conservative until strict FP emulation lands.
 
 ## V2 Additions
 
