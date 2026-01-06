@@ -228,7 +228,7 @@ fn eval_unary(op: UnaryOp, value: &Literal, target: TargetSpec) -> Option<(Liter
         (UnaryOp::Neg, Literal::Int(v)) => {
             Some((Literal::Int(normalize_int(v.wrapping_neg(), target)), false))
         }
-        (UnaryOp::Neg, Literal::Float(v)) => Some((Literal::Float(-v), true)),
+        (UnaryOp::Neg, Literal::Float(v)) if v.is_finite() => Some((Literal::Float(-v), true)),
         (UnaryOp::Not, Literal::Bool(v)) => Some((Literal::Bool(!v), false)),
         _ => None,
     }
@@ -264,6 +264,9 @@ fn eval_binary(
             }
         }
         (OpCategory::Arithmetic, Literal::Float(a), Literal::Float(b)) => {
+            if !host_float_operands_supported(*a, *b) {
+                return None;
+            }
             let value = match op {
                 BinaryOp::Add => Some(*a + *b),
                 BinaryOp::Sub => Some(*a - *b),
@@ -272,6 +275,9 @@ fn eval_binary(
                 BinaryOp::Mod if *b != 0.0 => Some(*a % *b),
                 _ => None,
             }?;
+            if !value.is_finite() {
+                return None;
+            }
             Some((Literal::Float(value), true))
         }
         (OpCategory::Comparison, Literal::Int(a), Literal::Int(b)) => {
@@ -287,6 +293,9 @@ fn eval_binary(
             Some((Literal::Bool(value), false))
         }
         (OpCategory::Comparison, Literal::Float(a), Literal::Float(b)) => {
+            if !host_float_operands_supported(*a, *b) {
+                return None;
+            }
             let value = match op {
                 BinaryOp::Lt => *a < *b,
                 BinaryOp::Le => *a <= *b,
@@ -325,6 +334,9 @@ fn eval_binary(
             Some((Literal::Bool(value), false))
         }
         (OpCategory::Equality, Literal::Float(a), Literal::Float(b)) => {
+            if !host_float_operands_supported(*a, *b) {
+                return None;
+            }
             let value = match op {
                 BinaryOp::Eq => *a == *b,
                 BinaryOp::Ne => *a != *b,
@@ -375,6 +387,10 @@ fn normalize_int(value: i64, target: TargetSpec) -> i64 {
     }
     let shift = 64u8.saturating_sub(bits);
     (value << shift) >> shift
+}
+
+fn host_float_operands_supported(lhs: f64, rhs: f64) -> bool {
+    lhs.is_finite() && rhs.is_finite()
 }
 
 fn build_cache_key(target: TargetSpec) -> CtCacheKey {
