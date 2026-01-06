@@ -682,6 +682,112 @@ fn ct_propagate_folds_non_numeric_equality_and_leaves_mixed_types_unresolved() {
 }
 
 #[test]
+fn ct_propagate_skips_non_finite_host_float_folds() {
+    let mut program = CoreProgram::new();
+    let span = Span::synthetic();
+
+    let finite_lhs = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Float(1.0)),
+    });
+    let finite_rhs = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Float(2.0)),
+    });
+    let finite_add = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Add,
+            lhs: finite_lhs,
+            rhs: finite_rhs,
+        },
+    });
+
+    let huge = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Float(f64::MAX)),
+    });
+    let overflow_mul = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Mul,
+            lhs: huge,
+            rhs: huge,
+        },
+    });
+    let inf = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Float(f64::INFINITY)),
+    });
+    let neg_inf = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Unary {
+            op: cielo::ir::core::UnaryOp::Neg,
+            expr: inf,
+        },
+    });
+    let nan = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Float(f64::NAN)),
+    });
+    let nan_eq = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Eq,
+            lhs: nan,
+            rhs: nan,
+        },
+    });
+    let ret = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(finite_add),
+    });
+    let main_id = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(104),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Float),
+        declared_effects: SortedEffectRow::empty(),
+        body: ret,
+        ct_only: false,
+        span,
+    });
+    program.set_entrypoints([main_id]);
+
+    let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
+    let mono = cielo::pipeline::phases::Monomorphized::new(
+        program,
+        DiagnosticBag::default(),
+        sema,
+        MonomorphizationSummary::default(),
+    );
+    let ct = ct_propagate::run(mono, CompilerConfig::default().target);
+    let stats = ct.ct().eval_stats;
+
+    assert_eq!(ct.ct().ct_cache.get(&finite_add), Some(&Literal::Float(3.0)));
+    assert!(
+        !ct.ct().ct_cache.contains_key(&overflow_mul),
+        "float arithmetic that overflows to non-finite must remain unresolved"
+    );
+    assert!(
+        !ct.ct().ct_cache.contains_key(&neg_inf),
+        "unary negation on non-finite inputs must remain unresolved"
+    );
+    assert!(
+        !ct.ct().ct_cache.contains_key(&nan_eq),
+        "equality on non-finite float inputs must remain unresolved"
+    );
+    assert_eq!(
+        stats.folded_float_host, 1,
+        "only finite host-float folds should be tracked"
+    );
+    assert!(
+        stats.miss_unsupported >= 3,
+        "non-finite host-float operations should count as unsupported misses"
+    );
+}
+
+#[test]
 fn residualize_skips_runtime_forced_cached_expr_even_when_literal_is_available() {
     let mut program = CoreProgram::new();
     let span = Span::synthetic();
