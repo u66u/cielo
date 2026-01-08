@@ -18,8 +18,8 @@
 // - O(expr_count * fixpoint_iters), with small bounded iter count in practice
 
 use std::collections::HashSet;
-use std::fs;
-use std::hash::{Hash, Hasher};
+use std::fs::File;
+use std::io::Read;
 use std::path::Path as FsPath;
 use std::path::Path;
 
@@ -450,12 +450,19 @@ fn normalize_path(path: &str) -> String {
 }
 
 fn hash_file_or_missing(path: &str) -> String {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
+    let mut file = match File::open(path) {
+        Ok(file) => file,
         Err(_) => return "missing".to_owned(),
     };
-
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = [0u8; 16 * 1024];
+    loop {
+        let read = match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(_) => return "missing".to_owned(),
+        };
+        hasher.update(&buf[..read]);
+    }
+    hasher.finalize().to_hex().to_string()
 }
