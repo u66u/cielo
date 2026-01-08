@@ -506,6 +506,7 @@ Functions using CT-only effects or taking TypeInfo arguments are CT-only. Callin
   - 2026-03-28: staging snapshot IDs now use span+kind+structural expression fingerprint (index-free), reducing false churn under expr-index renumbering.
   - 2026-03-28: `ComptimeReadFiles` invalidation reasons are persisted in a sidecar snapshot (`.ctdeps.tsv`) and surfaced as explicit key/dependency deltas (added/removed/changed + cache-key field changes).
   - 2026-04-03: CT propagation now supports a persistent query-cache sidecar (`.ctquery.tsv`) keyed by `{CtCacheKey + normalized file deps + program fingerprint}` and restores cached CT results when keys match.
+  - 2026-04-07: `ComptimeReadFiles` dependency content hashes now use BLAKE3 digests (stable format, low collision risk) instead of `DefaultHasher` output.
 - CT evaluator notes:
   - 2026-04-05: CT fold coverage now includes float arithmetic/comparison/equality and non-numeric equality (`Bool`/`Char`/`String`/`Unit`); `folded_float_host` counts all host-float folds, not only unary negation.
   - 2026-04-06: host-float folds are finite-only. Non-finite inputs/results (`NaN`/`Inf`) are left unresolved to keep cross-target behavior conservative until strict FP emulation lands.

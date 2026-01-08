@@ -542,6 +542,7 @@ fn main() -> Int {{
     let residual_1 =
         compiler.compile_source_v0(src.as_str(), SourceId::from_u32(0), &mut interner_1);
     let dep_1 = residual_1.ct().file_deps.first().expect("first dep");
+    let expected_alpha = blake3::hash(b"alpha").to_hex().to_string();
 
     fs::write(&path, "beta").expect("rewrite dep file");
     let mut interner_2 = Interner::new();
@@ -552,6 +553,7 @@ fn main() -> Int {{
         .file_deps
         .first()
         .expect("first dep after edit");
+    let expected_beta = blake3::hash(b"beta").to_hex().to_string();
 
     assert_eq!(
         dep_1.path, dep_2.path,
@@ -560,6 +562,14 @@ fn main() -> Int {{
     assert_ne!(
         dep_1.content_hash, dep_2.content_hash,
         "dependency hash should change when file contents change"
+    );
+    assert_eq!(
+        dep_1.content_hash, expected_alpha,
+        "content hash should be the exact BLAKE3 digest of file bytes"
+    );
+    assert_eq!(
+        dep_2.content_hash, expected_beta,
+        "content hash should be the exact BLAKE3 digest of file bytes"
     );
 }
 
