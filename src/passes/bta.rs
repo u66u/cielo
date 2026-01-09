@@ -82,22 +82,21 @@ fn enforce_persistability_boundaries(
             continue;
         }
 
+        let Some(boundary_use) = uses.first_boundary_use(expr_id) else {
+            continue;
+        };
         let _ = bta
             .stage_of_expr
             .insert(expr_id, Stage::Rt(Reason::NotPersistable(type_id)));
-        let boundary_use = uses.first_boundary_use(expr_id);
-        let boundary_span = boundary_use
-            .and_then(|boundary| program.stmt(boundary.stmt_id).map(|stmt| stmt.span))
+        let boundary_span = program
+            .stmt(boundary_use.stmt_id)
+            .map(|stmt| stmt.span)
             .unwrap_or(expr.span);
-        let boundary_hint = boundary_use
-            .map(|boundary| {
-                format!(
-                    " at statement s{} via {}",
-                    boundary.stmt_id.as_u32(),
-                    boundary.kind.describe()
-                )
-            })
-            .unwrap_or_default();
+        let boundary_hint = format!(
+            " at statement s{} via {}",
+            boundary_use.stmt_id.as_u32(),
+            boundary_use.kind.describe()
+        );
         diagnostics.error(
             "BTA_NOT_PERSISTABLE_BOUNDARY",
             format!(
@@ -151,63 +150,35 @@ impl ExprUseIndex {
         }
 
         let mut stmt_uses = vec![Vec::new(); expr_count];
-        for (stmt_idx, stmt) in program.stmts().iter().enumerate() {
-            let stmt_id = StmtId::new(stmt_idx);
-            match &stmt.kind {
-                StmtKind::Return(expr) => {
-                    push_stmt_use(&mut stmt_uses, expr_count, *expr, stmt_id, BoundaryUseKind::ReturnValue);
-                }
-                StmtKind::Let { value, .. } => {
-                    push_stmt_use(&mut stmt_uses, expr_count, *value, stmt_id, BoundaryUseKind::LetValue);
-                }
-                StmtKind::Call { args, .. } => {
-                    for (arg_idx, arg) in args.iter().copied().enumerate() {
-                        push_stmt_use(
-                            &mut stmt_uses,
-                            expr_count,
-                            arg,
-                            stmt_id,
-                            BoundaryUseKind::CallArg(arg_idx),
-                        );
-                    }
-                }
-                StmtKind::Resume { arg, .. } => {
-                    push_stmt_use(&mut stmt_uses, expr_count, *arg, stmt_id, BoundaryUseKind::ResumeArg);
-                }
-                StmtKind::If { cond, .. } => {
-                    push_stmt_use(
-                        &mut stmt_uses,
-                        expr_count,
-                        *cond,
-                        stmt_id,
-                        BoundaryUseKind::IfCondition,
-                    );
-                }
-                StmtKind::Match { scrutinee, .. } => {
-                    push_stmt_use(
-                        &mut stmt_uses,
-                        expr_count,
-                        *scrutinee,
-                        stmt_id,
-                        BoundaryUseKind::MatchScrutinee,
-                    );
-                }
-                StmtKind::Perform { args, .. } => {
-                    for (arg_idx, arg) in args.iter().copied().enumerate() {
-                        push_stmt_use(
-                            &mut stmt_uses,
-                            expr_count,
-                            arg,
-                            stmt_id,
-                            BoundaryUseKind::PerformArg(arg_idx),
-                        );
-                    }
-                }
-                StmtKind::Val { .. }
-                | StmtKind::Handle { .. }
-                | StmtKind::Stage { .. }
-                | StmtKind::Hole { .. }
-                | StmtKind::Error(_) => {}
+        let mut visited = HashSet::new();
+        for function in program.functions() {
+            collect_stmt_uses(
+                program,
+                function.body,
+                UseContext::Unknown,
+                &mut visited,
+                &mut stmt_uses,
+                expr_count,
+            );
+        }
+        for handler in program.handlers() {
+            collect_stmt_uses(
+                program,
+                handler.return_body,
+                UseContext::Unknown,
+                &mut visited,
+                &mut stmt_uses,
+                expr_count,
+            );
+            for clause in &handler.clauses {
+                collect_stmt_uses(
+                    program,
+                    clause.body,
+                    UseContext::Unknown,
+                    &mut visited,
+                    &mut stmt_uses,
+                    expr_count,
+                );
             }
         }
 
@@ -246,6 +217,34 @@ struct BoundaryUse {
     kind: BoundaryUseKind,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum UseContext {
+    Unknown,
+    ForcedComptime,
+    ForcedRuntime,
+}
+
+impl UseContext {
+    fn encode(self) -> u8 {
+        match self {
+            Self::Unknown => 0,
+            Self::ForcedComptime => 1,
+            Self::ForcedRuntime => 2,
+        }
+    }
+
+    fn boundary_enabled(self) -> bool {
+        !matches!(self, Self::ForcedComptime)
+    }
+
+    fn from_stage(stage: StageDirective) -> Self {
+        match stage {
+            StageDirective::Comptime => Self::ForcedComptime,
+            StageDirective::Runtime => Self::ForcedRuntime,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum BoundaryUseKind {
     ReturnValue,
@@ -276,10 +275,184 @@ fn push_stmt_use(
     expr_count: usize,
     expr: ExprId,
     stmt_id: StmtId,
+    context: UseContext,
     kind: BoundaryUseKind,
 ) {
+    if !context.boundary_enabled() {
+        return;
+    }
     if expr.index() < expr_count {
         stmt_uses[expr.index()].push(BoundaryUse { stmt_id, kind });
+    }
+}
+
+fn collect_stmt_uses(
+    program: &CoreProgram,
+    stmt_id: StmtId,
+    context: UseContext,
+    visited: &mut HashSet<(StmtId, u8)>,
+    stmt_uses: &mut [Vec<BoundaryUse>],
+    expr_count: usize,
+) {
+    if !visited.insert((stmt_id, context.encode())) {
+        return;
+    }
+    let Some(stmt) = program.stmt(stmt_id) else {
+        return;
+    };
+
+    match &stmt.kind {
+        StmtKind::Return(expr) => {
+            push_stmt_use(
+                stmt_uses,
+                expr_count,
+                *expr,
+                stmt_id,
+                context,
+                BoundaryUseKind::ReturnValue,
+            );
+        }
+        StmtKind::Let { value, next, .. } => {
+            push_stmt_use(
+                stmt_uses,
+                expr_count,
+                *value,
+                stmt_id,
+                context,
+                BoundaryUseKind::LetValue,
+            );
+            collect_stmt_uses(program, *next, context, visited, stmt_uses, expr_count);
+        }
+        StmtKind::Val { value, next, .. } => {
+            collect_stmt_uses(program, *value, context, visited, stmt_uses, expr_count);
+            collect_stmt_uses(program, *next, context, visited, stmt_uses, expr_count);
+        }
+        StmtKind::Call { args, next, .. } => {
+            for (arg_idx, arg) in args.iter().copied().enumerate() {
+                push_stmt_use(
+                    stmt_uses,
+                    expr_count,
+                    arg,
+                    stmt_id,
+                    context,
+                    BoundaryUseKind::CallArg(arg_idx),
+                );
+            }
+            collect_stmt_uses(program, *next, context, visited, stmt_uses, expr_count);
+        }
+        StmtKind::Resume { arg, next, .. } => {
+            push_stmt_use(
+                stmt_uses,
+                expr_count,
+                *arg,
+                stmt_id,
+                context,
+                BoundaryUseKind::ResumeArg,
+            );
+            collect_stmt_uses(program, *next, context, visited, stmt_uses, expr_count);
+        }
+        StmtKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            push_stmt_use(
+                stmt_uses,
+                expr_count,
+                *cond,
+                stmt_id,
+                context,
+                BoundaryUseKind::IfCondition,
+            );
+            collect_stmt_uses(
+                program,
+                *then_branch,
+                context,
+                visited,
+                stmt_uses,
+                expr_count,
+            );
+            collect_stmt_uses(
+                program,
+                *else_branch,
+                context,
+                visited,
+                stmt_uses,
+                expr_count,
+            );
+        }
+        StmtKind::Match {
+            scrutinee,
+            arms,
+            default,
+        } => {
+            push_stmt_use(
+                stmt_uses,
+                expr_count,
+                *scrutinee,
+                stmt_id,
+                context,
+                BoundaryUseKind::MatchScrutinee,
+            );
+            for arm in arms {
+                collect_stmt_uses(program, arm.body, context, visited, stmt_uses, expr_count);
+            }
+            if let Some(default_stmt) = default {
+                collect_stmt_uses(
+                    program,
+                    *default_stmt,
+                    context,
+                    visited,
+                    stmt_uses,
+                    expr_count,
+                );
+            }
+        }
+        StmtKind::Perform { args, next, .. } => {
+            for (arg_idx, arg) in args.iter().copied().enumerate() {
+                push_stmt_use(
+                    stmt_uses,
+                    expr_count,
+                    arg,
+                    stmt_id,
+                    context,
+                    BoundaryUseKind::PerformArg(arg_idx),
+                );
+            }
+            collect_stmt_uses(program, *next, context, visited, stmt_uses, expr_count);
+        }
+        StmtKind::Handle {
+            handler: _,
+            body,
+            next,
+        } => {
+            collect_stmt_uses(program, *body, context, visited, stmt_uses, expr_count);
+            if let Some(next_stmt) = next {
+                collect_stmt_uses(
+                    program,
+                    *next_stmt,
+                    context,
+                    visited,
+                    stmt_uses,
+                    expr_count,
+                );
+            }
+        }
+        StmtKind::Stage { stage, body, next } => {
+            let inner = UseContext::from_stage(*stage);
+            collect_stmt_uses(program, *body, inner, visited, stmt_uses, expr_count);
+            if let Some(next_stmt) = next {
+                collect_stmt_uses(
+                    program,
+                    *next_stmt,
+                    context,
+                    visited,
+                    stmt_uses,
+                    expr_count,
+                );
+            }
+        }
+        StmtKind::Hole { .. } | StmtKind::Error(_) => {}
     }
 }
 
