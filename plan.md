@@ -268,10 +268,10 @@ P1..P5 delivered the baseline; items below close semantic and robustness gaps.
   - Enforce Trivial/Serializable/NonPersistable at the CT->RT boundary with
     predictable codegen behavior and diagnostics.
 - Deliverables:
-  - [ ] Residual boundary checks reject non-persistable crossings consistently (in progress).
+  - [x] Residual boundary checks reject non-persistable crossings consistently (in progress).
   - [ ] Serializable constants use structural pooling (beyond strings where feasible) (in progress),
     with deterministic size-cap policy.
-  - [ ] Diagnostics point to the exact crossing and reason (in progress).
+  - [x] Diagnostics point to the exact crossing and reason (in progress).
 - Notes:
   - 2026-02-17: string pooling + size caps are already in place from P4; broader
     structural pooling and boundary diagnostics are still open.
@@ -286,6 +286,10 @@ P1..P5 delivered the baseline; items below close semantic and robustness gaps.
   - 2026-03-22: C emitter now pools repeated literal ADT constructor values
     (`MakeStruct`/`MakeEnum`) with deterministic per-entry + per-compilation-unit
     byte caps; oversized or budget-spilled literals fall back to inline ctor calls.
+  - 2026-04-08: persistability boundary indexing is now stage-context-aware;
+    expression uses confined to `@comptime` stage blocks are excluded from CT→RT
+    boundary diagnostics/reclassification, eliminating false positives for
+    non-escaping CT-local values.
 - Why third:
   - Prevents subtle unsoundness and makes CT results deployment-safe.
 - References:

@@ -500,6 +500,7 @@ Functions using CT-only effects or taking TypeInfo arguments are CT-only. Callin
   - 2026-03-18: C emitter pools repeated runtime scalar literals (`Int`/`Bool`/`Char`) as `static const CieloValue`.
   - 2026-03-27: scalar/ctor pooling now includes finite `Float` literals with deterministic bit-pattern keys.
   - 2026-04-04: non-persistable boundary diagnostics now report exact boundary roles (for example `call-arg#0`, `return-value`) in addition to statement ids/spans.
+  - 2026-04-08: boundary-use indexing is stage-context-aware: expression uses inside explicit `@comptime` stage blocks are not treated as CT→RT boundaries unless the value actually flows to a runtime context.
 - Residual effect-summary notes:
   - 2026-04-05: residualizer now recomputes `FuncId -> EffectRow` from rewritten residual IR (fixpoint over call edges + handler subtraction), then rewrites call-site effect rows from that result.
 - Incremental staging/invalidation notes:
