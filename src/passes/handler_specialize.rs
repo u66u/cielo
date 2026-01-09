@@ -336,7 +336,7 @@ fn build_rewritten_body(
         StmtKind::Match {
             scrutinee,
             arms,
-            default: Some(default_stmt),
+            default,
         } => {
             let mut rewritten_arms = Vec::with_capacity(arms.len());
             for arm in arms {
@@ -353,12 +353,21 @@ fn build_rewritten_body(
                     span: arm.span,
                 });
             }
-            let rewritten_default =
-                build_rewritten_stmt(program, default_stmt, specialized_callee, cache, visiting)?;
+            let rewritten_default = if let Some(default_stmt) = default {
+                Some(build_rewritten_stmt(
+                    program,
+                    default_stmt,
+                    specialized_callee,
+                    cache,
+                    visiting,
+                )?)
+            } else {
+                None
+            };
             Some(StmtKind::Match {
                 scrutinee,
                 arms: rewritten_arms,
-                default: Some(rewritten_default),
+                default: rewritten_default,
             })
         }
         _ => None,
