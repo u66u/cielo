@@ -335,6 +335,57 @@ fn main() -> Int {
 }
 
 #[test]
+fn specializes_handle_wrapped_call_through_stage_forwarding_wrapper() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+
+fn io(v: Int) -> Int with Console {
+  do Console.print("x");
+  v
+}
+
+fn entry() -> Int {
+  let y = handle {
+    @runtime { io(7) }
+  } with Console {
+    | print(s) => 0
+  };
+  y
+}
+
+fn main() -> Int {
+  entry()
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    let specialized_id = specialized_copy_named(compiled.residual.program(), &interner, "io")
+        .expect("stage-forwarding wrapper should produce one specialized io copy");
+
+    let entry = function_named(compiled.residual.program(), &interner, "entry").expect("entry");
+    assert!(
+        !contains_handle_stmt(compiled.residual.program(), entry.body),
+        "stage-forwarding wrapper should be rewritten to direct call shape"
+    );
+    let callees = collect_call_callees(compiled.residual.program(), entry.body);
+    assert_eq!(
+        callees
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>(),
+        std::collections::HashSet::from([specialized_id]),
+        "rewritten staged wrapper call should target specialized callee"
+    );
+    assert_eq!(
+        callees.len(),
+        1,
+        "stage-forwarding wrapper should preserve a single direct callsite"
+    );
+}
+
+#[test]
 fn specializes_handle_wrapped_call_through_match_forwarding_wrapper() {
     let src = r#"
 effect Console { fn print(s: String) -> () }
