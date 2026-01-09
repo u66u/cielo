@@ -253,6 +253,9 @@ P1..P5 delivered the baseline; items below close semantic and robustness gaps.
   - 2026-04-09: wrapper-callee detection and body rewriting now accept
     `match` forwarding wrappers without a default branch when all arms resolve
     to the same callee; arm-callee mismatches still bail out conservatively.
+  - 2026-04-09: wrapper-callee detection and body rewriting now also pass
+    through `Stage` forwarding wrappers (`@runtime` / `@comptime`) when they
+    still resolve to a unique direct callee.
   - Incomplete by design: generalized specialization with return-clause
     parameterization remains deferred to v2 selective CPS.
 - Why second:
