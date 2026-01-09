@@ -250,6 +250,9 @@ P1..P5 delivered the baseline; items below close semantic and robustness gaps.
 - Notes:
   - 2026-02-17: reachable-pruning + `FuncId` table remapping landed; tests assert
     cross-table id integrity after pruning.
+  - 2026-04-09: wrapper-callee detection and body rewriting now accept
+    `match` forwarding wrappers without a default branch when all arms resolve
+    to the same callee; arm-callee mismatches still bail out conservatively.
   - Incomplete by design: generalized specialization with return-clause
     parameterization remains deferred to v2 selective CPS.
 - Why second:
