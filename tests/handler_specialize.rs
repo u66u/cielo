@@ -390,7 +390,7 @@ fn main() -> Int {
 }
 
 #[test]
-fn does_not_specialize_match_wrapper_without_default_branch() {
+fn specializes_match_wrapper_without_default_when_arms_forward_same_callee() {
     let src = r#"
 effect Console { fn print(s: String) -> () }
 enum Tag { A, B }
@@ -419,14 +419,77 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
 
+    let specialized_id = specialized_copy_named(compiled.residual.program(), &interner, "io")
+        .expect("match wrapper without default should still specialize for single-callee arms");
+    let entry = function_named(compiled.residual.program(), &interner, "entry").expect("entry");
+    assert!(
+        !contains_handle_stmt(compiled.residual.program(), entry.body),
+        "single-callee match wrapper without default should be rewritten after specialization"
+    );
+    let callees = collect_call_callees(compiled.residual.program(), entry.body);
+    assert_eq!(
+        callees
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>(),
+        std::collections::HashSet::from([specialized_id]),
+        "all rewritten match-arm calls should target the specialized callee"
+    );
+    assert_eq!(
+        callees.len(),
+        1,
+        "single-arm match wrapper should preserve one direct callsite"
+    );
+}
+
+#[test]
+fn does_not_specialize_match_wrapper_without_default_when_arms_disagree() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+enum Tag { A, B }
+
+fn io(v: Int) -> Int with Console {
+  do Console.print("x");
+  v
+}
+
+fn alt(v: Int) -> Int with Console {
+  do Console.print("y");
+  v
+}
+
+fn entry(tag: Tag) -> Int {
+  let y = handle {
+    match tag {
+      | A => io(7)
+      | B => alt(8)
+    }
+  } with Console {
+    | print(s) => 0
+  };
+  y
+}
+
+fn main() -> Int {
+  entry(A())
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
     assert!(
         specialized_copy_named(compiled.residual.program(), &interner, "io").is_none(),
-        "match wrappers without default branch should conservatively skip specialization"
+        "mismatched no-default match arms must not specialize io"
+    );
+    assert!(
+        specialized_copy_named(compiled.residual.program(), &interner, "alt").is_none(),
+        "mismatched no-default match arms must not specialize alt"
     );
     let entry = function_named(compiled.residual.program(), &interner, "entry").expect("entry");
     assert!(
         contains_handle_stmt(compiled.residual.program(), entry.body),
-        "missing default match wrapper should remain unspecialized"
+        "mismatched no-default match wrapper should remain unspecialized"
     );
 }
 
