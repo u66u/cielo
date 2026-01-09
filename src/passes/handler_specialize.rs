@@ -186,6 +186,15 @@ fn wrapper_call_callee(
                 }
                 callee
             }
+            StmtKind::Stage { body, next, .. } => {
+                let body_callee = wrapper_call_callee(program, *body, cache, visiting)?;
+                let mut callee = Some(body_callee);
+                if let Some(next_stmt) = next {
+                    let next_callee = wrapper_call_callee(program, *next_stmt, cache, visiting)?;
+                    callee = merge_wrapper_callee(callee, next_callee);
+                }
+                callee
+            }
             _ => None,
         },
         None => None,
@@ -368,6 +377,26 @@ fn build_rewritten_body(
                 scrutinee,
                 arms: rewritten_arms,
                 default: rewritten_default,
+            })
+        }
+        StmtKind::Stage { stage, body, next } => {
+            let rewritten_body =
+                build_rewritten_stmt(program, body, specialized_callee, cache, visiting)?;
+            let rewritten_next = if let Some(next_stmt) = next {
+                Some(build_rewritten_stmt(
+                    program,
+                    next_stmt,
+                    specialized_callee,
+                    cache,
+                    visiting,
+                )?)
+            } else {
+                None
+            };
+            Some(StmtKind::Stage {
+                stage,
+                body: rewritten_body,
+                next: rewritten_next,
             })
         }
         _ => None,
