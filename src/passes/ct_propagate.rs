@@ -171,55 +171,59 @@ fn compute_ct_cache(
     program: &CoreProgram,
     target: TargetSpec,
 ) -> (DenseMap<ExprId, Literal>, CtEvalStats) {
+    let exprs = program.exprs();
     let mut cache = DenseMap::default();
     let mut stats = CtEvalStats::default();
-    let limit = program.exprs().len().saturating_add(1).max(1);
-    for _ in 0..limit {
-        stats.iterations = stats.iterations.saturating_add(1);
+
+    macro_rules! inc {
+        ($field:ident) => {
+            stats.$field = stats.$field.saturating_add(1)
+        };
+    }
+
+    let max_passes = exprs.len().saturating_add(1).max(1);
+    for _ in 0..max_passes {
+        inc!(iterations);
         let mut changed = false;
-        for (idx, expr) in program.exprs().iter().enumerate() {
-            let expr_id = ExprId::new(idx);
-            if cache.contains_key(&expr_id) {
-                stats.cache_hits = stats.cache_hits.saturating_add(1);
+        for (i, expr) in exprs.iter().enumerate() {
+            let id = ExprId::new(i);
+            if cache.contains_key(&id) {
+                inc!(cache_hits);
                 continue;
             }
-            stats.eval_attempts = stats.eval_attempts.saturating_add(1);
+            inc!(eval_attempts);
+
             match eval_expr(expr, &cache, target) {
                 EvalOutcome::Folded {
                     value,
                     kind,
                     used_host_float,
                 } => {
-                    let _ = cache.insert(expr_id, value);
-                    stats.cache_inserts = stats.cache_inserts.saturating_add(1);
+                    cache.insert(id, value);
+                    inc!(cache_inserts);
+
                     match kind {
-                        FoldKind::Literal => {
-                            stats.folded_literals = stats.folded_literals.saturating_add(1)
-                        }
-                        FoldKind::Unary => {
-                            stats.folded_unary = stats.folded_unary.saturating_add(1)
-                        }
-                        FoldKind::Binary => {
-                            stats.folded_binary = stats.folded_binary.saturating_add(1)
-                        }
+                        FoldKind::Literal => inc!(folded_literals),
+                        FoldKind::Unary => inc!(folded_unary),
+                        FoldKind::Binary => inc!(folded_binary),
                     }
                     if used_host_float {
-                        stats.folded_float_host = stats.folded_float_host.saturating_add(1);
+                        inc!(folded_float_host);
                     }
                     changed = true;
                 }
-                EvalOutcome::MissingInputs => {
-                    stats.miss_missing_inputs = stats.miss_missing_inputs.saturating_add(1);
-                }
-                EvalOutcome::Unsupported => {
-                    stats.miss_unsupported = stats.miss_unsupported.saturating_add(1);
-                }
+                EvalOutcome::MissingInputs => inc!(miss_missing_inputs),
+                EvalOutcome::Unsupported => inc!(miss_unsupported),
             }
         }
+
+        // if cache.len() == exprs.len() { break; }
+
         if !changed {
             break;
         }
     }
+
     (cache, stats)
 }
 
@@ -280,9 +284,7 @@ fn eval_arithmetic(
                 BinaryOp::Mod if *b != 0.0 => Some(*a % *b),
                 _ => None,
             }?;
-            value
-                .is_finite()
-                .then_some((Literal::Float(value), true))
+            value.is_finite().then_some((Literal::Float(value), true))
         }
         _ => None,
     }

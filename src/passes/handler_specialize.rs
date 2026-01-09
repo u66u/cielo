@@ -164,25 +164,27 @@ fn wrapper_call_callee(
                 wrapper_call_callee(program, *then_branch, cache, visiting),
                 wrapper_call_callee(program, *else_branch, cache, visiting),
             ),
-            StmtKind::Match {
-                arms,
-                default: Some(default_stmt),
-                ..
-            } => {
-                let Some(callee) = wrapper_call_callee(program, *default_stmt, cache, visiting)
-                else {
-                    return finish_wrapper_callee(cache, visiting, stmt_id, None);
-                };
+            StmtKind::Match { arms, default, .. } => {
+                let mut callee = None;
                 for arm in arms {
                     let Some(arm_callee) = wrapper_call_callee(program, arm.body, cache, visiting)
                     else {
                         return finish_wrapper_callee(cache, visiting, stmt_id, None);
                     };
-                    if arm_callee != callee {
+                    callee = merge_wrapper_callee(callee, arm_callee);
+                    if callee.is_none() {
                         return finish_wrapper_callee(cache, visiting, stmt_id, None);
                     }
                 }
-                Some(callee)
+                if let Some(default_stmt) = default {
+                    let Some(default_callee) =
+                        wrapper_call_callee(program, *default_stmt, cache, visiting)
+                    else {
+                        return finish_wrapper_callee(cache, visiting, stmt_id, None);
+                    };
+                    callee = merge_wrapper_callee(callee, default_callee);
+                }
+                callee
             }
             _ => None,
         },
@@ -206,6 +208,14 @@ fn same_callee(lhs: Option<FuncId>, rhs: Option<FuncId>) -> Option<FuncId> {
     let lhs = lhs?;
     let rhs = rhs?;
     if lhs == rhs { Some(lhs) } else { None }
+}
+
+fn merge_wrapper_callee(current: Option<FuncId>, next: FuncId) -> Option<FuncId> {
+    match current {
+        Some(existing) if existing != next => None,
+        Some(existing) => Some(existing),
+        None => Some(next),
+    }
 }
 
 fn is_return_of_var(program: &CoreProgram, stmt_id: StmtId, var: VarId) -> bool {

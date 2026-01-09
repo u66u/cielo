@@ -4,7 +4,7 @@ use crate::common::ids::{
 };
 use crate::common::span::Span;
 use crate::sema::effect::{EffectProperties, SortedEffectRow};
-use smallvec::{SmallVec, smallvec};
+use smallvec::{smallvec, SmallVec};
 use std::collections::HashSet;
 
 #[derive(Clone, PartialEq, Debug)]
