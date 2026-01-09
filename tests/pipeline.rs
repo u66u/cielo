@@ -1231,6 +1231,106 @@ fn bta_not_persistable_diagnostic_reports_call_arg_boundary_role() {
 }
 
 #[test]
+fn bta_does_not_flag_non_persistable_ct_expr_used_only_inside_comptime_stage() {
+    let mut program = CoreProgram::new();
+    let source = SourceId::from_u32(19);
+    let span = Span::new(source, 10, 20);
+
+    let one = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(1)),
+    });
+    let two = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(2)),
+    });
+    let non_persistable_ct_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Add,
+            lhs: one,
+            rhs: two,
+        },
+    });
+
+    let stage_var = VarId::from_u32(55);
+    let stage_var_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Var(stage_var),
+    });
+    let stage_ret = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(stage_var_expr),
+    });
+    let stage_let = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Let {
+            binding: stage_var,
+            value: non_persistable_ct_expr,
+            next: stage_ret,
+        },
+    });
+
+    let zero = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(0)),
+    });
+    let outer_ret = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(zero),
+    });
+    let root = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Stage {
+            stage: cielo::ir::core::StageDirective::Comptime,
+            body: stage_let,
+            next: Some(outer_ret),
+        },
+    });
+    let main_fn = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(1),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::empty(),
+        body: root,
+        ct_only: false,
+        span,
+    });
+    program.set_entrypoints([main_fn]);
+
+    let mut sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
+    sema.type_of_expr[non_persistable_ct_expr.index()] = Some(TypeId::new(0));
+    sema.persistability_of_type = vec![Persistability::NonPersistable];
+
+    let mut ct = CtPropagationTables::default();
+    let _ = ct.ct_cache.insert(non_persistable_ct_expr, Literal::Int(3));
+    let classified = bta::run(cielo::pipeline::phases::CtPropagated::new(
+        program,
+        DiagnosticBag::default(),
+        sema,
+        MonomorphizationSummary::default(),
+        ct,
+    ));
+
+    assert!(
+        matches!(
+            classified.bta().stage_of_expr.get(&non_persistable_ct_expr),
+            Some(Stage::Ct)
+        ),
+        "non-persistable ct expression confined to @comptime stage should stay CT"
+    );
+    assert!(
+        classified
+            .diagnostics()
+            .entries()
+            .iter()
+            .all(|diag| diag.code != "BTA_NOT_PERSISTABLE_BOUNDARY"),
+        "no boundary diagnostic should be emitted when the expression never crosses into runtime"
+    );
+}
+
+#[test]
 fn residualize_prunes_if_using_ct_branch_decision() {
     let mut program = CoreProgram::new();
     let span = Span::synthetic();
