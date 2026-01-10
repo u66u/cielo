@@ -500,6 +500,58 @@ fn main() -> Int {
 }
 
 #[test]
+fn c_emitter_pools_large_single_use_runtime_ctor_literal() {
+    let src = r#"
+enum Blob { Mk(
+  Int, Int, Int, Int, Int, Int, Int, Int,
+  Int, Int, Int, Int, Int, Int, Int, Int,
+  Int, Int, Int, Int, Int, Int, Int, Int
+) }
+fn main() -> Int {
+  @runtime {
+    let a = Mk(
+      1, 2, 3, 4, 5, 6, 7, 8,
+      9, 10, 11, 12, 13, 14, 15, 16,
+      17, 18, 19, 20, 21, 22, 23, 24
+    );
+    match a {
+      | Mk(
+          x0, x1, x2, x3, x4, x5, x6, x7,
+          x8, x9, x10, x11, x12, x13, x14, x15,
+          x16, x17, x18, x19, x20, x21, x22, x23
+        ) => x0
+      | _ => 0
+    }
+  }
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert_eq!(
+        compiled
+            .c_source
+            .matches("static const CieloValue cielo_const_ctor_v_")
+            .count(),
+        1,
+        "large single-use ctor literals should be pooled by size policy"
+    );
+    assert!(
+        compiled
+            .c_source
+            .contains("static CieloCtor cielo_const_ctor_0 ="),
+        "pooled large ctor literal should emit a static ctor descriptor"
+    );
+    assert!(
+        !compiled
+            .c_source
+            .contains("cielo_make_ctor(\"Blob\", \"Mk\", 24"),
+        "pooled large single-use ctor literal should not fall back to inline ctor creation"
+    );
+}
+
+#[test]
 fn c_emitter_skips_oversized_ctor_pool_entry_and_falls_back_inline() {
     let long = "x".repeat(1300);
     let src = format!(
