@@ -501,6 +501,7 @@ Functions using CT-only effects or taking TypeInfo arguments are CT-only. Callin
   - 2026-03-27: scalar/ctor pooling now includes finite `Float` literals with deterministic bit-pattern keys.
   - 2026-04-04: non-persistable boundary diagnostics now report exact boundary roles (for example `call-arg#0`, `return-value`) in addition to statement ids/spans.
   - 2026-04-08: boundary-use indexing is stage-context-aware: expression uses inside explicit `@comptime` stage blocks are not treated as CT→RT boundaries unless the value actually flows to a runtime context.
+  - 2026-04-10: constructor-literal constant pooling now follows the documented policy directly: pool when structurally repeated or when a serializable constructor literal is large (size-estimate threshold), while keeping small single-use literals inline.
 - Residual effect-summary notes:
   - 2026-04-05: residualizer now recomputes `FuncId -> EffectRow` from rewritten residual IR (fixpoint over call edges + handler subtraction), then rewrites call-site effect rows from that result.
 - Incremental staging/invalidation notes:
@@ -527,5 +528,5 @@ When the return clause varies across recursive call sites within a specialized f
 - Generalized handler specialization by return-clause parameterization is deferred to v2 selective CPS.
 - If mutable-variable stmt forms are added to Core IR, tail-resumption gating must mirror the mutable-state caveat from `RemoveTailResumptions`.
 - Persistability/codegen expansion still pending beyond v1 scalar/string pooling:
-  - structural constant pooling for ADT/aggregate serializable values
+  - recursive aggregate pooling for nested ADT constants (top-level ctor pooling is implemented)
   - non-finite float pooling policy (NaN/Inf handling if adopted)
