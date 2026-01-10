@@ -29,6 +29,7 @@ use crate::passes::linearize::Linearized;
 const C_RUNTIME_HEADER: &str = include_str!("../backend/cielo_runtime.h");
 const MAX_CONST_ENTRY_BYTES: usize = 1024;
 const MAX_CONST_POOL_BYTES: usize = 16 * 1024;
+const LARGE_SERIALIZABLE_POOL_BYTES: usize = 512;
 const ESTIMATED_VALUE_BYTES: usize = 16;
 const ESTIMATED_CTOR_BYTES: usize = 32;
 
@@ -1073,10 +1074,11 @@ fn build_ctor_const_pool(program: &LinearProgram, budget: &mut ConstPoolBudget) 
 
     let mut pool = CtorConstPool::default();
     for (key, count) in counts {
-        if count < 2 {
+        let estimated_bytes = key.estimated_pool_bytes();
+        if !should_pool_ctor_literal(count, estimated_bytes) {
             continue;
         }
-        if !budget.try_reserve(key.estimated_pool_bytes()) {
+        if !budget.try_reserve(estimated_bytes) {
             continue;
         }
         let idx = pool.entries.len();
@@ -1091,6 +1093,10 @@ fn build_ctor_const_pool(program: &LinearProgram, budget: &mut ConstPoolBudget) 
         pool.by_key.insert(key, idx);
     }
     pool
+}
+
+fn should_pool_ctor_literal(use_count: usize, estimated_bytes: usize) -> bool {
+    use_count >= 2 || estimated_bytes >= LARGE_SERIALIZABLE_POOL_BYTES
 }
 
 fn build_string_const_pool(
