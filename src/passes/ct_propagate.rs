@@ -266,8 +266,8 @@ fn eval_arithmetic(
                 BinaryOp::Add => Some(lhs.wrapping_add(rhs)),
                 BinaryOp::Sub => Some(lhs.wrapping_sub(rhs)),
                 BinaryOp::Mul => Some(lhs.wrapping_mul(rhs)),
-                BinaryOp::Div if rhs != 0 => lhs.checked_div(rhs),
-                BinaryOp::Mod if rhs != 0 => lhs.checked_rem(rhs),
+                BinaryOp::Div if rhs != 0 => Some(lhs.wrapping_div(rhs)),
+                BinaryOp::Mod if rhs != 0 => Some(lhs.wrapping_rem(rhs)),
                 _ => None,
             }?;
             Some((Literal::Int(normalize_int(value, target)), false))
