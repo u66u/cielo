@@ -489,29 +489,29 @@ Functions using CT-only effects or taking TypeInfo arguments are CT-only. Callin
 - Keep slices independently testable and end-to-end runnable (`--emit-c --run-c`).
 - Prefer conservative semantics first; optimize after invariants are explicit.
 - Handler pipeline closure notes:
-  - 2026-02-17: resume single-shot check is path-sensitive (branch-exclusive single resumes are accepted; same-path double resumes are diagnosed).
-  - 2026-02-17: tail-resumption checking is memoized and treats stmt cycles as non-tail conservatively.
-  - 2026-03-16: boundary diagnostics for non-persistable crossings anchor to runtime boundary stmt spans and include stmt ids.
+  - resume single-shot check is path-sensitive (branch-exclusive single resumes are accepted; same-path double resumes are diagnosed).
+  - tail-resumption checking is memoized and treats stmt cycles as non-tail conservatively.
+  - boundary diagnostics for non-persistable crossings anchor to runtime boundary stmt spans and include stmt ids.
 - Handler specialization notes:
-  - 2026-02-17: reachable pruning + `FuncId` remapping landed; tests assert cross-table id integrity.
+  - reachable pruning + `FuncId` remapping landed; tests assert cross-table id integrity.
   - Scope remains bounded in v1 (wrapper/control-light pushdown only).
 - Persistability boundary notes:
-  - 2026-03-16: residualizer gates CT embedding on BTA stage (`Ct`) + knownness (`KnownPersistable`), preventing runtime-forced/boundary-rejected embeddings.
-  - 2026-03-18: C emitter pools repeated runtime scalar literals (`Int`/`Bool`/`Char`) as `static const CieloValue`.
-  - 2026-03-27: scalar/ctor pooling now includes finite `Float` literals with deterministic bit-pattern keys.
-  - 2026-04-04: non-persistable boundary diagnostics now report exact boundary roles (for example `call-arg#0`, `return-value`) in addition to statement ids/spans.
-  - 2026-04-08: boundary-use indexing is stage-context-aware: expression uses inside explicit `@comptime` stage blocks are not treated as CT→RT boundaries unless the value actually flows to a runtime context.
-  - 2026-04-10: constructor-literal constant pooling now follows the documented policy directly: pool when structurally repeated or when a serializable constructor literal is large (size-estimate threshold), while keeping small single-use literals inline.
+  - residualizer gates CT embedding on BTA stage (`Ct`) + knownness (`KnownPersistable`), preventing runtime-forced/boundary-rejected embeddings.
+  - C emitter pools repeated runtime scalar literals (`Int`/`Bool`/`Char`) as `static const CieloValue`.
+  - scalar/ctor pooling now includes finite `Float` literals with deterministic bit-pattern keys.
+  - non-persistable boundary diagnostics now report exact boundary roles (for example `call-arg#0`, `return-value`) in addition to statement ids/spans.
+  - boundary-use indexing is stage-context-aware: expression uses inside explicit `@comptime` stage blocks are not treated as CT→RT boundaries unless the value actually flows to a runtime context.
+  - constructor-literal constant pooling now follows the documented policy directly: pool when structurally repeated or when a serializable constructor literal is large (size-estimate threshold), while keeping small single-use literals inline.
 - Residual effect-summary notes:
-  - 2026-04-05: residualizer now recomputes `FuncId -> EffectRow` from rewritten residual IR (fixpoint over call edges + handler subtraction), then rewrites call-site effect rows from that result.
+  - residualizer now recomputes `FuncId -> EffectRow` from rewritten residual IR (fixpoint over call edges + handler subtraction), then rewrites call-site effect rows from that result.
 - Incremental staging/invalidation notes:
-  - 2026-03-28: staging snapshot IDs now use span+kind+structural expression fingerprint (index-free), reducing false churn under expr-index renumbering.
-  - 2026-03-28: `ComptimeReadFiles` invalidation reasons are persisted in a sidecar snapshot (`.ctdeps.tsv`) and surfaced as explicit key/dependency deltas (added/removed/changed + cache-key field changes).
-  - 2026-04-03: CT propagation now supports a persistent query-cache sidecar (`.ctquery.tsv`) keyed by `{CtCacheKey + normalized file deps + program fingerprint}` and restores cached CT results when keys match.
-  - 2026-04-07: `ComptimeReadFiles` dependency content hashes now use BLAKE3 digests (stable format, low collision risk) instead of `DefaultHasher` output.
+  - staging snapshot IDs now use span+kind+structural expression fingerprint (index-free), reducing false churn under expr-index renumbering.
+  - `ComptimeReadFiles` invalidation reasons are persisted in a sidecar snapshot (`.ctdeps.tsv`) and surfaced as explicit key/dependency deltas (added/removed/changed + cache-key field changes).
+  - CT propagation now supports a persistent query-cache sidecar (`.ctquery.tsv`) keyed by `{CtCacheKey + normalized file deps + program fingerprint}` and restores cached CT results when keys match.
+  - `ComptimeReadFiles` dependency content hashes now use BLAKE3 digests (stable format, low collision risk) instead of `DefaultHasher` output.
 - CT evaluator notes:
-  - 2026-04-05: CT fold coverage now includes float arithmetic/comparison/equality and non-numeric equality (`Bool`/`Char`/`String`/`Unit`); `folded_float_host` counts all host-float folds, not only unary negation.
-  - 2026-04-06: host-float folds are finite-only. Non-finite inputs/results (`NaN`/`Inf`) are left unresolved to keep cross-target behavior conservative until strict FP emulation lands.
+  - CT fold coverage now includes float arithmetic/comparison/equality and non-numeric equality (`Bool`/`Char`/`String`/`Unit`); `folded_float_host` counts all host-float folds, not only unary negation.
+  - host-float folds are finite-only. Non-finite inputs/results (`NaN`/`Inf`) are left unresolved to keep cross-target behavior conservative until strict FP emulation lands.
 
 ## V2 Additions
 

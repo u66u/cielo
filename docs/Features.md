@@ -214,7 +214,7 @@ This doesn’t require fancy types. It’s just metadata + a compare function.
 ## Using modalities for `@comptime`
 ### Briefing
 
-From paper "Rows and capabilities as modal effects" (2026)
+From paper "Rows and capabilities as modal effects"
 Mental framework: **Entering `@comptime { ... }` is like switching to a restricted world**  
 where only certain effects are allowed and only certain outside values are allowed in
 
