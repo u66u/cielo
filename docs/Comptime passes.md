@@ -512,6 +512,7 @@ Functions using CT-only effects or taking TypeInfo arguments are CT-only. Callin
 - CT evaluator notes:
   - CT fold coverage now includes float arithmetic/comparison/equality and non-numeric equality (`Bool`/`Char`/`String`/`Unit`); `folded_float_host` counts all host-float folds, not only unary negation.
   - host-float folds are finite-only. Non-finite inputs/results (`NaN`/`Inf`) are left unresolved to keep cross-target behavior conservative until strict FP emulation lands.
+  - integer `Div`/`Mod` overflow edges fold with wrapping target-width behavior (`MIN / -1`, `MIN % -1`) instead of being treated as unsupported.
 
 ## V2 Additions
 
