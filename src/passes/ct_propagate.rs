@@ -244,133 +244,118 @@ fn eval_binary(
     right: &Literal,
     target: TargetSpec,
 ) -> Option<(Literal, bool)> {
-    match op.category() {
-        OpCategory::Arithmetic => eval_arithmetic(op, left, right, target),
-        OpCategory::Comparison => eval_comparison(op, left, right, target),
-        OpCategory::Equality => eval_equality(op, left, right, target),
-        OpCategory::Logical => eval_logical(op, left, right),
-    }
-}
+    use BinaryOp::*;
+    use Literal::*;
+    use OpCategory::*;
 
-fn eval_arithmetic(
-    op: BinaryOp,
-    left: &Literal,
-    right: &Literal,
-    target: TargetSpec,
-) -> Option<(Literal, bool)> {
-    match (left, right) {
-        (Literal::Int(a), Literal::Int(b)) => {
+    match (op.category(), left, right) {
+        (Arithmetic, Int(a), Int(b)) => eval_int_arith(op, *a, *b, target),
+        (Arithmetic, Float(a), Float(b)) => eval_float_arith(op, *a, *b),
+
+        (Comparison, Int(a), Int(b)) => {
             let lhs = normalize_int(*a, target);
             let rhs = normalize_int(*b, target);
-            let value = match op {
-                BinaryOp::Add => Some(lhs.wrapping_add(rhs)),
-                BinaryOp::Sub => Some(lhs.wrapping_sub(rhs)),
-                BinaryOp::Mul => Some(lhs.wrapping_mul(rhs)),
-                BinaryOp::Div if rhs != 0 => Some(lhs.wrapping_div(rhs)),
-                BinaryOp::Mod if rhs != 0 => Some(lhs.wrapping_rem(rhs)),
-                _ => None,
-            }?;
-            Some((Literal::Int(normalize_int(value, target)), false))
+            eval_cmp(op, &lhs, &rhs, false)
         }
-        (Literal::Float(a), Literal::Float(b)) => {
-            if !host_float_operands_supported(*a, *b) {
-                return None;
-            }
-            let value = match op {
-                BinaryOp::Add => Some(*a + *b),
-                BinaryOp::Sub => Some(*a - *b),
-                BinaryOp::Mul => Some(*a * *b),
-                BinaryOp::Div if *b != 0.0 => Some(*a / *b),
-                BinaryOp::Mod if *b != 0.0 => Some(*a % *b),
-                _ => None,
-            }?;
-            value.is_finite().then_some((Literal::Float(value), true))
+        (Comparison, Float(a), Float(b)) if host_float_operands_supported(*a, *b) => {
+            eval_cmp(op, a, b, true)
         }
+        (Comparison, Char(a), Char(b)) => eval_cmp(op, a, b, false),
+
+        (Equality, Int(a), Int(b)) => {
+            let lhs = normalize_int(*a, target);
+            let rhs = normalize_int(*b, target);
+            eval_eq(op, &lhs, &rhs, false)
+        }
+        (Equality, Bool(a), Bool(b)) => eval_eq(op, a, b, false),
+        (Equality, Float(a), Float(b)) if host_float_operands_supported(*a, *b) => {
+            eval_eq(op, a, b, true)
+        }
+        (Equality, Char(a), Char(b)) => eval_eq(op, a, b, false),
+        (Equality, String(a), String(b)) => eval_eq(op, a, b, false),
+        (Equality, Unit, Unit) => eval_eq(op, &(), &(), false),
+
+        (Logical, Bool(a), Bool(b)) => match op {
+            And => folded(Literal::Bool(*a && *b), false),
+            Or => folded(Literal::Bool(*a || *b), false),
+            _ => None,
+        },
+
         _ => None,
     }
 }
 
-fn eval_comparison(
-    op: BinaryOp,
-    left: &Literal,
-    right: &Literal,
-    target: TargetSpec,
-) -> Option<(Literal, bool)> {
-    match (left, right) {
-        (Literal::Int(a), Literal::Int(b)) => {
-            let lhs = normalize_int(*a, target);
-            let rhs = normalize_int(*b, target);
-            compare_values(op, lhs, rhs).map(|value| (Literal::Bool(value), false))
-        }
-        (Literal::Float(a), Literal::Float(b)) if host_float_operands_supported(*a, *b) => {
-            compare_values(op, *a, *b).map(|value| (Literal::Bool(value), true))
-        }
-        (Literal::Char(a), Literal::Char(b)) => {
-            compare_values(op, *a, *b).map(|value| (Literal::Bool(value), false))
-        }
-        _ => None,
-    }
+#[inline]
+fn folded(lit: Literal, used_host_float: bool) -> Option<(Literal, bool)> {
+    Some((lit, used_host_float))
 }
 
-fn eval_equality(
+#[inline]
+fn eval_cmp<T: PartialOrd>(
     op: BinaryOp,
-    left: &Literal,
-    right: &Literal,
-    target: TargetSpec,
+    lhs: &T,
+    rhs: &T,
+    used_host_float: bool,
 ) -> Option<(Literal, bool)> {
-    match (left, right) {
-        (Literal::Int(a), Literal::Int(b)) => {
-            let lhs = normalize_int(*a, target);
-            let rhs = normalize_int(*b, target);
-            equal_values(op, lhs, rhs).map(|value| (Literal::Bool(value), false))
-        }
-        (Literal::Bool(a), Literal::Bool(b)) => {
-            equal_values(op, *a, *b).map(|value| (Literal::Bool(value), false))
-        }
-        (Literal::Float(a), Literal::Float(b)) if host_float_operands_supported(*a, *b) => {
-            equal_values(op, *a, *b).map(|value| (Literal::Bool(value), true))
-        }
-        (Literal::Char(a), Literal::Char(b)) => {
-            equal_values(op, *a, *b).map(|value| (Literal::Bool(value), false))
-        }
-        (Literal::String(a), Literal::String(b)) => {
-            equal_values(op, a, b).map(|value| (Literal::Bool(value), false))
-        }
-        (Literal::Unit, Literal::Unit) => {
-            equal_values(op, (), ()).map(|value| (Literal::Bool(value), false))
-        }
-        _ => None,
-    }
-}
-
-fn eval_logical(op: BinaryOp, left: &Literal, right: &Literal) -> Option<(Literal, bool)> {
-    let (Literal::Bool(lhs), Literal::Bool(rhs)) = (left, right) else {
-        return None;
-    };
     let value = match op {
-        BinaryOp::And => *lhs && *rhs,
-        BinaryOp::Or => *lhs || *rhs,
+        BinaryOp::Lt => lhs < rhs,
+        BinaryOp::Le => lhs <= rhs,
+        BinaryOp::Gt => lhs > rhs,
+        BinaryOp::Ge => lhs >= rhs,
         _ => return None,
     };
-    Some((Literal::Bool(value), false))
+    folded(Literal::Bool(value), used_host_float)
 }
 
-fn compare_values<T: PartialOrd>(op: BinaryOp, lhs: T, rhs: T) -> Option<bool> {
-    match op {
-        BinaryOp::Lt => Some(lhs < rhs),
-        BinaryOp::Le => Some(lhs <= rhs),
-        BinaryOp::Gt => Some(lhs > rhs),
-        BinaryOp::Ge => Some(lhs >= rhs),
-        _ => None,
-    }
+#[inline]
+fn eval_eq<T: PartialEq>(
+    op: BinaryOp,
+    lhs: &T,
+    rhs: &T,
+    used_host_float: bool,
+) -> Option<(Literal, bool)> {
+    let value = match op {
+        BinaryOp::Eq => lhs == rhs,
+        BinaryOp::Ne => lhs != rhs,
+        _ => return None,
+    };
+    folded(Literal::Bool(value), used_host_float)
 }
 
-fn equal_values<T: PartialEq>(op: BinaryOp, lhs: T, rhs: T) -> Option<bool> {
-    match op {
-        BinaryOp::Eq => Some(lhs == rhs),
-        BinaryOp::Ne => Some(lhs != rhs),
-        _ => None,
+#[inline]
+fn eval_int_arith(
+    op: BinaryOp,
+    left: i64,
+    right: i64,
+    target: TargetSpec,
+) -> Option<(Literal, bool)> {
+    let lhs = normalize_int(left, target);
+    let rhs = normalize_int(right, target);
+    let value = match op {
+        BinaryOp::Add => lhs.wrapping_add(rhs),
+        BinaryOp::Sub => lhs.wrapping_sub(rhs),
+        BinaryOp::Mul => lhs.wrapping_mul(rhs),
+        BinaryOp::Div if rhs != 0 => lhs.wrapping_div(rhs),
+        BinaryOp::Mod if rhs != 0 => lhs.wrapping_rem(rhs),
+        _ => return None,
+    };
+    folded(Literal::Int(normalize_int(value, target)), false)
+}
+
+#[inline]
+fn eval_float_arith(op: BinaryOp, left: f64, right: f64) -> Option<(Literal, bool)> {
+    if !host_float_operands_supported(left, right) {
+        return None;
     }
+    let value = match op {
+        BinaryOp::Add => left + right,
+        BinaryOp::Sub => left - right,
+        BinaryOp::Mul => left * right,
+        BinaryOp::Div if right != 0.0 => left / right,
+        BinaryOp::Mod if right != 0.0 => left % right,
+        _ => return None,
+    };
+    value.is_finite().then(|| (Literal::Float(value), true))
 }
 
 fn normalize_int(value: i64, target: TargetSpec) -> i64 {
