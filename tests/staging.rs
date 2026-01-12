@@ -449,6 +449,68 @@ fn main() -> Int {
 }
 
 #[test]
+fn ct_eval_wraps_div_overflow_for_target_ints() {
+    let src = r#"
+fn main() -> Int {
+  let x = (-9223372036854775807 - 1) / -1;
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let residual = Compiler::new(CompilerConfig::default()).compile_source_v0(
+        src,
+        SourceId::from_u32(0),
+        &mut interner,
+    );
+
+    let ints = residual
+        .ct()
+        .ct_cache
+        .values()
+        .filter_map(|lit| match lit {
+            Literal::Int(value) => Some(*value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        ints.contains(&i64::MIN),
+        "ct evaluator should fold MIN / -1 with wrapping target semantics: {ints:?}"
+    );
+}
+
+#[test]
+fn ct_eval_wraps_rem_overflow_for_target_ints() {
+    let src = r#"
+fn main() -> Int {
+  let x = (-9223372036854775807 - 1) % -1;
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let residual = Compiler::new(CompilerConfig::default()).compile_source_v0(
+        src,
+        SourceId::from_u32(1),
+        &mut interner,
+    );
+
+    let ints = residual
+        .ct()
+        .ct_cache
+        .values()
+        .filter_map(|lit| match lit {
+            Literal::Int(value) => Some(*value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        ints.contains(&0),
+        "ct evaluator should fold MIN % -1 with wrapping target semantics: {ints:?}"
+    );
+}
+
+#[test]
 fn ct_cache_key_and_eval_stats_reflect_target_endianness_and_alignment() {
     let src = r#"
 fn main() -> Int {
