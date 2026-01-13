@@ -124,6 +124,10 @@ Current caveat: floating point still uses host behavior when exact target emulat
 v1.1 note:
 - Integer literals are normalized to target word width during CT folding (not only arithmetic results).
 - `CtEvalStats.folded_float_host` tracks float folds that currently rely on host FP behavior.
+- Target query builtins are available in lowering and fold immediately from `TargetSpec`:
+  - `target_word_size_bits() -> Int`
+  - `target_pointer_alignment() -> Int`
+  - `target_is_big_endian() -> Bool`
 
 ### Type-level CT is a separate, earlier phase
 
