@@ -449,6 +449,125 @@ fn main() -> Int {
 }
 
 #[test]
+fn target_query_builtins_follow_target_spec() {
+    let src = r#"
+fn main() -> Int {
+  let w = target_word_size_bits();
+  let a = target_pointer_alignment();
+  let be = target_is_big_endian();
+  if be {
+    w + a + 100
+  } else {
+    w + a
+  }
+}
+"#;
+
+    let mut little_cfg = CompilerConfig::default();
+    little_cfg.target.word_size_bits = 64;
+    little_cfg.target.endianness = Endianness::Little;
+    little_cfg.target.pointer_alignment = 8;
+    let mut little_interner = Interner::new();
+    let little = Compiler::new(little_cfg).compile_source_v0(
+        src,
+        SourceId::from_u32(0),
+        &mut little_interner,
+    );
+
+    let mut big_cfg = CompilerConfig::default();
+    big_cfg.target.word_size_bits = 32;
+    big_cfg.target.endianness = Endianness::Big;
+    big_cfg.target.pointer_alignment = 16;
+    let mut big_interner = Interner::new();
+    let big = Compiler::new(big_cfg).compile_source_v0(src, SourceId::from_u32(1), &mut big_interner);
+
+    let little_ints = little
+        .ct()
+        .ct_cache
+        .values()
+        .filter_map(|lit| match lit {
+            Literal::Int(value) => Some(*value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let little_bools = little
+        .ct()
+        .ct_cache
+        .values()
+        .filter_map(|lit| match lit {
+            Literal::Bool(value) => Some(*value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        little_ints.contains(&64),
+        "target_word_size_bits() should fold to configured width on little target: {little_ints:?}"
+    );
+    assert!(
+        little_ints.contains(&8),
+        "target_pointer_alignment() should fold to configured alignment on little target: {little_ints:?}"
+    );
+    assert!(
+        little_bools.contains(&false),
+        "target_is_big_endian() should fold to false on little target: {little_bools:?}"
+    );
+
+    let big_ints = big
+        .ct()
+        .ct_cache
+        .values()
+        .filter_map(|lit| match lit {
+            Literal::Int(value) => Some(*value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let big_bools = big
+        .ct()
+        .ct_cache
+        .values()
+        .filter_map(|lit| match lit {
+            Literal::Bool(value) => Some(*value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        big_ints.contains(&32),
+        "target_word_size_bits() should fold to configured width on big target: {big_ints:?}"
+    );
+    assert!(
+        big_ints.contains(&16),
+        "target_pointer_alignment() should fold to configured alignment on big target: {big_ints:?}"
+    );
+    assert!(
+        big_bools.contains(&true),
+        "target_is_big_endian() should fold to true on big target: {big_bools:?}"
+    );
+}
+
+#[test]
+fn target_query_builtins_reject_arguments() {
+    let src = r#"
+fn main() -> Int {
+  target_word_size_bits(1)
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
+
+    assert!(
+        residual
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|diag| diag.code == "LOWER_TARGET_BUILTIN_ARITY"),
+        "target builtins should reject non-zero arity calls with a lowering diagnostic"
+    );
+}
+
+#[test]
 fn ct_eval_wraps_div_overflow_for_target_ints() {
     let src = r#"
 fn main() -> Int {
