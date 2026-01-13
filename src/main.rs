@@ -9,7 +9,7 @@ use cielo::common::reporting::render_diagnostic;
 use cielo::common::symbols::Interner;
 use cielo::frontend::ast::{Item, Program};
 use cielo::ir::core::CoreProgram;
-use cielo::passes::lowering::LowerConfig;
+use cielo::passes::lowering::{LowerConfig, TargetBuiltinSymbols};
 use cielo::passes::{c_emit, handler_specialize, linearize};
 use cielo::pipeline::ct_invalidation::{
     CtDepSnapshot, CtInvalidationReason, diff as diff_ct_invalidation,
@@ -115,8 +115,13 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
     }
 
     let main_symbol = interner.intern("main");
+    let target_builtins = TargetBuiltinSymbols::intern(&mut interner);
     let core = compiler
-        .lower_parsed_to_core_with_config(parsed, LowerConfig::with_entrypoint(main_symbol));
+        .lower_parsed_to_core_with_config(
+            parsed,
+            LowerConfig::with_entrypoint(main_symbol)
+                .with_target_builtins(compiler.config().target, target_builtins),
+        );
 
     if should_dump(cli, DumpKind::Core) {
         println!("=== Core IR ===\n{:#?}", core.program());

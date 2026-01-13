@@ -25,6 +25,7 @@ use std::collections::{HashMap, HashSet};
 use crate::common::diagnostics::DiagnosticBag;
 use crate::common::ids::{EffectLabelId, FuncId, SymbolId, VarId};
 use crate::common::span::Span;
+use crate::common::symbols::Interner;
 use crate::frontend::ast::{
     self, BuiltinType, EffectCapabilityHint, EffectPropertyHint, ExprKind as AstExprKind, Item,
     Stmt as AstStmt, TypeExpr, TypeExprKind,
@@ -34,6 +35,7 @@ use crate::ir::core::{
     EffectOperationDecl, ExprKind, ExprNode, FunctionDecl, HandlerClause, HandlerDef, Literal,
     MatchArm, PrimitiveTypeRef, StageDirective, StmtKind, StmtNode, UnaryOp,
 };
+use crate::pipeline::compiler::{Endianness, TargetSpec};
 use crate::sema::effect::{CapabilityLevel, EffectFlags, EffectProperties, SortedEffectRow};
 
 #[derive(Clone, Debug)]
@@ -45,12 +47,33 @@ pub struct LowerOutput {
 #[derive(Clone, Debug)]
 pub struct LowerConfig {
     pub entrypoints: Vec<SymbolId>,
+    pub target_spec: Option<TargetSpec>,
+    pub target_builtins: Option<TargetBuiltinSymbols>,
 }
 
 impl Default for LowerConfig {
     fn default() -> Self {
         Self {
             entrypoints: Vec::new(),
+            target_spec: None,
+            target_builtins: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TargetBuiltinSymbols {
+    target_word_size_bits: SymbolId,
+    target_pointer_alignment: SymbolId,
+    target_is_big_endian: SymbolId,
+}
+
+impl TargetBuiltinSymbols {
+    pub fn intern(interner: &mut Interner) -> Self {
+        Self {
+            target_word_size_bits: interner.intern("target_word_size_bits"),
+            target_pointer_alignment: interner.intern("target_pointer_alignment"),
+            target_is_big_endian: interner.intern("target_is_big_endian"),
         }
     }
 }
@@ -59,7 +82,19 @@ impl LowerConfig {
     pub fn with_entrypoint(entrypoint: SymbolId) -> Self {
         Self {
             entrypoints: vec![entrypoint],
+            target_spec: None,
+            target_builtins: None,
         }
+    }
+
+    pub fn with_target_builtins(
+        mut self,
+        target_spec: TargetSpec,
+        target_builtins: TargetBuiltinSymbols,
+    ) -> Self {
+        self.target_spec = Some(target_spec);
+        self.target_builtins = Some(target_builtins);
+        self
     }
 }
 
@@ -831,6 +866,10 @@ impl Lowerer {
                                 .map(|arg| self.lower_expr(arg, locals))
                                 .collect(),
                         }
+                    } else if let Some(target_builtin) =
+                        self.lower_target_builtin_call(symbol, args, locals, expr.span)
+                    {
+                        target_builtin
                     } else {
                         let error = self.diagnostics.error_node(
                             "LOWER_UNKNOWN_FUNC",
@@ -863,6 +902,45 @@ impl Lowerer {
             AstExprKind::Error(error) => ExprKind::Error(error.clone()),
         };
         self.push_expr(kind, expr.span)
+    }
+
+    fn lower_target_builtin_call(
+        &mut self,
+        callee: SymbolId,
+        args: &[ast::Expr],
+        locals: &HashMap<SymbolId, VarId>,
+        span: Span,
+    ) -> Option<ExprKind> {
+        let Some(target_spec) = self.config.target_spec else {
+            return None;
+        };
+        let Some(target_builtins) = self.config.target_builtins else {
+            return None;
+        };
+
+        let literal = if callee == target_builtins.target_word_size_bits {
+            Literal::Int(i64::from(target_spec.word_size_bits))
+        } else if callee == target_builtins.target_pointer_alignment {
+            Literal::Int(i64::from(target_spec.pointer_alignment))
+        } else if callee == target_builtins.target_is_big_endian {
+            Literal::Bool(matches!(target_spec.endianness, Endianness::Big))
+        } else {
+            return None;
+        };
+
+        if args.is_empty() {
+            return Some(ExprKind::Literal(literal));
+        }
+
+        for arg in args {
+            let _ = self.lower_expr(arg, locals);
+        }
+        let error = self.diagnostics.error_node(
+            "LOWER_TARGET_BUILTIN_ARITY",
+            "Target query builtins do not take arguments",
+            span,
+        );
+        Some(ExprKind::Error(error))
     }
 
     fn make_dummy_body(&mut self, span: Span) -> crate::common::ids::StmtId {

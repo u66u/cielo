@@ -10,7 +10,7 @@ use crate::passes::c_emit;
 use crate::passes::ct_propagate;
 use crate::passes::handler_specialize;
 use crate::passes::linearize;
-use crate::passes::lowering::{LowerConfig, lower_program};
+use crate::passes::lowering::{LowerConfig, TargetBuiltinSymbols, lower_program};
 use crate::passes::monomorphize;
 use crate::passes::residualize;
 use crate::pipeline::phases::{
@@ -112,7 +112,12 @@ impl Compiler {
     ) -> CoreBuilt {
         let parsed = self.parse(source, source_id, interner);
         let main_symbol = interner.intern("main");
-        self.lower_parsed_to_core_with_config(parsed, LowerConfig::with_entrypoint(main_symbol))
+        let target_builtins = TargetBuiltinSymbols::intern(interner);
+        self.lower_parsed_to_core_with_config(
+            parsed,
+            LowerConfig::with_entrypoint(main_symbol)
+                .with_target_builtins(self.config.target, target_builtins),
+        )
     }
 
     pub fn compile_source_v0(
