@@ -125,7 +125,9 @@ fn infer_stmt_effects(
         Some(StmtKind::Match { arms, default, .. }) => {
             let mut row = SortedEffectRow::empty();
             for arm in arms {
-                row = row.union(&infer_stmt_effects(program, arm.body, summaries, memo, visiting));
+                row = row.union(&infer_stmt_effects(
+                    program, arm.body, summaries, memo, visiting,
+                ));
             }
             if let Some(default_stmt) = default {
                 row = row.union(&infer_stmt_effects(
@@ -144,16 +146,13 @@ fn infer_stmt_effects(
             next,
         }) => {
             let mut row = infer_stmt_effects(program, *body, summaries, memo, visiting);
-            if let Some(handled_effect) = program.handlers().get(handler.index()).map(|h| h.effect) {
+            if let Some(handled_effect) = program.handlers().get(handler.index()).map(|h| h.effect)
+            {
                 row = row.subtract(&SortedEffectRow::singleton(handled_effect));
             }
             if let Some(next_stmt) = next {
                 row = row.union(&infer_stmt_effects(
-                    program,
-                    *next_stmt,
-                    summaries,
-                    memo,
-                    visiting,
+                    program, *next_stmt, summaries, memo, visiting,
                 ));
             }
             row
@@ -162,11 +161,7 @@ fn infer_stmt_effects(
             let mut row = infer_stmt_effects(program, *body, summaries, memo, visiting);
             if let Some(next_stmt) = next {
                 row = row.union(&infer_stmt_effects(
-                    program,
-                    *next_stmt,
-                    summaries,
-                    memo,
-                    visiting,
+                    program, *next_stmt, summaries, memo, visiting,
                 ));
             }
             row

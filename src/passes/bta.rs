@@ -428,28 +428,14 @@ fn collect_stmt_uses(
         } => {
             collect_stmt_uses(program, *body, context, visited, stmt_uses, expr_count);
             if let Some(next_stmt) = next {
-                collect_stmt_uses(
-                    program,
-                    *next_stmt,
-                    context,
-                    visited,
-                    stmt_uses,
-                    expr_count,
-                );
+                collect_stmt_uses(program, *next_stmt, context, visited, stmt_uses, expr_count);
             }
         }
         StmtKind::Stage { stage, body, next } => {
             let inner = UseContext::from_stage(*stage);
             collect_stmt_uses(program, *body, inner, visited, stmt_uses, expr_count);
             if let Some(next_stmt) = next {
-                collect_stmt_uses(
-                    program,
-                    *next_stmt,
-                    context,
-                    visited,
-                    stmt_uses,
-                    expr_count,
-                );
+                collect_stmt_uses(program, *next_stmt, context, visited, stmt_uses, expr_count);
             }
         }
         StmtKind::Hole { .. } | StmtKind::Error(_) => {}

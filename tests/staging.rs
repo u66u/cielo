@@ -479,7 +479,8 @@ fn main() -> Int {
     big_cfg.target.endianness = Endianness::Big;
     big_cfg.target.pointer_alignment = 16;
     let mut big_interner = Interner::new();
-    let big = Compiler::new(big_cfg).compile_source_v0(src, SourceId::from_u32(1), &mut big_interner);
+    let big =
+        Compiler::new(big_cfg).compile_source_v0(src, SourceId::from_u32(1), &mut big_interner);
 
     let little_ints = little
         .ct()

@@ -764,7 +764,10 @@ fn ct_propagate_skips_non_finite_host_float_folds() {
     let ct = ct_propagate::run(mono, CompilerConfig::default().target);
     let stats = ct.ct().eval_stats;
 
-    assert_eq!(ct.ct().ct_cache.get(&finite_add), Some(&Literal::Float(3.0)));
+    assert_eq!(
+        ct.ct().ct_cache.get(&finite_add),
+        Some(&Literal::Float(3.0))
+    );
     assert!(
         !ct.ct().ct_cache.contains_key(&overflow_mul),
         "float arithmetic that overflows to non-finite must remain unresolved"

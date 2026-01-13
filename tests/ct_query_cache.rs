@@ -35,7 +35,11 @@ fn main() -> Int {
         "initial run should evaluate CT expressions"
     );
     assert!(
-        run_1.ct().ct_cache.values().any(|lit| matches!(lit, Literal::Int(3))),
+        run_1
+            .ct()
+            .ct_cache
+            .values()
+            .any(|lit| matches!(lit, Literal::Int(3))),
         "baseline cache should include folded addition result"
     );
 
@@ -52,7 +56,11 @@ fn main() -> Int {
         "restored cache should preserve folded entry count"
     );
     assert!(
-        run_2.ct().ct_cache.values().any(|lit| matches!(lit, Literal::Int(3))),
+        run_2
+            .ct()
+            .ct_cache
+            .values()
+            .any(|lit| matches!(lit, Literal::Int(3))),
         "restored cache should keep folded values"
     );
 
