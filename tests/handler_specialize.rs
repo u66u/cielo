@@ -364,6 +364,97 @@ fn main() -> Int {
 }
 
 #[test]
+fn specializes_handle_body_with_match_forwarding_tail() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+enum Tag { A, B }
+
+fn io(v: Int) -> Int with Console {
+  do Console.print("x");
+  v
+}
+
+fn entry(tag: Tag) -> Int {
+  let y = handle {
+    let x = io(7);
+    match tag {
+      | A => x
+      | _ => x
+    }
+  } with Console {
+    | print(s) => 0
+  };
+  y
+}
+
+fn main() -> Int {
+  entry(A())
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert_eq!(
+        function_count_named(compiled.residual.program(), &interner, "io"),
+        1,
+        "match-forwarding tails that preserve the call result should specialize"
+    );
+    assert!(
+        specialized_copy_named(compiled.residual.program(), &interner, "io").is_some(),
+        "match-forwarding tails should create a specialized io copy"
+    );
+    let entry = function_named(compiled.residual.program(), &interner, "entry").expect("entry");
+    assert!(
+        !contains_handle_stmt(compiled.residual.program(), entry.body),
+        "match-forwarding tails should still rewrite away the handle"
+    );
+}
+
+#[test]
+fn does_not_specialize_handle_body_with_match_transformed_tail() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+enum Tag { A, B }
+
+fn io(v: Int) -> Int with Console {
+  do Console.print("x");
+  v
+}
+
+fn entry(tag: Tag) -> Int {
+  let y = handle {
+    let x = io(7);
+    match tag {
+      | A => x
+      | _ => x + 1
+    }
+  } with Console {
+    | print(s) => 0
+  };
+  y
+}
+
+fn main() -> Int {
+  entry(A())
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert!(
+        specialized_copy_named(compiled.residual.program(), &interner, "io").is_none(),
+        "match tails that transform the call result must not specialize"
+    );
+    let entry = function_named(compiled.residual.program(), &interner, "entry").expect("entry");
+    assert!(
+        contains_handle_stmt(compiled.residual.program(), entry.body),
+        "match-transformed tails should remain unspecialized"
+    );
+}
+
+#[test]
 fn does_not_specialize_handle_body_with_non_wrapper_post_call_work() {
     let src = r#"
 effect Console { fn print(s: String) -> () }
