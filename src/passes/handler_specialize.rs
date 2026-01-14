@@ -228,32 +228,65 @@ fn merge_wrapper_callee(current: Option<FuncId>, next: FuncId) -> Option<FuncId>
 }
 
 fn is_forwarding_tail_of_var(program: &CoreProgram, stmt_id: StmtId, source_var: VarId) -> bool {
-    let Some(stmt) = program.stmt(stmt_id) else {
-        return false;
-    };
-    if let StmtKind::Return(expr_id) = stmt.kind
-        && let Some(expr) = program.expr(expr_id)
-    {
-        return matches!(expr.kind, ExprKind::Var(bound) if bound == source_var);
+    fn recurse(
+        program: &CoreProgram,
+        stmt_id: StmtId,
+        source_var: VarId,
+        visiting: &mut HashSet<StmtId>,
+    ) -> bool {
+        if !visiting.insert(stmt_id) {
+            return false;
+        }
+        let result = match program.stmt(stmt_id).map(|stmt| &stmt.kind) {
+            Some(StmtKind::Return(expr_id)) => program
+                .expr(*expr_id)
+                .is_some_and(|expr| matches!(expr.kind, ExprKind::Var(bound) if bound == source_var)),
+            Some(StmtKind::Let {
+                binding,
+                value,
+                next,
+            }) => program
+                .expr(*value)
+                .is_some_and(|expr| matches!(expr.kind, ExprKind::Var(var) if var == source_var))
+                && recurse(program, *next, *binding, visiting),
+            Some(StmtKind::Val {
+                binding,
+                value,
+                next,
+            }) => {
+                recurse(program, *value, source_var, visiting)
+                    && recurse(program, *next, *binding, visiting)
+            }
+            Some(StmtKind::If {
+                then_branch,
+                else_branch,
+                ..
+            }) => {
+                recurse(program, *then_branch, source_var, visiting)
+                    && recurse(program, *else_branch, source_var, visiting)
+            }
+            Some(StmtKind::Match { arms, default, .. }) => {
+                let Some(default_stmt) = default else {
+                    return false;
+                };
+                arms.iter()
+                    .all(|arm| recurse(program, arm.body, source_var, visiting))
+                    && recurse(program, *default_stmt, source_var, visiting)
+            }
+            Some(StmtKind::Stage { body, next, .. }) => {
+                recurse(program, *body, source_var, visiting)
+                    && next
+                        .as_ref()
+                        .map_or(true, |next_stmt| recurse(program, *next_stmt, source_var, visiting))
+            }
+            _ => false,
+        };
+        visiting.remove(&stmt_id);
+        result
     }
-    let StmtKind::Let {
-        binding,
-        value,
-        next,
-    } = stmt.kind
-    else {
-        return false;
-    };
-    let Some(expr) = program.expr(value) else {
-        return false;
-    };
-    let ExprKind::Var(var) = expr.kind else {
-        return false;
-    };
-    if var != source_var {
-        return false;
-    }
-    is_forwarding_tail_of_var(program, next, binding)
+
+    let mut visiting = HashSet::new();
+    recurse(program, stmt_id, source_var, &mut visiting)
 }
 
 fn shape_for_handler(
