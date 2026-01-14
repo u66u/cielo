@@ -153,7 +153,7 @@ fn wrapper_call_callee(
                 binding,
                 value,
                 next,
-            } if is_return_of_var(program, *next, *binding) => {
+            } if is_forwarding_tail_of_var(program, *next, *binding) => {
                 wrapper_call_callee(program, *value, cache, visiting)
             }
             StmtKind::If {
@@ -227,17 +227,33 @@ fn merge_wrapper_callee(current: Option<FuncId>, next: FuncId) -> Option<FuncId>
     }
 }
 
-fn is_return_of_var(program: &CoreProgram, stmt_id: StmtId, var: VarId) -> bool {
+fn is_forwarding_tail_of_var(program: &CoreProgram, stmt_id: StmtId, source_var: VarId) -> bool {
     let Some(stmt) = program.stmt(stmt_id) else {
         return false;
     };
-    let StmtKind::Return(expr_id) = stmt.kind else {
+    if let StmtKind::Return(expr_id) = stmt.kind
+        && let Some(expr) = program.expr(expr_id)
+    {
+        return matches!(expr.kind, ExprKind::Var(bound) if bound == source_var);
+    }
+    let StmtKind::Let {
+        binding,
+        value,
+        next,
+    } = stmt.kind
+    else {
         return false;
     };
-    let Some(expr) = program.expr(expr_id) else {
+    let Some(expr) = program.expr(value) else {
         return false;
     };
-    matches!(expr.kind, ExprKind::Var(bound) if bound == var)
+    let ExprKind::Var(var) = expr.kind else {
+        return false;
+    };
+    if var != source_var {
+        return false;
+    }
+    is_forwarding_tail_of_var(program, next, binding)
 }
 
 fn shape_for_handler(
@@ -318,7 +334,7 @@ fn build_rewritten_body(
             binding,
             value,
             next,
-        } if is_return_of_var(program, next, binding) => {
+        } if is_forwarding_tail_of_var(program, next, binding) => {
             let rewritten_call =
                 build_rewritten_stmt(program, value, specialized_callee, cache, visiting)?;
             Some(StmtKind::Val {
