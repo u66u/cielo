@@ -181,6 +181,98 @@ fn main() -> Int {
 }
 
 #[test]
+fn specializes_handle_wrapped_call_through_alias_forwarding_tail() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+
+fn io(v: Int) -> Int with Console {
+  do Console.print("x");
+  v
+}
+
+fn main() -> Int {
+  let y = handle {
+    let x = io(7);
+    let z = x;
+    z
+  } with Console {
+    | print(s) => 0
+  };
+  y
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert_eq!(
+        function_count_named(compiled.residual.program(), &interner, "io"),
+        1,
+        "alias-forwarding wrapper tails should still specialize and prune original io copy"
+    );
+    let specialized_id = specialized_copy_named(compiled.residual.program(), &interner, "io")
+        .expect("specialized io id");
+    let main = compiled
+        .residual
+        .program()
+        .functions()
+        .iter()
+        .find(|function| interner.resolve(function.name) == Some("main"))
+        .expect("main function");
+    assert!(
+        !contains_handle_stmt(compiled.residual.program(), main.body),
+        "alias-forwarding wrapper tail should still rewrite away the handle"
+    );
+    let handle_call_callee = first_call_callee(compiled.residual.program(), main.body)
+        .expect("specialized call in main");
+    assert_eq!(
+        handle_call_callee, specialized_id,
+        "alias-forwarding wrapper tail should target specialized callee"
+    );
+}
+
+#[test]
+fn does_not_specialize_handle_body_with_non_alias_forwarding_tail() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+
+fn io(v: Int) -> Int with Console {
+  do Console.print("x");
+  v
+}
+
+fn main() -> Int {
+  let y = handle {
+    let x = io(7);
+    let z = x + 1;
+    z
+  } with Console {
+    | print(s) => 0
+  };
+  y
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert_eq!(
+        function_count_named(compiled.residual.program(), &interner, "io"),
+        1,
+        "non-alias forwarding tails must not trigger specialization copies"
+    );
+    assert!(
+        specialized_copy_named(compiled.residual.program(), &interner, "io").is_none(),
+        "non-alias forwarding tails should keep only the original io function"
+    );
+    let main = function_named(compiled.residual.program(), &interner, "main").expect("main");
+    assert!(
+        contains_handle_stmt(compiled.residual.program(), main.body),
+        "non-alias forwarding tails should remain unspecialized"
+    );
+}
+
+#[test]
 fn does_not_specialize_handle_body_with_non_wrapper_post_call_work() {
     let src = r#"
 effect Console { fn print(s: String) -> () }
