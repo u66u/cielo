@@ -273,6 +273,97 @@ fn main() -> Int {
 }
 
 #[test]
+fn specializes_handle_body_with_if_forwarding_tail() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+
+fn io(v: Int) -> Int with Console {
+  do Console.print("x");
+  v
+}
+
+fn entry(flag: Bool) -> Int {
+  let y = handle {
+    let x = io(7);
+    if flag {
+      x
+    } else {
+      x
+    }
+  } with Console {
+    | print(s) => 0
+  };
+  y
+}
+
+fn main() -> Int {
+  entry(true)
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert_eq!(
+        function_count_named(compiled.residual.program(), &interner, "io"),
+        1,
+        "if-forwarding tails that preserve the call result should specialize"
+    );
+    assert!(
+        specialized_copy_named(compiled.residual.program(), &interner, "io").is_some(),
+        "if-forwarding tails should create a specialized io copy"
+    );
+    let entry = function_named(compiled.residual.program(), &interner, "entry").expect("entry");
+    assert!(
+        !contains_handle_stmt(compiled.residual.program(), entry.body),
+        "if-forwarding tails should still rewrite away the handle"
+    );
+}
+
+#[test]
+fn does_not_specialize_handle_body_with_if_transformed_tail() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+
+fn io(v: Int) -> Int with Console {
+  do Console.print("x");
+  v
+}
+
+fn entry(flag: Bool) -> Int {
+  let y = handle {
+    let x = io(7);
+    if flag {
+      x
+    } else {
+      x + 1
+    }
+  } with Console {
+    | print(s) => 0
+  };
+  y
+}
+
+fn main() -> Int {
+  entry(true)
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert!(
+        specialized_copy_named(compiled.residual.program(), &interner, "io").is_none(),
+        "if tails that transform the call result must not specialize"
+    );
+    let main = function_named(compiled.residual.program(), &interner, "entry").expect("entry");
+    assert!(
+        contains_handle_stmt(compiled.residual.program(), main.body),
+        "if-transformed tails should remain unspecialized"
+    );
+}
+
+#[test]
 fn does_not_specialize_handle_body_with_non_wrapper_post_call_work() {
     let src = r#"
 effect Console { fn print(s: String) -> () }
