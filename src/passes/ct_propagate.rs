@@ -381,7 +381,7 @@ fn build_cache_key(target: TargetSpec) -> CtCacheKey {
         .to_owned(),
         target_pointer_alignment: target.pointer_alignment,
         evaluator_policy: EVALUATOR_POLICY.to_owned(),
-        compiler_version: env!("CARGO_PKG_VERSION").to_owned(),
+        compiler_version: crate::CIELO_VERSION.to_owned(),
     }
 }
 
@@ -436,6 +436,7 @@ fn normalize_path(path: &str) -> String {
         .into_owned()
 }
 
+// maybe better to use option
 fn hash_file_or_missing(path: &str) -> String {
     let mut file = match File::open(path) {
         Ok(file) => file,

@@ -1,0 +1,17 @@
+effect Console {
+  fn print(s: String) -> ();
+  }
+
+
+fn io_step(x: Int) -> Int with Console {
+  do Console.print("io_step");
+  x + 5
+}
+fn main() {
+  let a = 5
+  let b = handle { io_step(a) } with Console {
+    | print(s) => 0
+  };
+
+  a
+  }
