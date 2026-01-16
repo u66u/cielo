@@ -43,6 +43,21 @@ Rules:
   at compile time.
 - Generic/raw ID mixing across phase boundaries is prohibited.
 
+TBD:
+- How to actually implement performant effects
+- Arc gc pass and all optimizations for it. Identify which ones are easier/more difficult under our model/with the data we collect
+- Thought-through C emission. Do we just emit SSA, or do we want proper C to let compilers optimize heuristically?
+- Syntax sugar that's conducive to an intuitive mental model of effects
+- Do we even need BTA/comptime analysis/residualization, or can we just use a partial evaluator? Right now leaning to just keep it as is
+- Can we easily extract some benefit from PGO? e.g. ff a variable x is allocated in a function, and Usage Analysis shows it never escapes to a Global or Unknown scope:
+  - Do not emit New/Retain/Release.
+  - Emit struct x_storage; on the C Stack.
+  - Nim tries to do this with "Cursor Inference," but often fails on complex control flow. But since we have a Residualizer (Partial Evaluator), we can "unroll" the control flow.
+  - If the loop is unrolled at Comptime, the complex lifetime becomes a simple linear lifetime. So we can stack-allocate objects that Nim would heap-allocate, because we can "see" the future (via staging).
+  - But can we ONLY stack-allocate objects in Pure and Direct functions? If a function is Control (it yields), its execution suspends.
+    - If v0 is on the C Stack: The stack frame is destroyed/popped when we yield (return to the scheduler). The data is lost.
+    - If v0 is in the Frame Struct (Arena): The data persists across the yield. - So how do we handle it? hmm
+
 ## Core v1 features:
 Koka's core (System Fw + Effect Rows + evidence passing)
 lexical handlers + effect capability hierarchy (refer to order semantics)
