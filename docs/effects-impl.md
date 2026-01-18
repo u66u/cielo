@@ -558,7 +558,7 @@ Test targets (subtle/ambiguous):
 
 Oracle references:
 - *Effect Handlers in Scope* (scope/capture discipline): https://arxiv.org/abs/2106.00389
-- *Handling Algebraic Effects* (core handler semantics): https://lmcs.episciences.org/705
+- *Handling Algebraic Effects* (core handler semantics, we have a core similar to Koka): https://lmcs.episciences.org/705
 
 ### V1-Stage 2: Lightweight resumption linearity qualifiers
 
@@ -826,6 +826,17 @@ Recommended tooling references:
 
 ---
 
+## Feature-to-formalism map
+
+| Evidence ABI + lexical capability freshness | Removes hot-path dynamic handler lookup; prevents wrong-handler capture | [F1](effects-formalism-oracles.md#f1-evidence-abi-and-lexical-capability-freshness) |
+| Resumption linearity qualifiers | Lets us keep single-shot/direct fast path without full linear types | [F2](effects-formalism-oracles.md#f2-resumption-linearity-qualifiers-without-global-linear-types) |
+| Direct/control lowering boundaries | Makes selective CPS local and testable | [F3](effects-formalism-oracles.md#f3-directcontrol-lowering-correctness) |
+| Bounded specialization | Eliminates handler overhead while preserving termination of specialization | [F4](effects-formalism-oracles.md#f4-bounded-handler-specialization-correctness-and-termination) |
+| Capability-to-region unification | Memory/lifetime win and simpler lowering contract | [G1](effects-formalism-oracles.md#g1-capability-to-region-unification) |
+| Row polymorphism foundation | Enables fusion/specialization APIs without effect-row blow-up | [G2](effects-formalism-oracles.md#g2-row-polymorphism-and-concretization-before-staging) |
+| Handler fusion | Removes intermediate dispatch on nested disjoint handlers | [G3](effects-formalism-oracles.md#g3-disjoint-handler-fusion-correctness) |
+| Generalized specialization | Removes v1 abort class for varying recursive return clauses | [G4](effects-formalism-oracles.md#g4-generalized-specialization-via-return-continuation-parameterization) |
+
 ## References
 
 1. Plotkin, Pretnar. *Handling Algebraic Effects*. LMCS, 2013.  
@@ -858,3 +869,5 @@ Recommended tooling references:
    https://koka-lang.github.io/koka/doc/std_core_hnd-source.html
 15. Koka latest release so far
    https://github.com/koka-lang/koka/releases
+16. *Effect Handlers via Generalised Continuations*. JFP 2020. <https://bentnib.org/handlers-cps-journal.pdf>
+17. Xie et al. *Effect Handlers, Evidently*. ICFP 2020. https://ps.informatik.uni-tuebingen.de/publications/xie20evidently/
