@@ -339,8 +339,9 @@ fn emit_stmt(
             }
             write!(
                 out,
-                "cielo_perform({}, \"{}\", {}, ",
+                "cielo_perform({}, {}, \"{}\", {}, ",
                 effect.as_u32(),
+                operation.as_u32(),
                 op_name,
                 args.len()
             )
@@ -362,12 +363,17 @@ fn emit_stmt(
         }
         LinearStmt::Handle { effect, body, next } => {
             let handle_result = cx.fresh_temp("handle");
+            let handle_capability = cx.fresh_temp("capability");
             emit_indent(out, indent);
             writeln!(out, "CieloValue {handle_result} = cv_unit();")
                 .expect("in-memory write should not fail");
             emit_indent(out, indent);
-            writeln!(out, "cielo_handler_push({});", effect.as_u32())
-                .expect("in-memory write should not fail");
+            writeln!(
+                out,
+                "uint32_t {handle_capability} = cielo_handler_push({});",
+                effect.as_u32()
+            )
+            .expect("in-memory write should not fail");
             emit_stmt(
                 *body,
                 EmitMode::AssignTemp(handle_result.clone()),
@@ -376,7 +382,7 @@ fn emit_stmt(
                 cx,
             );
             emit_indent(out, indent);
-            writeln!(out, "cielo_handler_pop({});", effect.as_u32())
+            writeln!(out, "cielo_handler_pop({handle_capability});")
                 .expect("in-memory write should not fail");
             if let Some(next_stmt) = next {
                 emit_stmt(*next_stmt, mode, out, indent, cx);

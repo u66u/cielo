@@ -1,4 +1,4 @@
-use cielo::common::ids::{LinearFuncId, SourceId, VarId};
+use cielo::common::ids::{EffectLabelId, LinearFuncId, SourceId, VarId};
 use cielo::common::symbols::Interner;
 use cielo::ir::core::Literal;
 use cielo::ir::linear::{
@@ -40,10 +40,11 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
 
+    let perform_line = find_perform_call_line(&compiled.c_source, "print")
+        .expect("expected runtime perform stub for Console.print");
     assert!(
-        compiled
-            .c_source
-            .contains("(void)cielo_perform(0, \"print\"")
+        parse_perform_symbol_id(perform_line, 0, "print", 1).is_some(),
+        "perform stubs should pass effect id + op symbol id + op name + arity"
     );
     assert!(compiled.c_source.contains("print"));
 }
@@ -660,18 +661,67 @@ fn main() -> Int {
     let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
-        !compiled.c_source.contains("cielo_handler_push(0);"),
+        !compiled.c_source.contains("= cielo_handler_push(0);"),
         "handled callsites should not emit runtime handler push/pop"
     );
     assert!(
-        !compiled
-            .c_source
-            .contains("(void)cielo_perform(0, \"print\""),
+        find_perform_call_line(&compiled.c_source, "print").is_none(),
         "handled operations should lower into clause bodies instead of runtime perform stubs"
     );
     assert!(
         compiled.c_source.contains("cv_int(0)"),
         "handler clause return should be reflected in emitted C body"
+    );
+}
+
+#[test]
+fn c_emitter_binds_distinct_capabilities_per_handler_installation() {
+    let mut interner = Interner::new();
+    let main_name = interner.intern("main");
+
+    let mut program = LinearProgram::default();
+    let zero = program.push_expr(LinearExpr::Literal(Literal::Int(0)));
+    let ret = program.push_stmt(LinearStmt::Return(zero));
+    let inner_handle = program.push_stmt(LinearStmt::Handle {
+        effect: EffectLabelId::from_u32(0),
+        body: ret,
+        next: None,
+    });
+    let outer_handle = program.push_stmt(LinearStmt::Handle {
+        effect: EffectLabelId::from_u32(0),
+        body: inner_handle,
+        next: None,
+    });
+
+    program.functions.push(LinearFunction {
+        id: LinearFuncId::new(0),
+        name: main_name,
+        params: vec![],
+        body: outer_handle,
+    });
+    program.entrypoints = vec![LinearFuncId::new(0)];
+
+    let emitted = emit_c_program(&program, &interner);
+    let capabilities = handler_push_capability_temps_for_effect(&emitted, 0);
+
+    assert_eq!(
+        capabilities.len(),
+        2,
+        "each handler installation should bind a capability id from push"
+    );
+    assert_ne!(
+        capabilities[0], capabilities[1],
+        "nested handler installations should use distinct capability bindings"
+    );
+    for capability in capabilities {
+        assert!(
+            emitted.contains(format!("cielo_handler_pop({capability});").as_str()),
+            "handler pops should use the bound capability id, not raw effect id"
+        );
+    }
+    assert!(
+        !emitted.contains("cielo_handler_pop(0);"),
+        "handler pops should not target effect labels directly"
     );
 }
 
@@ -697,9 +747,7 @@ fn main() -> Int {
         .expect("main function");
 
     assert!(
-        !compiled
-            .c_source
-            .contains("(void)cielo_perform(0, \"tick\""),
+        find_perform_call_line(&compiled.c_source, "tick").is_none(),
         "handled resumptive operations should not call runtime perform stubs"
     );
     assert!(
@@ -1386,6 +1434,38 @@ fn linear_expr_is_int_literal(
     program.expr(expr_id).is_some_and(
         |expr| matches!(&expr.kind, LinearExpr::Literal(Literal::Int(lit)) if *lit == value),
     )
+}
+
+fn find_perform_call_line<'a>(c_source: &'a str, operation: &str) -> Option<&'a str> {
+    let quoted_operation = format!("\"{operation}\"");
+    c_source.lines().find(|line| {
+        line.contains("(void)cielo_perform(") && line.contains(quoted_operation.as_str())
+    })
+}
+
+fn parse_perform_symbol_id(line: &str, effect: u32, operation: &str, argc: usize) -> Option<u32> {
+    let trimmed = line.trim();
+    let prefix = format!("(void)cielo_perform({effect}, ");
+    let suffix = format!(", \"{operation}\", {argc}, ");
+    let payload = trimmed.strip_prefix(prefix.as_str())?;
+    let (symbol_id, _) = payload.split_once(suffix.as_str())?;
+    symbol_id.trim().parse::<u32>().ok()
+}
+
+fn handler_push_capability_temps_for_effect(c_source: &str, effect: u32) -> Vec<String> {
+    let suffix = format!("= cielo_handler_push({effect});");
+    c_source
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if !trimmed.starts_with("uint32_t ") || !trimmed.ends_with(suffix.as_str()) {
+                return None;
+            }
+            let declaration = trimmed.strip_prefix("uint32_t ")?;
+            let (binding, _) = declaration.split_once(" = ")?;
+            Some(binding.to_owned())
+        })
+        .collect()
 }
 
 fn linear_function_names(program: &LinearProgram, interner: &Interner) -> Vec<String> {

@@ -78,11 +78,13 @@ struct CieloContinuation {
 
 typedef struct {
     uint32_t effect;
+    uint32_t capability_id;
 } CieloHandlerFrame;
 
 enum { CIELO_HANDLER_STACK_MAX = 64 };
 static CieloHandlerFrame g_cielo_handlers[CIELO_HANDLER_STACK_MAX];
 static size_t g_cielo_handler_depth = 0;
+static uint32_t g_cielo_next_capability_id = 1;
 
 #define CIELO_CALL_PURE(expr) (expr)
 #define CIELO_CALL_DIRECT(expr) (expr)
@@ -134,16 +136,26 @@ static inline CieloValue cielo_ctor_field(CieloValue value, size_t index) {
     return value.as.ctor->fields[index];
 }
 
-static inline void cielo_handler_push(uint32_t effect) {
-    if (g_cielo_handler_depth >= CIELO_HANDLER_STACK_MAX) return;
+static inline uint32_t cielo_handler_push(uint32_t effect) {
+    if (g_cielo_handler_depth >= CIELO_HANDLER_STACK_MAX) return 0;
+    uint32_t capability_id = g_cielo_next_capability_id++;
+    if (capability_id == 0) {
+        capability_id = g_cielo_next_capability_id++;
+    }
+    if (g_cielo_next_capability_id == 0) {
+        g_cielo_next_capability_id = 1;
+    }
     g_cielo_handlers[g_cielo_handler_depth].effect = effect;
+    g_cielo_handlers[g_cielo_handler_depth].capability_id = capability_id;
     g_cielo_handler_depth++;
+    return capability_id;
 }
 
-static inline void cielo_handler_pop(uint32_t effect) {
+static inline void cielo_handler_pop(uint32_t capability_id) {
+    if (capability_id == 0) return;
     while (g_cielo_handler_depth > 0) {
         g_cielo_handler_depth--;
-        if (g_cielo_handlers[g_cielo_handler_depth].effect == effect) return;
+        if (g_cielo_handlers[g_cielo_handler_depth].capability_id == capability_id) return;
     }
 }
 
@@ -266,8 +278,9 @@ static inline void cv_print(CieloValue v) {
 }
 
 static CieloValue cielo_perform(
-    uint32_t effect, const char* op, size_t argc, const CieloValue* args
+    uint32_t effect, uint32_t op_symbol, const char* op, size_t argc, const CieloValue* args
 ) {
+    (void)op_symbol;
     if (cielo_handler_active(effect)) {
         return cv_unit();
     }
