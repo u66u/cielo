@@ -13,3 +13,7 @@ miette = { version = "7.6.0", features = ["fancy"] }
 rustc-hash = "2.1.1"
 smallvec = "1.15.1"
 thiserror = "2.0.18"
+
+[[bench]]
+name = "v1_pipeline"
+harness = false

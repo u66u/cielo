@@ -5,6 +5,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+enum {
+    CIELO_RUNTIME_ABI_VERSION_MAJOR = 1,
+    CIELO_RUNTIME_ABI_VERSION_MINOR = 0,
+    CIELO_RUNTIME_ABI_VERSION_PATCH = 0,
+    CIELO_RUNTIME_ABI_VERSION =
+        (CIELO_RUNTIME_ABI_VERSION_MAJOR << 16) |
+        (CIELO_RUNTIME_ABI_VERSION_MINOR << 8) |
+        CIELO_RUNTIME_ABI_VERSION_PATCH
+};
+
 typedef enum {
     CV_UNIT = 0,
     CV_BOOL = 1,
@@ -36,6 +46,36 @@ struct CieloValue {
     } as;
 };
 
+typedef struct CieloEvidence CieloEvidence;
+typedef struct CieloContinuation CieloContinuation;
+
+typedef CieloValue (*CieloClauseFn)(
+    CieloEvidence* evidence,
+    CieloContinuation* continuation,
+    size_t argc,
+    const CieloValue* args
+);
+
+struct CieloEvidence {
+    uint32_t abi_version;
+    uint32_t effect;
+    uint32_t capability_id;
+    uint32_t clause_count;
+    const CieloClauseFn* clauses;
+    void* captures;
+    void* reserved0;
+    void* reserved1;
+};
+
+struct CieloContinuation {
+    uint32_t abi_version;
+    uint32_t state;
+    void* payload;
+    CieloValue (*resume_once)(void* payload, CieloValue value);
+    void* reserved0;
+    void* reserved1;
+};
+
 typedef struct {
     uint32_t effect;
 } CieloHandlerFrame;
@@ -47,6 +87,10 @@ static size_t g_cielo_handler_depth = 0;
 #define CIELO_CALL_PURE(expr) (expr)
 #define CIELO_CALL_DIRECT(expr) (expr)
 #define CIELO_CALL_CONTROL(expr) (expr)
+
+static inline uint32_t cielo_runtime_abi_version(void) {
+    return (uint32_t)CIELO_RUNTIME_ABI_VERSION;
+}
 
 static inline CieloValue cv_unit(void) {
     CieloValue v = {.tag = CV_UNIT};
