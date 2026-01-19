@@ -42,8 +42,17 @@ fn main() -> Int {
 
     let perform_line = find_perform_call_line(&compiled.c_source, "print")
         .expect("expected runtime perform stub for Console.print");
+    let print_symbol = parse_perform_symbol_id(perform_line, 0, "print", 1)
+        .expect("perform stub should carry an op symbol id");
+    let expected_print_symbol = interner.intern("print").as_u32();
+    assert_eq!(
+        print_symbol, expected_print_symbol,
+        "perform stubs should thread symbol-prelude ids for op dispatch"
+    );
     assert!(
-        parse_perform_symbol_id(perform_line, 0, "print", 1).is_some(),
+        compiled.c_source.contains(
+            format!("cielo_perform(0, {expected_print_symbol}, \"print\", 1").as_str()
+        ),
         "perform stubs should pass effect id + op symbol id + op name + arity"
     );
     assert!(compiled.c_source.contains("print"));

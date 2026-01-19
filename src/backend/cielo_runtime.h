@@ -284,6 +284,12 @@ static CieloValue cielo_perform(
     if (cielo_handler_active(effect)) {
         return cv_unit();
     }
+#ifdef CIELO_OP_SYMBOL_PRINT
+    if (op_symbol == CIELO_OP_SYMBOL_PRINT && argc > 0 && args != NULL) {
+        cv_print(args[0]);
+        return cv_unit();
+    }
+#endif
     if (op && strcmp(op, "print") == 0 && argc > 0 && args != NULL) {
         cv_print(args[0]);
         return cv_unit();

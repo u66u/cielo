@@ -32,6 +32,8 @@ const MAX_CONST_POOL_BYTES: usize = 16 * 1024;
 const LARGE_SERIALIZABLE_POOL_BYTES: usize = 512;
 const ESTIMATED_VALUE_BYTES: usize = 16;
 const ESTIMATED_CTOR_BYTES: usize = 32;
+const BUILTIN_PRINT_OP_NAME: &str = "print";
+const C_PRELUDE_PRINT_OP_SYMBOL_MACRO: &str = "CIELO_OP_SYMBOL_PRINT";
 
 #[derive(Clone, Debug)]
 pub struct EmittedC {
@@ -49,6 +51,7 @@ pub fn run(linearized: Linearized, interner: &Interner) -> EmittedC {
 
 pub fn emit_c_program(program: &LinearProgram, interner: &Interner) -> String {
     let mut out = String::new();
+    emit_runtime_prelude(&mut out, program, interner);
     out.push_str(C_RUNTIME_HEADER);
     if !out.ends_with('\n') {
         out.push('\n');
@@ -111,6 +114,33 @@ pub fn emit_c_program(program: &LinearProgram, interner: &Interner) -> String {
 
     emit_c_main_wrapper(&mut out, program, &fn_name_by_index);
     out
+}
+
+fn emit_runtime_prelude(out: &mut String, program: &LinearProgram, interner: &Interner) {
+    if let Some(print_symbol) = builtin_print_op_symbol(program, interner) {
+        writeln!(out, "#ifndef {}", C_PRELUDE_PRINT_OP_SYMBOL_MACRO)
+            .expect("in-memory write should not fail");
+        writeln!(
+            out,
+            "#define {} {}u",
+            C_PRELUDE_PRINT_OP_SYMBOL_MACRO,
+            print_symbol.as_u32()
+        )
+        .expect("in-memory write should not fail");
+        writeln!(out, "#endif").expect("in-memory write should not fail");
+        out.push('\n');
+    }
+}
+
+fn builtin_print_op_symbol(program: &LinearProgram, interner: &Interner) -> Option<SymbolId> {
+    program.stmts().iter().find_map(|stmt| match &stmt.kind {
+        LinearStmt::Perform { operation, .. }
+            if interner.resolve(*operation) == Some(BUILTIN_PRINT_OP_NAME) =>
+        {
+            Some(*operation)
+        }
+        _ => None,
+    })
 }
 
 fn emit_function(
