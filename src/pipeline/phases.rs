@@ -61,6 +61,12 @@ pub struct HandlerDischarge {
     pub reason: Option<Reason>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ClauseDischarge {
+    pub dischargeable: bool,
+    pub reason: Option<Reason>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct SemanticTables {
     pub type_of_expr: Vec<Option<TypeId>>,
@@ -164,6 +170,7 @@ pub struct BtaTables {
     pub stage_of_var: DenseMap<VarId, Stage>,
     pub knownness_of_expr: DenseMap<ExprId, Knownness>,
     pub handler_discharge: DenseMap<HandlerId, HandlerDischarge>,
+    pub clause_discharge: DenseMap<HandlerId, Vec<ClauseDischarge>>,
 }
 
 impl BtaTables {
@@ -177,6 +184,13 @@ impl BtaTables {
         for discharge in self.handler_discharge.values_mut() {
             if let Some(reason) = discharge.reason {
                 discharge.reason = Some(reason.remap_func_ids(remap));
+            }
+        }
+        for clauses in self.clause_discharge.values_mut() {
+            for clause in clauses {
+                if let Some(reason) = clause.reason {
+                    clause.reason = Some(reason.remap_func_ids(remap));
+                }
             }
         }
     }

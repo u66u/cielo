@@ -1135,6 +1135,21 @@ fn assert_phase_func_ids_in_bounds(compiled: &cielo::CompiledC) {
             }),
         "handler discharge reasons must not retain stale function ids after specialization pruning"
     );
+    assert!(
+        compiled
+            .residual
+            .bta()
+            .clause_discharge
+            .values()
+            .all(|clauses| {
+                clauses.iter().all(|clause| {
+                    clause
+                        .reason
+                        .is_none_or(|reason| reason_has_valid_func_ids(reason, func_count))
+                })
+            }),
+        "handler clause discharge reasons must not retain stale function ids after specialization pruning"
+    );
 }
 
 fn stage_has_valid_func_ids(stage: Stage, func_count: usize) -> bool {

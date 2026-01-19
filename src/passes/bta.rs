@@ -18,13 +18,14 @@
 
 use std::collections::HashSet;
 
-use crate::common::ids::{EffectLabelId, ExprId, StmtId};
+use crate::common::ids::{EffectLabelId, ExprId, HandlerId, StmtId};
 use crate::ir::core::{CoreProgram, ExprKind, StageDirective, StmtKind};
 use crate::pipeline::phases::{
-    BtaClassified, BtaTables, CtPropagated, Knownness, Reason, SemanticTables, Stage,
+    BtaClassified, BtaTables, ClauseDischarge, CtPropagated, HandlerDischarge, Knownness, Reason,
+    SemanticTables, Stage,
 };
 use crate::sema::effect::{
-    EffectFlags, EffectProperties, SortedEffectRow, first_non_thunkable_effect, is_thunkable,
+    first_non_thunkable_effect, is_thunkable, EffectFlags, EffectProperties, SortedEffectRow,
 };
 use crate::sema::ty::Persistability;
 
@@ -50,6 +51,7 @@ pub fn run(ct: CtPropagated) -> BtaClassified {
     propagate_runtime_reasons(&program, &mut bta);
 
     classify_non_thunkable_effects(&program, &sema, &mut bta);
+    classify_handler_discharge(&program, &sema, &mut bta);
     enforce_ct_only_calls(&program, &sema, &mut bta, &mut diagnostics);
     classify_knownness(&sema, &ct_tables, &mut bta);
 
@@ -885,6 +887,38 @@ fn classify_non_thunkable_effects(
             _ => {}
         }
     }
+}
+
+fn classify_handler_discharge(program: &CoreProgram, sema: &SemanticTables, bta: &mut BtaTables) {
+    for (idx, handler) in program.handlers().iter().enumerate() {
+        let handler_id = HandlerId::new(idx);
+        let mut clause_statuses = Vec::with_capacity(handler.clauses.len());
+        for clause in &handler.clauses {
+            let reason = blocking_stmt_effect_reason(sema, clause.body);
+            clause_statuses.push(ClauseDischarge {
+                dischargeable: reason.is_none(),
+                reason,
+            });
+        }
+
+        let handler_reason = blocking_stmt_effect_reason(sema, handler.return_body)
+            .or_else(|| clause_statuses.iter().find_map(|status| status.reason));
+        bta.handler_discharge.insert(
+            handler_id,
+            HandlerDischarge {
+                dischargeable: handler_reason.is_none(),
+                reason: handler_reason,
+            },
+        );
+        bta.clause_discharge.insert(handler_id, clause_statuses);
+    }
+}
+
+fn blocking_stmt_effect_reason(sema: &SemanticTables, stmt_id: StmtId) -> Option<Reason> {
+    sema.effects_of_stmt
+        .get(stmt_id.index())
+        .and_then(|row| blocking_effect(row, &sema.effect_properties))
+        .map(Reason::EffectNotDischarged)
 }
 
 fn blocking_effect(

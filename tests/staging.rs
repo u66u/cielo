@@ -1,4 +1,4 @@
-use cielo::common::ids::SourceId;
+use cielo::common::ids::{HandlerId, SourceId};
 use cielo::common::symbols::Interner;
 use cielo::ir::core::{ExprKind, Literal, StmtKind};
 use cielo::pipeline::compiler::Endianness;
@@ -21,13 +21,11 @@ fn main() -> Int {
     let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
 
     assert!(!residual.ct().ct_cache.is_empty());
-    assert!(
-        residual
-            .bta()
-            .stage_of_expr
-            .values()
-            .any(|stage| matches!(stage, Stage::Ct))
-    );
+    assert!(residual
+        .bta()
+        .stage_of_expr
+        .values()
+        .any(|stage| matches!(stage, Stage::Ct)));
 }
 
 #[test]
@@ -142,6 +140,28 @@ fn main() -> Int {
     assert_eq!(
         residual.sema().effects_of_stmt[main.body.index()],
         SortedEffectRow::empty()
+    );
+    let handler_id = HandlerId::new(0);
+    let handler_status = residual
+        .bta()
+        .handler_discharge
+        .get(&handler_id)
+        .expect("handler discharge entry");
+    assert!(
+        handler_status.dischargeable && handler_status.reason.is_none(),
+        "simple Console clause should be dischargeable"
+    );
+    let clause_statuses = residual
+        .bta()
+        .clause_discharge
+        .get(&handler_id)
+        .expect("handler clause discharge entry");
+    assert_eq!(clause_statuses.len(), 1, "single-clause handler expected");
+    assert!(
+        clause_statuses
+            .iter()
+            .all(|status| status.dischargeable && status.reason.is_none()),
+        "simple Console clause should record a discharged clause status"
     );
 
     let mut cursor = main.body;
@@ -269,13 +289,11 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
 
-    assert!(
-        residual
-            .diagnostics()
-            .entries()
-            .iter()
-            .any(|diag| diag.code == "BTA_CT_ONLY_RUNTIME_ARG")
-    );
+    assert!(residual
+        .diagnostics()
+        .entries()
+        .iter()
+        .any(|diag| diag.code == "BTA_CT_ONLY_RUNTIME_ARG"));
 }
 
 #[test]
@@ -292,13 +310,11 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
 
-    assert!(
-        !residual
-            .diagnostics()
-            .entries()
-            .iter()
-            .any(|diag| diag.code == "BTA_CT_ONLY_RUNTIME_ARG")
-    );
+    assert!(!residual
+        .diagnostics()
+        .entries()
+        .iter()
+        .any(|diag| diag.code == "BTA_CT_ONLY_RUNTIME_ARG"));
 }
 
 #[test]
@@ -318,13 +334,11 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
 
-    assert!(
-        residual
-            .diagnostics()
-            .entries()
-            .iter()
-            .any(|diag| diag.code == "BTA_CT_ONLY_RUNTIME_ARG")
-    );
+    assert!(residual
+        .diagnostics()
+        .entries()
+        .iter()
+        .any(|diag| diag.code == "BTA_CT_ONLY_RUNTIME_ARG"));
 }
 
 #[test]
@@ -348,6 +362,46 @@ fn main() -> Int {
         stage,
         Stage::Rt(cielo::pipeline::phases::Reason::EffectNotDischarged(_))
     )));
+}
+
+#[test]
+fn handler_clause_with_non_thunkable_effect_is_not_dischargeable() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+fn main() -> Int {
+  let y = handle { do Console.print("x"); 7 } with Console {
+    | print(s) => { do Console.print(s); 0 }
+  };
+  y
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
+
+    let handler_id = HandlerId::new(0);
+    let handler_status = residual
+        .bta()
+        .handler_discharge
+        .get(&handler_id)
+        .expect("handler discharge entry");
+    assert!(matches!(
+        handler_status.reason,
+        Some(cielo::pipeline::phases::Reason::EffectNotDischarged(_))
+    ));
+    assert!(!handler_status.dischargeable);
+
+    let clause_statuses = residual
+        .bta()
+        .clause_discharge
+        .get(&handler_id)
+        .expect("handler clause discharge entry");
+    assert_eq!(clause_statuses.len(), 1, "single-clause handler expected");
+    assert!(matches!(
+        clause_statuses[0].reason,
+        Some(cielo::pipeline::phases::Reason::EffectNotDischarged(_))
+    ));
+    assert!(!clause_statuses[0].dischargeable);
 }
 
 #[test]
