@@ -767,6 +767,18 @@ fn main() -> Int {
         linear_stmt_graph_tail_resume_wrapper_count(&compiled.linear, main.body) == 1,
         "tail resumptions should leave exactly one identity wrapper shape after TR optimization"
     );
+    assert!(
+        compiled
+            .residual
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|diag| {
+                diag.code == "LINEARIZE_RESUME_LOWERING_GATE"
+                    && diag.message.contains("Direct path selected")
+            }),
+        "tail-resumptive clauses should report a direct-path lowering gate decision"
+    );
 }
 
 #[test]
@@ -804,6 +816,18 @@ fn main() -> Int {
     assert!(
         linear_stmt_graph_contains_add_rhs_int(&compiled.linear, main.body, 1),
         "non-tail code after resume should be preserved"
+    );
+    assert!(
+        compiled
+            .residual
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|diag| {
+                diag.code == "LINEARIZE_RESUME_LOWERING_GATE"
+                    && diag.message.contains("Control path selected")
+            }),
+        "non-tail resumptive clauses should report a control-path lowering gate decision"
     );
 }
 
