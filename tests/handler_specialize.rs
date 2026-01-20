@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::fmt::Write;
 
 use cielo::common::ids::{FuncId, HandlerId, SourceId, StmtId};
 use cielo::common::symbols::Interner;
@@ -947,6 +948,80 @@ fn main() -> Int {
         Some(specialized_id),
         "rewritten main path should call the specialized io copy"
     );
+}
+
+#[test]
+fn caps_specialization_copies_per_callee() {
+    const WRAPPER_COUNT: usize = 11;
+    const SPECIALIZATION_CAP: usize = 8;
+
+    let mut wrappers = String::new();
+    let mut main_terms = Vec::new();
+    for idx in 0..WRAPPER_COUNT {
+        writeln!(
+            &mut wrappers,
+            r#"
+fn wrap_{idx}() -> Int {{
+  let y = handle {{ io() }} with Console {{
+    | print(s) => {idx}
+  }};
+  y
+}}
+"#
+        )
+        .expect("append wrapper");
+        main_terms.push(format!("wrap_{idx}()"));
+    }
+
+    let src = format!(
+        r#"
+effect Console {{ fn print(s: String) -> () }}
+
+fn io() -> Int with Console {{
+  do Console.print("x");
+  1
+}}
+
+{wrappers}
+
+fn main() -> Int {{
+  {}
+}}
+"#,
+        main_terms.join(" + ")
+    );
+
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src.as_str(), SourceId::from_u32(0), &mut interner);
+    let program = compiled.residual.program();
+
+    let specialized_io_copies = function_ids_named(program, &interner, "io")
+        .into_iter()
+        .filter(|id| {
+            program
+                .function(*id)
+                .is_some_and(|function| first_handle_handler(program, function.body).is_some())
+        })
+        .count();
+    assert_eq!(
+        specialized_io_copies, SPECIALIZATION_CAP,
+        "specialization should stop at the per-callee cap"
+    );
+
+    let mut unspecialized_wrappers = 0usize;
+    for idx in 0..WRAPPER_COUNT {
+        let name = format!("wrap_{idx}");
+        let wrapper = function_named(program, &interner, name.as_str()).expect("wrapper function");
+        if contains_handle_stmt(program, wrapper.body) {
+            unspecialized_wrappers += 1;
+        }
+    }
+    assert!(
+        unspecialized_wrappers > 0,
+        "wrappers beyond specialization cap should remain unspecialized"
+    );
+    assert_phase_func_ids_in_bounds(&compiled);
 }
 
 fn first_handle_handler(program: &CoreProgram, root: StmtId) -> Option<HandlerId> {
