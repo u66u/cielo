@@ -25,6 +25,9 @@ use crate::ir::core::{
 };
 use crate::pipeline::phases::Residualized;
 
+const MAX_SPECIALIZATIONS_PER_CALLEE: usize = 8;
+const MAX_TOTAL_SPECIALIZATIONS: usize = 256;
+
 pub fn run(residual: Residualized) -> Residualized {
     let (mut program, diagnostics, sema, mut mono, ct, mut bta, mut residual_tables) =
         residual.into_parts();
@@ -48,9 +51,19 @@ struct SpecializeCandidate {
 fn specialize_handle_wrapped_calls(program: &mut CoreProgram) {
     let candidates = collect_specialize_candidates(program);
     let mut specialized: HashMap<(FuncId, HandlerShapeKey), FuncId> = HashMap::new();
+    let mut specialized_count_by_callee: HashMap<FuncId, usize> = HashMap::new();
+    let mut total_specialized = 0usize;
 
     for candidate in candidates {
-        let specialized_callee = ensure_specialized(program, &candidate, &mut specialized);
+        let Some(specialized_callee) = ensure_specialized(
+            program,
+            &candidate,
+            &mut specialized,
+            &mut specialized_count_by_callee,
+            &mut total_specialized,
+        ) else {
+            continue;
+        };
         rewrite_direct_handle_callsite(program, &candidate, specialized_callee);
     }
 }
@@ -484,14 +497,27 @@ fn ensure_specialized(
     program: &mut CoreProgram,
     candidate: &SpecializeCandidate,
     specialized: &mut HashMap<(FuncId, HandlerShapeKey), FuncId>,
-) -> FuncId {
+    specialized_count_by_callee: &mut HashMap<FuncId, usize>,
+    total_specialized: &mut usize,
+) -> Option<FuncId> {
     let key = (candidate.callee, candidate.shape.clone());
     if let Some(existing) = specialized.get(&key).copied() {
-        return existing;
+        return Some(existing);
+    }
+    if *total_specialized >= MAX_TOTAL_SPECIALIZATIONS {
+        return None;
+    }
+    if specialized_count_by_callee
+        .get(&candidate.callee)
+        .copied()
+        .unwrap_or(0)
+        >= MAX_SPECIALIZATIONS_PER_CALLEE
+    {
+        return None;
     }
 
     let Some(source_decl) = program.function(candidate.callee).cloned() else {
-        return candidate.callee;
+        return None;
     };
 
     // Add a placeholder copy first to obtain the stable specialized FuncId.
@@ -525,7 +551,12 @@ fn ensure_specialized(
     }
 
     specialized.insert(key, specialized_id);
-    specialized_id
+    *total_specialized += 1;
+    specialized_count_by_callee
+        .entry(candidate.callee)
+        .and_modify(|count| *count += 1)
+        .or_insert(1);
+    Some(specialized_id)
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
