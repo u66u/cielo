@@ -144,6 +144,16 @@ impl ResumeQualifier {
     }
 }
 
+impl ClauseConvention {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Pure => "Pure",
+            Self::Direct => "Direct",
+            Self::Control => "Control",
+        }
+    }
+}
+
 impl ResumeUseRange {
     fn zero() -> Self {
         Self {
@@ -633,6 +643,17 @@ fn lower_stmt_under_handler(
                     );
                 }
                 let clause_convention = classify_clause_convention(clause, resume_analysis);
+                if clause.resume_param.is_some() {
+                    diagnostics.note(
+                        "LINEARIZE_RESUME_LOWERING_GATE",
+                        format!(
+                            "handler clause lowering gate: {} path selected (reason: {})",
+                            clause_convention.as_str(),
+                            resume_convention_reason(resume_analysis, clause_convention),
+                        ),
+                        clause.span,
+                    );
+                }
                 let clause_resume_ctx = clause.resume_param.map(|resume_var| ResumeContext {
                     resume_var,
                     perform_result: *result,
@@ -1076,6 +1097,33 @@ fn classify_clause_convention(
                 ClauseConvention::Control
             }
         }
+    }
+}
+
+fn resume_convention_reason(
+    resume: ClauseResumeAnalysis,
+    convention: ClauseConvention,
+) -> &'static str {
+    match convention {
+        ClauseConvention::Pure => "clause has no resume parameter",
+        ClauseConvention::Direct => match resume.qualifier {
+            ResumeQualifier::Abortive => "resume is not used by clause",
+            ResumeQualifier::Affine | ResumeQualifier::Linear => {
+                "resume is tail-resumptive and can stay on direct path"
+            }
+            ResumeQualifier::Multi => {
+                "unreachable: multi-shot clauses are never direct in v1 lowering"
+            }
+        },
+        ClauseConvention::Control => match resume.qualifier {
+            ResumeQualifier::Multi => "resume may be called more than once (v1 rejects multi-shot)",
+            ResumeQualifier::Affine | ResumeQualifier::Linear => {
+                "resume is not tail-resumptive, so control-path lowering is required"
+            }
+            ResumeQualifier::Abortive => {
+                "unreachable: abortive clauses lower directly in v1"
+            }
+        },
     }
 }
 
