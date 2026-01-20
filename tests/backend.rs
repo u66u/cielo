@@ -1100,6 +1100,118 @@ fn main() -> Int {
 }
 
 #[test]
+fn lowers_mixed_direct_and_control_resume_clauses_in_one_handler() {
+    let src = r#"
+effect LocalState {
+  fn tick() -> Int
+  fn bump(flag: Bool) -> Int
+}
+effect Console { fn print(s: String) -> () }
+
+fn runtime_flag() -> Bool with Console {
+  do Console.print("flag");
+  true
+}
+
+fn main() -> Int {
+  let x = handle {
+    do LocalState.tick();
+    do LocalState.bump(runtime_flag());
+    5
+  } with LocalState {
+    | tick(resume) => resume(40)
+    | bump(flag, resume) => {
+      if flag {
+        let y = resume(1);
+        y + 1
+      } else {
+        resume(2)
+      }
+    }
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let main = compiled
+        .linear
+        .functions
+        .iter()
+        .find(|function| interner.resolve(function.name) == Some("main"))
+        .expect("main function");
+
+    let diagnostics = compiled.residual.diagnostics().entries();
+    assert!(
+        diagnostics.iter().any(|diag| {
+            diag.code == "LINEARIZE_RESUME_LOWERING_GATE"
+                && diag.message.contains("Direct path selected")
+        }),
+        "direct resumptive clauses should report a direct lowering gate in mixed handlers"
+    );
+    assert!(
+        diagnostics.iter().any(|diag| {
+            diag.code == "LINEARIZE_RESUME_LOWERING_GATE"
+                && diag.message.contains("Control path selected")
+        }),
+        "non-tail resumptive clauses should report a control lowering gate in mixed handlers"
+    );
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diag| diag.code == "LINEARIZE_HANDLED_EFFECT_LEAK"),
+        "mixed clause lowering should not leak handled performs across the linear boundary"
+    );
+    assert!(
+        !linear_stmt_graph_contains_perform_effect(&compiled.linear, main.body, 0),
+        "handled effects should not survive as residual runtime perform calls"
+    );
+}
+
+#[test]
+fn eliminates_dead_handler_with_empty_handled_effect_intersection() {
+    let src = r#"
+effect LocalState { fn tick() -> Int }
+effect Console { fn print(s: String) -> () }
+fn main() -> Int {
+  let x = handle {
+    do Console.print("hello");
+    41
+  } with LocalState {
+    | tick(resume) => resume(0)
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let main = compiled
+        .linear
+        .functions
+        .iter()
+        .find(|function| interner.resolve(function.name) == Some("main"))
+        .expect("main function");
+
+    let diagnostics = compiled.residual.diagnostics().entries();
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diag| diag.code == "LINEARIZE_DEAD_HANDLER_ELIMINATED"),
+        "handlers with no intersection against body effects should be eliminated"
+    );
+    assert!(
+        !linear_stmt_graph_contains_perform_effect(&compiled.linear, main.body, 0),
+        "eliminated handlers should not leave handled effect performs"
+    );
+    assert!(
+        linear_stmt_graph_contains_perform_effect(&compiled.linear, main.body, 1),
+        "dead-handler elimination should preserve unrelated body effects"
+    );
+}
+
+#[test]
 fn emits_match_branches_with_ctor_runtime_helpers() {
     let mut interner = Interner::new();
     let main_name = interner.intern("main");
