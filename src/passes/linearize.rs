@@ -23,7 +23,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::common::diagnostics::DiagnosticBag;
 use crate::common::ids::{
-    ExprId, FuncId, LinearExprId, LinearFuncId, LinearStmtId, StmtId, SymbolId, VarId,
+    EffectLabelId, ExprId, FuncId, LinearExprId, LinearFuncId, LinearStmtId, StmtId, SymbolId,
+    VarId,
 };
 use crate::ir::core::{CoreProgram, ExprKind, HandlerClause, HandlerDef, StmtKind};
 use crate::ir::linear::{
@@ -461,27 +462,14 @@ fn lower_stmt(
             next,
         } => {
             if let Some(handler_def) = program.handlers().get(handler.index()) {
-                if next.is_none() {
-                    let lowered = lower_stmt_under_handler(
-                        program,
-                        *body,
-                        handler_def,
-                        fn_names,
-                        sema,
-                        diagnostics,
-                        linear,
-                        expr_map,
-                        stmt_map,
-                        None,
+                let is_dead_handler = !stmt_effect_row_contains(sema, *body, handler_def.effect);
+                if is_dead_handler && is_identity_handler_return_clause(program, handler_def) {
+                    diagnostics.note(
+                        "LINEARIZE_DEAD_HANDLER_ELIMINATED",
+                        "Elided handler with empty handled-effect intersection and identity return clause",
+                        stmt.span,
                     );
-                    stmt_map[stmt_id.index()] = Some(lowered);
-                    return lowered;
-                }
-
-                let effect = handler_def.effect;
-                LinearStmt::Handle {
-                    effect,
-                    body: lower_stmt(
+                    let lowered_body = lower_stmt(
                         program,
                         *body,
                         fn_names,
@@ -490,20 +478,70 @@ fn lower_stmt(
                         linear,
                         expr_map,
                         stmt_map,
-                    ),
-                    next: next.map(|next_stmt| {
-                        lower_stmt(
+                    );
+                    if let Some(next_stmt) = next {
+                        let lowered_next = lower_stmt(
                             program,
-                            next_stmt,
+                            *next_stmt,
                             fn_names,
                             sema,
                             diagnostics,
                             linear,
                             expr_map,
                             stmt_map,
-                        )
-                    }),
+                        );
+                        let lowered = linear.push_stmt(LinearStmt::Val {
+                            binding: handler_def.return_param,
+                            value: lowered_body,
+                            next: lowered_next,
+                        });
+                        stmt_map[stmt_id.index()] = Some(lowered);
+                        return lowered;
+                    }
+                    stmt_map[stmt_id.index()] = Some(lowered_body);
+                    return lowered_body;
                 }
+
+                let lowered_body = lower_stmt_under_handler(
+                    program,
+                    *body,
+                    handler_def,
+                    fn_names,
+                    sema,
+                    diagnostics,
+                    linear,
+                    expr_map,
+                    stmt_map,
+                    None,
+                );
+                if linear_stmt_contains_perform_effect(linear, lowered_body, handler_def.effect) {
+                    diagnostics.error(
+                        "LINEARIZE_HANDLED_EFFECT_LEAK",
+                        "Handled effect perform leaked across linearize boundary",
+                        stmt.span,
+                    );
+                }
+                if let Some(next_stmt) = next {
+                    let lowered_next = lower_stmt(
+                        program,
+                        *next_stmt,
+                        fn_names,
+                        sema,
+                        diagnostics,
+                        linear,
+                        expr_map,
+                        stmt_map,
+                    );
+                    let lowered = linear.push_stmt(LinearStmt::Val {
+                        binding: handler_def.return_param,
+                        value: lowered_body,
+                        next: lowered_next,
+                    });
+                    stmt_map[stmt_id.index()] = Some(lowered);
+                    return lowered;
+                }
+                stmt_map[stmt_id.index()] = Some(lowered_body);
+                return lowered_body;
             } else {
                 diagnostics.error(
                     "LINEARIZE_UNKNOWN_HANDLER",
@@ -1048,6 +1086,41 @@ fn is_identity_return_of_var(program: &CoreProgram, stmt_id: StmtId, var: VarId)
         return false;
     };
     matches!(expr.kind, ExprKind::Var(bound) if bound == var)
+}
+
+fn is_identity_handler_return_clause(program: &CoreProgram, handler: &HandlerDef) -> bool {
+    is_identity_return_of_var(program, handler.return_body, handler.return_param)
+}
+
+fn stmt_effect_row_contains(sema: &SemanticTables, stmt_id: StmtId, effect: EffectLabelId) -> bool {
+    sema
+        .effects_of_stmt
+        .get(stmt_id.index())
+        .is_some_and(|row| row.contains(effect))
+}
+
+fn linear_stmt_contains_perform_effect(
+    program: &LinearProgram,
+    root: LinearStmtId,
+    effect: EffectLabelId,
+) -> bool {
+    let mut stack = vec![root];
+    let mut seen = HashSet::new();
+    while let Some(stmt_id) = stack.pop() {
+        if !seen.insert(stmt_id) {
+            continue;
+        }
+        let Some(stmt) = program.stmt(stmt_id) else {
+            continue;
+        };
+        if matches!(stmt.kind, LinearStmt::Perform { effect: found, .. } if found == effect) {
+            return true;
+        }
+        for child in stmt.child_stmts() {
+            stack.push(child);
+        }
+    }
+    false
 }
 
 fn analyze_clause_resume(program: &CoreProgram, clause: &HandlerClause) -> ClauseResumeAnalysis {
