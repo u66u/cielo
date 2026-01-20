@@ -878,6 +878,17 @@ fn main() -> Int {
             .any(|diag| diag.code == "LINEARIZE_MULTI_SHOT_RESUME"),
         "multi-shot resume usage should produce a dedicated linearization diagnostic"
     );
+    assert!(
+        compiled
+            .residual
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|diag| {
+                diag.code == "LINEARIZE_RESUME_QUALIFIER" && diag.message.contains("Multi")
+            }),
+        "multi-shot clauses should report the resume qualifier"
+    );
 }
 
 #[test]
@@ -965,6 +976,102 @@ fn main() -> Int {
             .iter()
             .any(|diag| diag.code == "LINEARIZE_MULTI_SHOT_RESUME"),
         "a control-flow path with two resumes must still be rejected as multi-shot"
+    );
+}
+
+#[test]
+fn classifies_affine_resume_qualifier_for_optional_resume_paths() {
+    let src = r#"
+effect LocalState { fn tick(flag: Bool) -> Int }
+fn main() -> Int {
+  let x = handle { do LocalState.tick(true); 9 } with LocalState {
+    | tick(flag, resume) => {
+      if flag {
+        resume(41)
+      } else {
+        0
+      }
+    }
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert!(
+        compiled
+            .residual
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|diag| {
+                diag.code == "LINEARIZE_RESUME_QUALIFIER" && diag.message.contains("Affine")
+            }),
+        "branches with optional resume should classify as Affine"
+    );
+}
+
+#[test]
+fn classifies_linear_resume_qualifier_when_all_paths_resume_once() {
+    let src = r#"
+effect LocalState { fn tick(flag: Bool) -> Int }
+fn main() -> Int {
+  let x = handle { do LocalState.tick(true); 9 } with LocalState {
+    | tick(flag, resume) => {
+      if flag {
+        resume(41)
+      } else {
+        resume(42)
+      }
+    }
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert!(
+        compiled
+            .residual
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|diag| {
+                diag.code == "LINEARIZE_RESUME_QUALIFIER" && diag.message.contains("Linear")
+            }),
+        "exactly-once resume paths should classify as Linear"
+    );
+}
+
+#[test]
+fn classifies_abortive_resume_qualifier_when_resume_binder_is_unused() {
+    let src = r#"
+effect LocalState { fn tick() -> Int }
+fn main() -> Int {
+  let x = handle { do LocalState.tick(); 9 } with LocalState {
+    | tick(resume) => 41
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert!(
+        compiled
+            .residual
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|diag| {
+                diag.code == "LINEARIZE_RESUME_QUALIFIER" && diag.message.contains("Abortive")
+            }),
+        "unused resume binders should classify as Abortive"
     );
 }
 
