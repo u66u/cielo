@@ -69,6 +69,28 @@ enum ResumeUseBound {
     Many,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ResumeQualifier {
+    Abortive,
+    Affine,
+    Linear,
+    Multi,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct ClauseResumeAnalysis {
+    qualifier: ResumeQualifier,
+    min_uses: ResumeUseBound,
+    max_uses: ResumeUseBound,
+    tail_resumptive: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct ResumeUseRange {
+    min: ResumeUseBound,
+    max: ResumeUseBound,
+}
+
 impl ResumeUseBound {
     fn plus(self, other: Self) -> Self {
         use ResumeUseBound::{Many, One, Zero};
@@ -89,8 +111,66 @@ impl ResumeUseBound {
         }
     }
 
+    fn min(self, other: Self) -> Self {
+        use ResumeUseBound::{Many, One, Zero};
+        match (self, other) {
+            (Zero, _) | (_, Zero) => Zero,
+            (One, _) | (_, One) => One,
+            (Many, Many) => Many,
+        }
+    }
+
     fn is_many(self) -> bool {
         matches!(self, Self::Many)
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Zero => "zero",
+            Self::One => "one",
+            Self::Many => "many",
+        }
+    }
+}
+
+impl ResumeQualifier {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Abortive => "Abortive",
+            Self::Affine => "Affine",
+            Self::Linear => "Linear",
+            Self::Multi => "Multi",
+        }
+    }
+}
+
+impl ResumeUseRange {
+    fn zero() -> Self {
+        Self {
+            min: ResumeUseBound::Zero,
+            max: ResumeUseBound::Zero,
+        }
+    }
+
+    fn many() -> Self {
+        Self {
+            min: ResumeUseBound::Zero,
+            max: ResumeUseBound::Many,
+        }
+    }
+
+    fn plus(self, other: Self) -> Self {
+        Self {
+            min: self.min.plus(other.min),
+            max: self.max.plus(other.max),
+        }
+    }
+
+    fn join(self, other: Self) -> Self {
+        Self {
+            min: self.min.min(other.min),
+            max: self.max.max(other.max),
+        }
     }
 }
 
@@ -531,16 +611,28 @@ fn lower_stmt_under_handler(
                 .iter()
                 .find(|candidate| candidate.operation == *operation)
             {
-                if let Some(resume_var) = clause.resume_param {
-                    if clause_resume_use_bound(program, clause.body, resume_var).is_many() {
-                        diagnostics.error(
-                            "LINEARIZE_MULTI_SHOT_RESUME",
-                            "Handler clause resumes the continuation more than once; v1 supports single-shot resumptions only",
-                            clause.span,
-                        );
-                    }
+                let resume_analysis = analyze_clause_resume(program, clause);
+                if clause.resume_param.is_some() {
+                    diagnostics.note(
+                        "LINEARIZE_RESUME_QUALIFIER",
+                        format!(
+                            "handler clause resume qualifier: {} (min={}, max={}, tail={})",
+                            resume_analysis.qualifier.as_str(),
+                            resume_analysis.min_uses.as_str(),
+                            resume_analysis.max_uses.as_str(),
+                            resume_analysis.tail_resumptive
+                        ),
+                        clause.span,
+                    );
                 }
-                let clause_convention = classify_clause_convention(program, clause);
+                if matches!(resume_analysis.qualifier, ResumeQualifier::Multi) {
+                    diagnostics.error(
+                        "LINEARIZE_MULTI_SHOT_RESUME",
+                        "Handler clause resumes the continuation more than once; v1 supports single-shot resumptions only",
+                        clause.span,
+                    );
+                }
+                let clause_convention = classify_clause_convention(clause, resume_analysis);
                 let clause_resume_ctx = clause.resume_param.map(|resume_var| ResumeContext {
                     resume_var,
                     perform_result: *result,
@@ -937,14 +1029,53 @@ fn is_identity_return_of_var(program: &CoreProgram, stmt_id: StmtId, var: VarId)
     matches!(expr.kind, ExprKind::Var(bound) if bound == var)
 }
 
-fn classify_clause_convention(program: &CoreProgram, clause: &HandlerClause) -> ClauseConvention {
+fn analyze_clause_resume(program: &CoreProgram, clause: &HandlerClause) -> ClauseResumeAnalysis {
     let Some(resume_var) = clause.resume_param else {
-        return ClauseConvention::Pure;
+        return ClauseResumeAnalysis {
+            qualifier: ResumeQualifier::Abortive,
+            min_uses: ResumeUseBound::Zero,
+            max_uses: ResumeUseBound::Zero,
+            tail_resumptive: true,
+        };
     };
-    if is_tail_resumptive_clause(program, clause.body, resume_var) {
-        ClauseConvention::Direct
+    let range = clause_resume_use_range(program, clause.body, resume_var);
+    let tail_resumptive = is_tail_resumptive_clause(program, clause.body, resume_var);
+    let qualifier = if range.max.is_many() {
+        ResumeQualifier::Multi
+    } else if matches!(range.max, ResumeUseBound::Zero) {
+        ResumeQualifier::Abortive
+    } else if matches!(range.min, ResumeUseBound::One) {
+        ResumeQualifier::Linear
     } else {
-        ClauseConvention::Control
+        ResumeQualifier::Affine
+    };
+
+    ClauseResumeAnalysis {
+        qualifier,
+        min_uses: range.min,
+        max_uses: range.max,
+        tail_resumptive,
+    }
+}
+
+fn classify_clause_convention(
+    clause: &HandlerClause,
+    resume: ClauseResumeAnalysis,
+) -> ClauseConvention {
+    if clause.resume_param.is_none() {
+        return ClauseConvention::Pure;
+    }
+
+    match resume.qualifier {
+        ResumeQualifier::Multi => ClauseConvention::Control,
+        ResumeQualifier::Abortive => ClauseConvention::Direct,
+        ResumeQualifier::Affine | ResumeQualifier::Linear => {
+            if resume.tail_resumptive {
+                ClauseConvention::Direct
+            } else {
+                ClauseConvention::Control
+            }
+        }
     }
 }
 
@@ -1117,54 +1248,52 @@ fn stmt_mentions_var(program: &CoreProgram, root: StmtId, var: VarId) -> bool {
     false
 }
 
-fn clause_resume_use_bound(
-    program: &CoreProgram,
-    root: StmtId,
-    resume_var: VarId,
-) -> ResumeUseBound {
+fn clause_resume_use_range(program: &CoreProgram, root: StmtId, resume_var: VarId) -> ResumeUseRange {
     let mut memo = HashMap::new();
     let mut visiting = HashSet::new();
-    clause_resume_use_bound_stmt(program, root, resume_var, &mut memo, &mut visiting)
+    clause_resume_use_range_stmt(program, root, resume_var, &mut memo, &mut visiting)
 }
 
-fn clause_resume_use_bound_stmt(
+fn clause_resume_use_range_stmt(
     program: &CoreProgram,
     stmt_id: StmtId,
     resume_var: VarId,
-    memo: &mut HashMap<StmtId, ResumeUseBound>,
+    memo: &mut HashMap<StmtId, ResumeUseRange>,
     visiting: &mut HashSet<StmtId>,
-) -> ResumeUseBound {
+) -> ResumeUseRange {
     if let Some(bound) = memo.get(&stmt_id).copied() {
         return bound;
     }
     if !visiting.insert(stmt_id) {
         // Cycles may resume repeatedly; preserve a safe upper bound.
-        return ResumeUseBound::Many;
+        return ResumeUseRange::many();
     }
 
     let Some(stmt) = program.stmt(stmt_id) else {
-        return ResumeUseBound::Many;
+        return ResumeUseRange::many();
     };
 
     let bound = match &stmt.kind {
-        StmtKind::Return(_) | StmtKind::Hole { .. } | StmtKind::Error(_) => ResumeUseBound::Zero,
+        StmtKind::Return(_) | StmtKind::Hole { .. } | StmtKind::Error(_) => ResumeUseRange::zero(),
         StmtKind::Let { next, .. }
         | StmtKind::Call { next, .. }
         | StmtKind::Perform { next, .. } => {
-            clause_resume_use_bound_stmt(program, *next, resume_var, memo, visiting)
+            clause_resume_use_range_stmt(program, *next, resume_var, memo, visiting)
         }
         StmtKind::Val { value, next, .. } => {
-            clause_resume_use_bound_stmt(program, *value, resume_var, memo, visiting).plus(
-                clause_resume_use_bound_stmt(program, *next, resume_var, memo, visiting),
-            )
+            clause_resume_use_range_stmt(program, *value, resume_var, memo, visiting)
+                .plus(clause_resume_use_range_stmt(program, *next, resume_var, memo, visiting))
         }
         StmtKind::Resume { resume, next, .. } => {
             let this_resume = if *resume == resume_var {
-                ResumeUseBound::One
+                ResumeUseRange {
+                    min: ResumeUseBound::One,
+                    max: ResumeUseBound::One,
+                }
             } else {
-                ResumeUseBound::Zero
+                ResumeUseRange::zero()
             };
-            this_resume.plus(clause_resume_use_bound_stmt(
+            this_resume.plus(clause_resume_use_range_stmt(
                 program, *next, resume_var, memo, visiting,
             ))
         }
@@ -1172,17 +1301,17 @@ fn clause_resume_use_bound_stmt(
             then_branch,
             else_branch,
             ..
-        } => clause_resume_use_bound_stmt(program, *then_branch, resume_var, memo, visiting).max(
-            clause_resume_use_bound_stmt(program, *else_branch, resume_var, memo, visiting),
+        } => clause_resume_use_range_stmt(program, *then_branch, resume_var, memo, visiting).join(
+            clause_resume_use_range_stmt(program, *else_branch, resume_var, memo, visiting),
         ),
         StmtKind::Match { arms, default, .. } => {
-            let arms_bound = arms.iter().fold(ResumeUseBound::Zero, |acc, arm| {
-                acc.max(clause_resume_use_bound_stmt(
+            let arms_bound = arms.iter().fold(ResumeUseRange::zero(), |acc, arm| {
+                acc.join(clause_resume_use_range_stmt(
                     program, arm.body, resume_var, memo, visiting,
                 ))
             });
             if let Some(default_stmt) = default {
-                arms_bound.max(clause_resume_use_bound_stmt(
+                arms_bound.join(clause_resume_use_range_stmt(
                     program,
                     *default_stmt,
                     resume_var,
@@ -1194,10 +1323,9 @@ fn clause_resume_use_bound_stmt(
             }
         }
         StmtKind::Handle { body, next, .. } | StmtKind::Stage { body, next, .. } => {
-            let body_bound =
-                clause_resume_use_bound_stmt(program, *body, resume_var, memo, visiting);
+            let body_bound = clause_resume_use_range_stmt(program, *body, resume_var, memo, visiting);
             if let Some(next_stmt) = next {
-                body_bound.plus(clause_resume_use_bound_stmt(
+                body_bound.plus(clause_resume_use_range_stmt(
                     program, *next_stmt, resume_var, memo, visiting,
                 ))
             } else {
