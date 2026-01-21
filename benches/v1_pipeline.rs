@@ -5,32 +5,127 @@ use cielo::common::ids::SourceId;
 use cielo::common::symbols::Interner;
 use cielo::{Compiler, CompilerConfig};
 
-const SOURCE: &str = include_str!("../examples/v1_test.cielo");
-const WARMUP_ITERS: usize = 5;
-const MEASURE_ITERS: usize = 25;
+const SOURCE_EXAMPLE: &str = include_str!("../examples/v1_test.cielo");
+const SOURCE_DIRECT_RESUME: &str = r#"
+effect LocalState { fn tick() -> Int }
+fn main() -> Int {
+  let x = handle { do LocalState.tick(); 9 } with LocalState {
+    | tick(resume) => resume(41)
+  };
+  x
+}
+"#;
+const SOURCE_CONTROL_RESUME: &str = r#"
+effect LocalState { fn tick() -> Int }
+fn main() -> Int {
+  let x = handle { do LocalState.tick(); 9 } with LocalState {
+    | tick(resume) => {
+      let y = resume(41);
+      y + 1
+    }
+  };
+  x
+}
+"#;
+const SOURCE_MIXED_HANDLER: &str = r#"
+effect LocalState {
+  fn tick() -> Int
+  fn bump(flag: Bool) -> Int
+}
 
-fn compile_v1_example() {
+fn main() -> Int {
+  let x = handle {
+    do LocalState.tick();
+    do LocalState.bump(true);
+    5
+  } with LocalState {
+    | tick(resume) => resume(40)
+    | bump(flag, resume) => {
+      if flag {
+        let y = resume(1);
+        y + 1
+      } else {
+        resume(2)
+      }
+    }
+  };
+  x
+}
+"#;
+
+const DEFAULT_WARMUP_ITERS: usize = 5;
+const DEFAULT_MEASURE_ITERS: usize = 25;
+
+#[derive(Clone, Copy)]
+struct BenchCase {
+    name: &'static str,
+    source: &'static str,
+}
+
+const CASES: &[BenchCase] = &[
+    BenchCase {
+        name: "example",
+        source: SOURCE_EXAMPLE,
+    },
+    BenchCase {
+        name: "direct_resume",
+        source: SOURCE_DIRECT_RESUME,
+    },
+    BenchCase {
+        name: "control_resume",
+        source: SOURCE_CONTROL_RESUME,
+    },
+    BenchCase {
+        name: "mixed_handler",
+        source: SOURCE_MIXED_HANDLER,
+    },
+];
+
+fn compile_case(case: BenchCase) {
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let residual = compiler.compile_source_v0(SOURCE, SourceId::from_u32(0), &mut interner);
+    let residual = compiler.compile_source_v0(case.source, SourceId::from_u32(0), &mut interner);
+    assert!(
+        !residual.diagnostics().has_errors(),
+        "benchmark source `{}` should compile without diagnostics errors",
+        case.name
+    );
     black_box(residual.program().functions().len());
 }
 
-fn run_iterations(iterations: usize) -> Duration {
+fn run_iterations(case: BenchCase, iterations: usize) -> Duration {
     let start = Instant::now();
     for _ in 0..iterations {
-        compile_v1_example();
+        compile_case(case);
     }
     start.elapsed()
 }
 
-fn main() {
-    let _ = run_iterations(WARMUP_ITERS);
-    let elapsed = run_iterations(MEASURE_ITERS);
-    let per_iter = elapsed / (MEASURE_ITERS as u32);
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
 
-    println!("benchmark=v1_pipeline_skeleton");
-    println!("iterations={MEASURE_ITERS}");
+fn emit_case(case: BenchCase, warmup_iters: usize, measure_iters: usize) {
+    let _ = run_iterations(case, warmup_iters);
+    let elapsed = run_iterations(case, measure_iters);
+    let per_iter = elapsed / (measure_iters as u32);
+
+    println!("benchmark=v1_pipeline");
+    println!("case={}", case.name);
+    println!("warmup_iterations={warmup_iters}");
+    println!("iterations={measure_iters}");
     println!("total_ms={:.3}", elapsed.as_secs_f64() * 1_000.0);
     println!("per_iter_ms={:.3}", per_iter.as_secs_f64() * 1_000.0);
+}
+
+fn main() {
+    let warmup_iters = env_usize("CIELO_BENCH_WARMUP_ITERS", DEFAULT_WARMUP_ITERS);
+    let measure_iters = env_usize("CIELO_BENCH_MEASURE_ITERS", DEFAULT_MEASURE_ITERS);
+    for case in CASES {
+        emit_case(*case, warmup_iters, measure_iters);
+    }
 }
