@@ -1,4 +1,4 @@
-use cielo::common::ids::{ExprId, SourceId, StmtId, VarId};
+use cielo::common::ids::{ExprId, HandlerId, SourceId, StmtId, SymbolId, VarId};
 use cielo::common::symbols::Interner;
 use cielo::ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, StmtKind, UnaryOp};
 use cielo::pipeline::phases::CtPropagationTables;
@@ -14,6 +14,22 @@ enum OracleValue {
     Unit,
     Bool(bool),
     Int(i64),
+    ResumeToken(usize),
+}
+
+#[derive(Clone, Debug)]
+struct HandlerFrame {
+    handler: HandlerId,
+    captured_env: HashMap<VarId, OracleValue>,
+}
+
+#[derive(Clone, Debug)]
+struct Continuation {
+    env: HashMap<VarId, OracleValue>,
+    handler_stack: Vec<HandlerFrame>,
+    next: StmtId,
+    result: Option<VarId>,
+    used: bool,
 }
 
 struct DiffCase {
@@ -22,7 +38,7 @@ struct DiffCase {
 }
 
 #[test]
-fn runtime_exit_matches_evaluator_oracle_for_pure_seeded_cases() {
+fn runtime_exit_matches_evaluator_oracle_for_v1_seeded_cases() {
     if !c_compiler_available() {
         eprintln!("skipping runtime diff test: no C compiler found");
         return;
@@ -44,6 +60,63 @@ fn main() -> Int {
 fn main() -> Bool {
   let x = if true { 4 } else { 9 };
   x == 4
+}
+"#,
+        },
+        DiffCase {
+            name: "direct_resume_clause",
+            source: r#"
+effect LocalState { fn tick() -> Int }
+fn main() -> Int {
+  handle { do LocalState.tick(); 9 } with LocalState {
+    | tick(resume) => resume(41)
+  }
+}
+"#,
+        },
+        DiffCase {
+            name: "control_resume_clause",
+            source: r#"
+effect LocalState { fn tick() -> Int }
+fn main() -> Int {
+  handle { do LocalState.tick(); 9 } with LocalState {
+    | tick(resume) => {
+      let y = resume(41);
+      y + 1
+    }
+  }
+}
+"#,
+        },
+        DiffCase {
+            name: "abortive_clause",
+            source: r#"
+effect LocalState { fn tick() -> Int }
+fn main() -> Int {
+  handle { do LocalState.tick(); 9 } with LocalState {
+    | tick() => 5
+  }
+}
+"#,
+        },
+        DiffCase {
+            name: "nested_disjoint_handlers",
+            source: r#"
+effect A { fn ping() -> Int }
+effect B { fn pong() -> Int }
+
+fn main() -> Int {
+  handle {
+    handle {
+      do A.ping();
+      do B.pong();
+      7
+    } with A {
+      | ping(resume) => resume(1)
+    }
+  } with B {
+    | pong(resume) => resume(2)
+  }
 }
 "#,
         },
@@ -78,7 +151,16 @@ fn evaluator_oracle_exit_code(compiled: &CompiledC, interner: &Interner) -> Opti
     let main = find_main_body(program, interner)?;
 
     let mut env = HashMap::new();
-    let value = eval_stmt(program, ct, main, &mut env)?;
+    let mut handler_stack = Vec::new();
+    let mut continuations = Vec::new();
+    let value = eval_stmt(
+        program,
+        ct,
+        main,
+        &mut env,
+        &mut handler_stack,
+        &mut continuations,
+    )?;
     oracle_value_to_exit_code(value)
 }
 
@@ -95,6 +177,8 @@ fn eval_stmt(
     ct: &CtPropagationTables,
     stmt_id: StmtId,
     env: &mut HashMap<VarId, OracleValue>,
+    handler_stack: &mut Vec<HandlerFrame>,
+    continuations: &mut Vec<Continuation>,
 ) -> Option<OracleValue> {
     let stmt = program.stmt(stmt_id)?;
     match &stmt.kind {
@@ -106,7 +190,7 @@ fn eval_stmt(
         } => {
             let value = eval_expr(program, ct, *value, env)?;
             env.insert(*binding, value);
-            eval_stmt(program, ct, *next, env)
+            eval_stmt(program, ct, *next, env, handler_stack, continuations)
         }
         StmtKind::Val {
             binding,
@@ -114,9 +198,16 @@ fn eval_stmt(
             next,
         } => {
             let mut value_env = env.clone();
-            let value = eval_stmt(program, ct, *value, &mut value_env)?;
+            let value = eval_stmt(
+                program,
+                ct,
+                *value,
+                &mut value_env,
+                handler_stack,
+                continuations,
+            )?;
             env.insert(*binding, value);
-            eval_stmt(program, ct, *next, env)
+            eval_stmt(program, ct, *next, env, handler_stack, continuations)
         }
         StmtKind::If {
             cond,
@@ -125,30 +216,207 @@ fn eval_stmt(
         } => match eval_expr(program, ct, *cond, env)? {
             OracleValue::Bool(true) => {
                 let mut then_env = env.clone();
-                eval_stmt(program, ct, *then_branch, &mut then_env)
+                eval_stmt(
+                    program,
+                    ct,
+                    *then_branch,
+                    &mut then_env,
+                    handler_stack,
+                    continuations,
+                )
             }
             OracleValue::Bool(false) => {
                 let mut else_env = env.clone();
-                eval_stmt(program, ct, *else_branch, &mut else_env)
+                eval_stmt(
+                    program,
+                    ct,
+                    *else_branch,
+                    &mut else_env,
+                    handler_stack,
+                    continuations,
+                )
             }
             _ => None,
         },
-        StmtKind::Stage { body, next, .. } => {
-            let body_value = eval_stmt(program, ct, *body, env)?;
+        StmtKind::Perform {
+            result,
+            effect,
+            operation,
+            args,
+            next,
+        } => eval_perform(
+            program,
+            ct,
+            *effect,
+            *operation,
+            args.as_slice(),
+            *result,
+            *next,
+            env,
+            handler_stack,
+            continuations,
+        ),
+        StmtKind::Resume {
+            result,
+            resume,
+            arg,
+            next,
+        } => {
+            let arg_value = eval_expr(program, ct, *arg, env)?;
+            let resume_id = match env.get(resume).copied()? {
+                OracleValue::ResumeToken(id) => id,
+                _ => return None,
+            };
+            let resumed = resume_continuation(
+                program,
+                ct,
+                continuations,
+                resume_id,
+                arg_value,
+            )?;
+            env.insert(*result, resumed);
+            eval_stmt(program, ct, *next, env, handler_stack, continuations)
+        }
+        StmtKind::Handle {
+            handler,
+            body,
+            next,
+        } => {
+            handler_stack.push(HandlerFrame {
+                handler: *handler,
+                captured_env: env.clone(),
+            });
+            let body_value = eval_stmt(program, ct, *body, env, handler_stack, continuations)?;
+            handler_stack.pop();
+
+            let handler_def = program.handlers().get(handler.index())?;
+            let mut return_env = env.clone();
+            return_env.insert(handler_def.return_param, body_value);
+            let handled_value = eval_stmt(
+                program,
+                ct,
+                handler_def.return_body,
+                &mut return_env,
+                handler_stack,
+                continuations,
+            )?;
             if let Some(next_stmt) = next {
-                eval_stmt(program, ct, *next_stmt, env)
+                eval_stmt(program, ct, *next_stmt, env, handler_stack, continuations)
+            } else {
+                Some(handled_value)
+            }
+        }
+        StmtKind::Stage { body, next, .. } => {
+            let body_value = eval_stmt(program, ct, *body, env, handler_stack, continuations)?;
+            if let Some(next_stmt) = next {
+                eval_stmt(program, ct, *next_stmt, env, handler_stack, continuations)
             } else {
                 Some(body_value)
             }
         }
-        StmtKind::Call { .. }
-        | StmtKind::Match { .. }
-        | StmtKind::Perform { .. }
-        | StmtKind::Resume { .. }
-        | StmtKind::Handle { .. }
-        | StmtKind::Hole { .. }
-        | StmtKind::Error(_) => None,
+        StmtKind::Call { .. } | StmtKind::Match { .. } | StmtKind::Hole { .. } | StmtKind::Error(_) => None,
     }
+}
+
+fn eval_perform(
+    program: &CoreProgram,
+    ct: &CtPropagationTables,
+    effect: cielo::common::ids::EffectLabelId,
+    operation: SymbolId,
+    args: &[ExprId],
+    result: Option<VarId>,
+    next: StmtId,
+    env: &mut HashMap<VarId, OracleValue>,
+    handler_stack: &mut Vec<HandlerFrame>,
+    continuations: &mut Vec<Continuation>,
+) -> Option<OracleValue> {
+    let mut arg_values = Vec::with_capacity(args.len());
+    for arg in args {
+        arg_values.push(eval_expr(program, ct, *arg, env)?);
+    }
+
+    let mut selected = None;
+    for (idx, frame) in handler_stack.iter().enumerate().rev() {
+        let handler_def = program.handlers().get(frame.handler.index())?;
+        if handler_def.effect != effect {
+            continue;
+        }
+        if let Some(clause_idx) = handler_def
+            .clauses
+            .iter()
+            .position(|clause| clause.operation == operation)
+        {
+            selected = Some((idx, frame.clone(), clause_idx));
+            break;
+        }
+    }
+
+    let (frame_index, frame, clause_index) = selected?;
+    let handler_def = program.handlers().get(frame.handler.index())?;
+    let clause = handler_def.clauses.get(clause_index)?;
+    if clause.params.len() != arg_values.len() {
+        return None;
+    }
+
+    let continuation_id = continuations.len();
+    continuations.push(Continuation {
+        env: env.clone(),
+        handler_stack: handler_stack.clone(),
+        next,
+        result,
+        used: false,
+    });
+
+    let mut clause_env = frame.captured_env;
+    for (param, value) in clause.params.iter().zip(arg_values.iter().copied()) {
+        clause_env.insert(*param, value);
+    }
+    if let Some(resume_param) = clause.resume_param {
+        clause_env.insert(resume_param, OracleValue::ResumeToken(continuation_id));
+    }
+
+    let mut clause_stack = handler_stack[..frame_index].to_vec();
+    eval_stmt(
+        program,
+        ct,
+        clause.body,
+        &mut clause_env,
+        &mut clause_stack,
+        continuations,
+    )
+}
+
+fn resume_continuation(
+    program: &CoreProgram,
+    ct: &CtPropagationTables,
+    continuations: &mut Vec<Continuation>,
+    continuation_id: usize,
+    arg: OracleValue,
+) -> Option<OracleValue> {
+    let (next, result, mut env, mut handler_stack) = {
+        let continuation = continuations.get_mut(continuation_id)?;
+        if continuation.used {
+            return None;
+        }
+        continuation.used = true;
+        (
+            continuation.next,
+            continuation.result,
+            continuation.env.clone(),
+            continuation.handler_stack.clone(),
+        )
+    };
+    if let Some(result_var) = result {
+        env.insert(result_var, arg);
+    }
+    eval_stmt(
+        program,
+        ct,
+        next,
+        &mut env,
+        &mut handler_stack,
+        continuations,
+    )
 }
 
 fn eval_expr(
@@ -170,10 +438,7 @@ fn eval_expr(
             let right = eval_expr(program, ct, *rhs, env)?;
             eval_binary(*op, left, right)
         }
-        ExprKind::PureCall { .. }
-        | ExprKind::MakeStruct { .. }
-        | ExprKind::MakeEnum { .. }
-        | ExprKind::Error(_) => None,
+        ExprKind::PureCall { .. } | ExprKind::MakeStruct { .. } | ExprKind::MakeEnum { .. } | ExprKind::Error(_) => None,
     };
     direct.or_else(|| ct.ct_cache.get(&expr_id).and_then(literal_to_oracle))
 }
@@ -209,12 +474,14 @@ fn eval_binary(op: BinaryOp, lhs: OracleValue, rhs: OracleValue) -> Option<Oracl
         (BinaryOp::Eq, OracleValue::Bool(lhs), OracleValue::Bool(rhs)) => {
             Some(OracleValue::Bool(lhs == rhs))
         }
+        (BinaryOp::Eq, OracleValue::Unit, OracleValue::Unit) => Some(OracleValue::Bool(true)),
         (BinaryOp::Ne, OracleValue::Int(lhs), OracleValue::Int(rhs)) => {
             Some(OracleValue::Bool(lhs != rhs))
         }
         (BinaryOp::Ne, OracleValue::Bool(lhs), OracleValue::Bool(rhs)) => {
             Some(OracleValue::Bool(lhs != rhs))
         }
+        (BinaryOp::Ne, OracleValue::Unit, OracleValue::Unit) => Some(OracleValue::Bool(false)),
         (BinaryOp::Lt, OracleValue::Int(lhs), OracleValue::Int(rhs)) => {
             Some(OracleValue::Bool(lhs < rhs))
         }
@@ -257,6 +524,7 @@ fn oracle_value_to_exit_code(value: OracleValue) -> Option<i32> {
             }
         }
         OracleValue::Int(value) => value as i32,
+        OracleValue::ResumeToken(_) => return None,
     };
     Some((code as u8) as i32)
 }
@@ -308,14 +576,17 @@ fn compile_and_run_c_exit_code(case_name: &str, c_source: &str) -> i32 {
     let run = Command::new(bin_path.as_path())
         .output()
         .expect("failed to execute compiled C binary");
-    let code = run.status.code().unwrap_or_else(|| {
-        panic!(
-            "runtime execution terminated by signal for case {}:\nstdout:\n{}\nstderr:\n{}",
-            case_name,
-            String::from_utf8_lossy(run.stdout.as_slice()),
-            String::from_utf8_lossy(run.stderr.as_slice())
-        )
-    });
+    let code = run
+        .status
+        .code()
+        .unwrap_or_else(|| {
+            panic!(
+                "runtime execution terminated by signal for case {}:\nstdout:\n{}\nstderr:\n{}",
+                case_name,
+                String::from_utf8_lossy(run.stdout.as_slice()),
+                String::from_utf8_lossy(run.stderr.as_slice())
+            )
+        });
     let _ = fs::remove_dir_all(work_dir.as_path());
     code
 }
