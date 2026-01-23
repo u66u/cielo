@@ -1,6 +1,7 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
+use cielo::analysis::bench_thresholds::check_v1_pipeline_per_iter_ms;
 use cielo::common::ids::SourceId;
 use cielo::common::symbols::Interner;
 use cielo::{Compiler, CompilerConfig};
@@ -109,23 +110,51 @@ fn env_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
-fn emit_case(case: BenchCase, warmup_iters: usize, measure_iters: usize) {
+fn env_bool(name: &str, default: bool) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|raw| raw.trim().to_ascii_lowercase())
+        .map(|raw| match raw.as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            _ => default,
+        })
+        .unwrap_or(default)
+}
+
+fn emit_case(
+    case: BenchCase,
+    warmup_iters: usize,
+    measure_iters: usize,
+    enforce_thresholds: bool,
+) {
     let _ = run_iterations(case, warmup_iters);
     let elapsed = run_iterations(case, measure_iters);
     let per_iter = elapsed / (measure_iters as u32);
+    let per_iter_ms = per_iter.as_secs_f64() * 1_000.0;
 
     println!("benchmark=v1_pipeline");
     println!("case={}", case.name);
     println!("warmup_iterations={warmup_iters}");
     println!("iterations={measure_iters}");
     println!("total_ms={:.3}", elapsed.as_secs_f64() * 1_000.0);
-    println!("per_iter_ms={:.3}", per_iter.as_secs_f64() * 1_000.0);
+    println!("per_iter_ms={per_iter_ms:.3}");
+
+    if enforce_thresholds
+        && let Err(violation) = check_v1_pipeline_per_iter_ms(case.name, per_iter_ms)
+    {
+        panic!(
+            "benchmark case `{}` exceeded threshold: measured {:.3}ms/iter > limit {:.3}ms/iter",
+            violation.case, violation.measured_per_iter_ms, violation.per_iter_ms_max
+        );
+    }
 }
 
 fn main() {
     let warmup_iters = env_usize("CIELO_BENCH_WARMUP_ITERS", DEFAULT_WARMUP_ITERS);
     let measure_iters = env_usize("CIELO_BENCH_MEASURE_ITERS", DEFAULT_MEASURE_ITERS);
+    let enforce_thresholds = env_bool("CIELO_BENCH_ENFORCE_THRESHOLDS", false);
     for case in CASES {
-        emit_case(*case, warmup_iters, measure_iters);
+        emit_case(*case, warmup_iters, measure_iters, enforce_thresholds);
     }
 }

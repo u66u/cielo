@@ -1,23 +1,11 @@
-# V1 Benchmarks
-
-This document tracks baseline measurements for the v1 pipeline benchmark harness.
-
-## Run Protocol
-
 - Command: `cargo bench --bench v1_pipeline`
 - Warmup iterations per case: `5` (default `CIELO_BENCH_WARMUP_ITERS`)
 - Measured iterations per case: `25` (default `CIELO_BENCH_MEASURE_ITERS`)
 - Harness mode: custom `harness = false` benchmark executable
 
-Host snapshot (baseline run):
-
 - Timestamp: `2026-01-19 13:06:38 UTC`
 - Toolchain: `rustc 1.93.0 (254b59607 2026-01-19)`
 - Kernel/arch: `Linux 6.17.5-arch1-1 x86_64 GNU/Linux`
-
-## Baseline Results
-
-Command output:
 
 ```text
 benchmark=v1_pipeline
@@ -45,8 +33,6 @@ iterations=25
 total_ms=0.726
 per_iter_ms=0.029
 ```
-
-Tabular summary:
 
 | Case | Total ms (25 iters) | Per-iter ms |
 | --- | ---: | ---: |
