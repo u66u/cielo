@@ -17,3 +17,7 @@ thiserror = "2.0.18"
 [[bench]]
 name = "v1_pipeline"
 harness = false
+
+[[bench]]
+name = "v1_runtime"
+harness = false
