@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use crate::common::diagnostics::DiagnosticBag;
 use crate::common::ids::SourceId;
@@ -65,6 +66,54 @@ pub struct Compiler {
     config: CompilerConfig,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct V0PipelineTimings {
+    pub parse: Duration,
+    pub lower: Duration,
+    pub typecheck: Duration,
+    pub monomorphize: Duration,
+    pub ct_propagate: Duration,
+    pub bta: Duration,
+    pub residualize: Duration,
+}
+
+impl V0PipelineTimings {
+    pub fn total(self) -> Duration {
+        self.parse
+            .saturating_add(self.lower)
+            .saturating_add(self.typecheck)
+            .saturating_add(self.monomorphize)
+            .saturating_add(self.ct_propagate)
+            .saturating_add(self.bta)
+            .saturating_add(self.residualize)
+    }
+
+    pub fn saturating_add_assign(&mut self, other: Self) {
+        self.parse = self.parse.saturating_add(other.parse);
+        self.lower = self.lower.saturating_add(other.lower);
+        self.typecheck = self.typecheck.saturating_add(other.typecheck);
+        self.monomorphize = self.monomorphize.saturating_add(other.monomorphize);
+        self.ct_propagate = self.ct_propagate.saturating_add(other.ct_propagate);
+        self.bta = self.bta.saturating_add(other.bta);
+        self.residualize = self.residualize.saturating_add(other.residualize);
+    }
+
+    pub fn per_iteration(self, iterations: u32) -> Self {
+        if iterations == 0 {
+            return Self::default();
+        }
+        Self {
+            parse: self.parse / iterations,
+            lower: self.lower / iterations,
+            typecheck: self.typecheck / iterations,
+            monomorphize: self.monomorphize / iterations,
+            ct_propagate: self.ct_propagate / iterations,
+            bta: self.bta / iterations,
+            residualize: self.residualize / iterations,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CompiledC {
     pub residual: Residualized,
@@ -126,8 +175,34 @@ impl Compiler {
         source_id: SourceId,
         interner: &mut Interner,
     ) -> Residualized {
-        let core = self.parse_and_lower_to_core(source, source_id, interner);
-        self.run_v0_core_pipeline(core)
+        self.compile_source_v0_profiled(source, source_id, interner).0
+    }
+
+    pub fn compile_source_v0_profiled(
+        &self,
+        source: &str,
+        source_id: SourceId,
+        interner: &mut Interner,
+    ) -> (Residualized, V0PipelineTimings) {
+        let mut timings = V0PipelineTimings::default();
+
+        let parse_start = Instant::now();
+        let parsed = self.parse(source, source_id, interner);
+        timings.parse = parse_start.elapsed();
+
+        let main_symbol = interner.intern("main");
+        let target_builtins = TargetBuiltinSymbols::intern(interner);
+        let lower_start = Instant::now();
+        let core = self.lower_parsed_to_core_with_config(
+            parsed,
+            LowerConfig::with_entrypoint(main_symbol)
+                .with_target_builtins(self.config.target, target_builtins),
+        );
+        timings.lower = lower_start.elapsed();
+
+        let (residual, tail) = self.run_v0_core_pipeline_profiled(core);
+        timings.saturating_add_assign(tail);
+        (residual, timings)
     }
 
     pub fn compile_source_v0_to_c(
@@ -148,11 +223,36 @@ impl Compiler {
     }
 
     pub fn run_v0_core_pipeline(&self, built: CoreBuilt) -> Residualized {
+        self.run_v0_core_pipeline_profiled(built).0
+    }
+
+    pub fn run_v0_core_pipeline_profiled(
+        &self,
+        built: CoreBuilt,
+    ) -> (Residualized, V0PipelineTimings) {
+        let mut timings = V0PipelineTimings::default();
+
+        let typecheck_start = Instant::now();
         let typed = self.typecheck(built);
+        timings.typecheck = typecheck_start.elapsed();
+
+        let mono_start = Instant::now();
         let mono = self.monomorphize(typed);
+        timings.monomorphize = mono_start.elapsed();
+
+        let ct_start = Instant::now();
         let ct = self.ct_propagate(mono);
+        timings.ct_propagate = ct_start.elapsed();
+
+        let bta_start = Instant::now();
         let bta = self.classify_staging(ct);
-        self.residualize(bta)
+        timings.bta = bta_start.elapsed();
+
+        let residual_start = Instant::now();
+        let residual = self.residualize(bta);
+        timings.residualize = residual_start.elapsed();
+
+        (residual, timings)
     }
 
     fn typecheck(&self, built: CoreBuilt) -> Typed {
