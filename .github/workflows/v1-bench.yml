@@ -1,0 +1,88 @@
+name: v1-bench
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run v1 pipeline benchmark with regression gate
+        env:
+          CIELO_BENCH_WARMUP_ITERS: "5"
+          CIELO_BENCH_MEASURE_ITERS: "25"
+          CIELO_BENCH_ENFORCE_THRESHOLDS: "1"
+        run: |
+          cargo bench --bench v1_pipeline | tee bench_v1_output.txt
+
+      - name: Build metrics table
+        run: |
+          awk -F= '
+            /^case=/ { cur_case=$2; if (!(cur_case in seen)) { order[++count]=cur_case; seen[cur_case]=1 } }
+            /^warmup_iterations=/ { warmup[cur_case]=$2 }
+            /^iterations=/ { iters[cur_case]=$2 }
+            /^total_ms=/ { total[cur_case]=$2 }
+            /^per_iter_ms=/ { per[cur_case]=$2 }
+            /^phase_parse_ms=/ { parse[cur_case]=$2 }
+            /^phase_lower_ms=/ { lower[cur_case]=$2 }
+            /^phase_typecheck_ms=/ { typecheck[cur_case]=$2 }
+            /^phase_monomorphize_ms=/ { mono[cur_case]=$2 }
+            /^phase_ct_propagate_ms=/ { ct[cur_case]=$2 }
+            /^phase_bta_ms=/ { bta[cur_case]=$2 }
+            /^phase_residualize_ms=/ { residual[cur_case]=$2 }
+            END {
+              print "case\twarmup_iterations\titerations\ttotal_ms\tper_iter_ms\tphase_parse_ms\tphase_lower_ms\tphase_typecheck_ms\tphase_monomorphize_ms\tphase_ct_propagate_ms\tphase_bta_ms\tphase_residualize_ms";
+              for (i = 1; i <= count; i++) {
+                c = order[i];
+                printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+                  c,
+                  warmup[c],
+                  iters[c],
+                  total[c],
+                  per[c],
+                  parse[c],
+                  lower[c],
+                  typecheck[c],
+                  mono[c],
+                  ct[c],
+                  bta[c],
+                  residual[c];
+              }
+            }
+          ' bench_v1_output.txt > bench_v1_metrics.tsv
+
+      - name: Publish benchmark summary
+        run: |
+          {
+            echo "## v1_pipeline Benchmark"
+            echo ""
+            echo "| Case | Warmup | Iterations | Total ms | Per-iter ms | Parse | Lower | Typecheck | Mono | CT | BTA | Residualize |"
+            echo "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+            tail -n +2 bench_v1_metrics.tsv | while IFS=$'\t' read -r case warmup iterations total per parse lower typecheck mono ct bta residual; do
+              echo "| \`$case\` | $warmup | $iterations | $total | $per | $parse | $lower | $typecheck | $mono | $ct | $bta | $residual |"
+            done
+            echo ""
+            echo "<details><summary>Raw output</summary>"
+            echo ""
+            echo '```text'
+            cat bench_v1_output.txt
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: v1-pipeline-benchmark
+          path: |
+            bench_v1_output.txt
+            bench_v1_metrics.tsv
