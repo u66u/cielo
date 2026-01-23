@@ -7,7 +7,6 @@ Tracks runtime execution speed for currently active v1 effect paths.
 - Command: `cargo bench --bench v1_runtime`
 - Warmup runs per case: `5` (default `CIELO_RUNTIME_BENCH_WARMUP_RUNS`)
 - Measured runs per case: `25` (default `CIELO_RUNTIME_BENCH_MEASURE_RUNS`)
-- CI trend workflow: `.github/workflows/v1-runtime-bench.yml`
 
 Host snapshot:
 

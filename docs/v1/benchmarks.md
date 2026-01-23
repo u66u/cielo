@@ -6,7 +6,6 @@
 - Warmup iterations per case: `5` (default `CIELO_BENCH_WARMUP_ITERS`)
 - Measured iterations per case: `25` (default `CIELO_BENCH_MEASURE_ITERS`)
 - Threshold gate (optional): `CIELO_BENCH_ENFORCE_THRESHOLDS=1`
-- CI trend/regression workflow: `.github/workflows/v1-bench.yml`
 - Harness mode: custom `harness = false` benchmark executable
 
 Host snapshot:
