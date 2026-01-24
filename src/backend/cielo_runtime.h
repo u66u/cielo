@@ -14,6 +14,7 @@ enum {
         (CIELO_RUNTIME_ABI_VERSION_MINOR << 8) |
         CIELO_RUNTIME_ABI_VERSION_PATCH
 };
+/* ABI policy: major=breaking layout/signature changes, minor=additive compatible, patch=behavior-only fixes. */
 
 typedef enum {
     CV_UNIT = 0,
@@ -159,11 +160,17 @@ static inline void cielo_handler_pop(uint32_t capability_id) {
     }
 }
 
-static inline bool cielo_handler_active(uint32_t effect) {
+static inline uint32_t cielo_handler_find_capability(uint32_t effect) {
     for (size_t i = g_cielo_handler_depth; i > 0; i--) {
-        if (g_cielo_handlers[i - 1].effect == effect) return true;
+        if (g_cielo_handlers[i - 1].effect == effect) {
+            return g_cielo_handlers[i - 1].capability_id;
+        }
     }
-    return false;
+    return 0;
+}
+
+static inline bool cielo_handler_active(uint32_t effect) {
+    return cielo_handler_find_capability(effect) != 0;
 }
 
 static inline bool cv_truthy(CieloValue v) {
@@ -277,10 +284,38 @@ static inline void cv_print(CieloValue v) {
     }
 }
 
+static CieloValue cielo_perform_scoped(
+    uint32_t effect,
+    uint32_t expected_capability_id,
+    uint32_t op_symbol,
+    const char* op,
+    size_t argc,
+    const CieloValue* args
+);
+
 static CieloValue cielo_perform(
     uint32_t effect, uint32_t op_symbol, const char* op, size_t argc, const CieloValue* args
 ) {
+    return cielo_perform_scoped(effect, 0, op_symbol, op, argc, args);
+}
+
+static CieloValue cielo_perform_scoped(
+    uint32_t effect,
+    uint32_t expected_capability_id,
+    uint32_t op_symbol,
+    const char* op,
+    size_t argc,
+    const CieloValue* args
+) {
     (void)op_symbol;
+    if (expected_capability_id != 0) {
+        for (size_t i = g_cielo_handler_depth; i > 0; i--) {
+            if (g_cielo_handlers[i - 1].effect == effect
+                && g_cielo_handlers[i - 1].capability_id == expected_capability_id) {
+                return cv_unit();
+            }
+        }
+    }
     if (cielo_handler_active(effect)) {
         return cv_unit();
     }

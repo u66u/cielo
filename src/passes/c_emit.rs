@@ -20,7 +20,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write;
 
-use crate::common::ids::{LinearExprId, LinearStmtId, SymbolId, VarId};
+use crate::common::ids::{EffectLabelId, LinearExprId, LinearStmtId, SymbolId, VarId};
 use crate::common::symbols::Interner;
 use crate::ir::core::Literal;
 use crate::ir::linear::{CallConvention, LinearExpr, LinearFunction, LinearProgram, LinearStmt};
@@ -179,6 +179,7 @@ fn emit_function(
         scalar_pool,
         ctor_pool,
         next_temp: 0,
+        active_capabilities: Vec::new(),
     };
     emit_stmt(function.body, EmitMode::Return, out, 1, &mut cx);
     out.push_str("}\n");
@@ -361,21 +362,35 @@ fn emit_stmt(
             next,
         } => {
             let op_name = escape_c_string(symbol_text(cx.interner, *operation).as_str());
+            let active_capability = cx.active_capability_for(*effect).map(str::to_owned);
             emit_indent(out, indent);
             if let Some(dst) = result {
                 write!(out, "v{} = ", dst.as_u32()).expect("in-memory write should not fail");
             } else {
                 out.push_str("(void)");
             }
-            write!(
-                out,
-                "cielo_perform({}, {}, \"{}\", {}, ",
-                effect.as_u32(),
-                operation.as_u32(),
-                op_name,
-                args.len()
-            )
-            .expect("in-memory write should not fail");
+            if let Some(capability) = active_capability {
+                write!(
+                    out,
+                    "cielo_perform_scoped({}, {}, {}, \"{}\", {}, ",
+                    effect.as_u32(),
+                    capability,
+                    operation.as_u32(),
+                    op_name,
+                    args.len()
+                )
+                .expect("in-memory write should not fail");
+            } else {
+                write!(
+                    out,
+                    "cielo_perform({}, {}, \"{}\", {}, ",
+                    effect.as_u32(),
+                    operation.as_u32(),
+                    op_name,
+                    args.len()
+                )
+                .expect("in-memory write should not fail");
+            }
             if args.is_empty() {
                 out.push_str("NULL");
             } else {
@@ -404,6 +419,7 @@ fn emit_stmt(
                 effect.as_u32()
             )
             .expect("in-memory write should not fail");
+            cx.push_capability(*effect, handle_capability.clone());
             emit_stmt(
                 *body,
                 EmitMode::AssignTemp(handle_result.clone()),
@@ -411,6 +427,7 @@ fn emit_stmt(
                 indent,
                 cx,
             );
+            cx.pop_capability(*effect, handle_capability.as_str());
             emit_indent(out, indent);
             writeln!(out, "cielo_handler_pop({handle_capability});")
                 .expect("in-memory write should not fail");
@@ -797,6 +814,7 @@ struct EmitCx<'a> {
     scalar_pool: &'a ScalarConstPool,
     ctor_pool: &'a CtorConstPool,
     next_temp: u32,
+    active_capabilities: Vec<(u32, String)>,
 }
 
 impl EmitCx<'_> {
@@ -804,6 +822,25 @@ impl EmitCx<'_> {
         let id = self.next_temp;
         self.next_temp += 1;
         format!("__cielo_{}_{}", prefix, id)
+    }
+
+    fn push_capability(&mut self, effect: EffectLabelId, binding: String) {
+        self.active_capabilities.push((effect.as_u32(), binding));
+    }
+
+    fn pop_capability(&mut self, effect: EffectLabelId, binding: &str) {
+        if let Some(idx) = self.active_capabilities.iter().rposition(|(active_effect, name)| {
+            *active_effect == effect.as_u32() && name == binding
+        }) {
+            self.active_capabilities.remove(idx);
+        }
+    }
+
+    fn active_capability_for(&self, effect: EffectLabelId) -> Option<&str> {
+        self.active_capabilities
+            .iter()
+            .rfind(|(active_effect, _)| *active_effect == effect.as_u32())
+            .map(|(_, name)| name.as_str())
     }
 }
 

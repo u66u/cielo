@@ -735,6 +735,56 @@ fn c_emitter_binds_distinct_capabilities_per_handler_installation() {
 }
 
 #[test]
+fn c_emitter_threads_capability_into_scoped_perform_calls() {
+    let mut interner = Interner::new();
+    let main_name = interner.intern("main");
+    let tick_op = interner.intern("tick");
+
+    let mut program = LinearProgram::default();
+    let arg = program.push_expr(LinearExpr::Literal(Literal::Int(1)));
+    let ret_value = program.push_expr(LinearExpr::Literal(Literal::Int(0)));
+    let ret = program.push_stmt(LinearStmt::Return(ret_value));
+    let perform = program.push_stmt(LinearStmt::Perform {
+        result: None,
+        effect: EffectLabelId::from_u32(0),
+        operation: tick_op,
+        args: vec![arg],
+        next: ret,
+    });
+    let handle = program.push_stmt(LinearStmt::Handle {
+        effect: EffectLabelId::from_u32(0),
+        body: perform,
+        next: None,
+    });
+
+    program.functions.push(LinearFunction {
+        id: LinearFuncId::new(0),
+        name: main_name,
+        params: vec![],
+        body: handle,
+    });
+    program.entrypoints = vec![LinearFuncId::new(0)];
+
+    let emitted = emit_c_program(&program, &interner);
+    let capabilities = handler_push_capability_temps_for_effect(&emitted, 0);
+    assert_eq!(
+        capabilities.len(),
+        1,
+        "single handler installation should produce one capability binding"
+    );
+
+    let scoped_call = format!(
+        "(void)cielo_perform_scoped(0, {}, {}, \"tick\", 1",
+        capabilities[0],
+        tick_op.as_u32()
+    );
+    assert!(
+        emitted.contains(scoped_call.as_str()),
+        "perform in matching handler scope should pass lexical capability id"
+    );
+}
+
+#[test]
 fn lowers_resumptive_clause_into_continuation_flow() {
     let src = r#"
 effect LocalState { fn tick() -> Int }
