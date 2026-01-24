@@ -409,14 +409,22 @@ fn emit_stmt(
         LinearStmt::Handle { effect, body, next } => {
             let handle_result = cx.fresh_temp("handle");
             let handle_capability = cx.fresh_temp("capability");
+            let handle_evidence = cx.fresh_temp("evidence");
             emit_indent(out, indent);
             writeln!(out, "CieloValue {handle_result} = cv_unit();")
                 .expect("in-memory write should not fail");
             emit_indent(out, indent);
             writeln!(
                 out,
-                "uint32_t {handle_capability} = cielo_handler_push({});",
+                "CieloEvidence {handle_evidence} = {{ .abi_version = cielo_runtime_abi_version(), .effect = {}, .capability_id = 0, .clause_count = 0, .clauses = NULL, .captures = NULL, .reserved0 = NULL, .reserved1 = NULL }};",
                 effect.as_u32()
+            )
+            .expect("in-memory write should not fail");
+            emit_indent(out, indent);
+            writeln!(
+                out,
+                "uint32_t {handle_capability} = cielo_handler_push_with_evidence({}, &{handle_evidence});",
+                effect.as_u32(),
             )
             .expect("in-memory write should not fail");
             cx.push_capability(*effect, handle_capability.clone());

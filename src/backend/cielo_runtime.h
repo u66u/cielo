@@ -80,6 +80,7 @@ struct CieloContinuation {
 typedef struct {
     uint32_t effect;
     uint32_t capability_id;
+    CieloEvidence* evidence;
 } CieloHandlerFrame;
 
 enum { CIELO_HANDLER_STACK_MAX = 64 };
@@ -148,7 +149,20 @@ static inline uint32_t cielo_handler_push(uint32_t effect) {
     }
     g_cielo_handlers[g_cielo_handler_depth].effect = effect;
     g_cielo_handlers[g_cielo_handler_depth].capability_id = capability_id;
+    g_cielo_handlers[g_cielo_handler_depth].evidence = NULL;
     g_cielo_handler_depth++;
+    return capability_id;
+}
+
+static inline uint32_t cielo_handler_push_with_evidence(uint32_t effect, CieloEvidence* evidence) {
+    uint32_t capability_id = cielo_handler_push(effect);
+    if (capability_id == 0) return 0;
+    if (evidence != NULL) {
+        evidence->abi_version = cielo_runtime_abi_version();
+        evidence->effect = effect;
+        evidence->capability_id = capability_id;
+        g_cielo_handlers[g_cielo_handler_depth - 1].evidence = evidence;
+    }
     return capability_id;
 }
 
@@ -312,6 +326,10 @@ static CieloValue cielo_perform_scoped(
         for (size_t i = g_cielo_handler_depth; i > 0; i--) {
             if (g_cielo_handlers[i - 1].effect == effect
                 && g_cielo_handlers[i - 1].capability_id == expected_capability_id) {
+                CieloEvidence* evidence = g_cielo_handlers[i - 1].evidence;
+                if (evidence != NULL && evidence->abi_version != cielo_runtime_abi_version()) {
+                    return cv_unit();
+                }
                 return cv_unit();
             }
         }

@@ -1755,16 +1755,23 @@ fn parse_perform_symbol_id(line: &str, effect: u32, operation: &str, argc: usize
 }
 
 fn handler_push_capability_temps_for_effect(c_source: &str, effect: u32) -> Vec<String> {
-    let suffix = format!("= cielo_handler_push({effect});");
     c_source
         .lines()
         .filter_map(|line| {
             let trimmed = line.trim();
-            if !trimmed.starts_with("uint32_t ") || !trimmed.ends_with(suffix.as_str()) {
+            if !trimmed.starts_with("uint32_t ") {
                 return None;
             }
             let declaration = trimmed.strip_prefix("uint32_t ")?;
             let (binding, _) = declaration.split_once(" = ")?;
+            let push_with_effect = format!("= cielo_handler_push({effect});");
+            let push_with_evidence =
+                format!("= cielo_handler_push_with_evidence({effect}, &");
+            if !trimmed.ends_with(push_with_effect.as_str())
+                && !trimmed.contains(push_with_evidence.as_str())
+            {
+                return None;
+            }
             Some(binding.to_owned())
         })
         .collect()
