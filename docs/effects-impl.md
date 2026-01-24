@@ -512,7 +512,6 @@ Why:
 2. Stable phase-typed artifacts at fused boundaries (`Evaluate+Classify`, `Residualize+Specialize`).
 3. Existing benchmark harness skeleton and staging diagnostics plumbing.
 4. Runtime ABI versioning policy for handler evidence structs.
-   - Policy: `docs/v1/runtime_abi_policy.md`
 
 ### v1-specific prerequisites
 
