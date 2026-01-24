@@ -735,6 +735,38 @@ fn c_emitter_binds_distinct_capabilities_per_handler_installation() {
 }
 
 #[test]
+fn c_emitter_materializes_handler_evidence_records() {
+    let mut interner = Interner::new();
+    let main_name = interner.intern("main");
+
+    let mut program = LinearProgram::default();
+    let zero = program.push_expr(LinearExpr::Literal(Literal::Int(0)));
+    let ret = program.push_stmt(LinearStmt::Return(zero));
+    let handle = program.push_stmt(LinearStmt::Handle {
+        effect: EffectLabelId::from_u32(0),
+        body: ret,
+        next: None,
+    });
+    program.functions.push(LinearFunction {
+        id: LinearFuncId::new(0),
+        name: main_name,
+        params: vec![],
+        body: handle,
+    });
+    program.entrypoints = vec![LinearFuncId::new(0)];
+
+    let emitted = emit_c_program(&program, &interner);
+    assert!(
+        emitted.contains("CieloEvidence __cielo_evidence_"),
+        "handler lowering should materialize a concrete evidence struct per installation"
+    );
+    assert!(
+        emitted.contains("cielo_handler_push_with_evidence(0, &__cielo_evidence_"),
+        "handler installation should bind capability and evidence together"
+    );
+}
+
+#[test]
 fn c_emitter_threads_capability_into_scoped_perform_calls() {
     let mut interner = Interner::new();
     let main_name = interner.intern("main");
