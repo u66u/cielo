@@ -7,9 +7,10 @@ use cielo::ir::core::{
     PrimitiveTypeRef, StmtKind, StmtNode,
 };
 use cielo::passes::{bta, ct_propagate, residualize};
+use cielo::pipeline::compiler::TargetSpec;
 use cielo::pipeline::phases::{
     BranchDecision, BtaClassified, BtaTables, CtPropagationTables, Knownness,
-    MonomorphizationSummary, Reason, SemanticTables, Stage,
+    MonomorphizationSummary, Reason, SemanticTables, Stage, Typed,
 };
 use cielo::sema::effect::SortedEffectRow;
 use cielo::sema::ty::Persistability;
@@ -30,6 +31,43 @@ fn main() -> Int {
     let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
     assert_eq!(residual.program().functions().len(), 2);
     assert_eq!(residual.program().entrypoints().len(), 1);
+}
+
+#[test]
+fn staging_boundary_rejects_non_concrete_effect_rows() {
+    let mut program = CoreProgram::new();
+    let span = Span::synthetic();
+
+    let zero = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(0)),
+    });
+    let ret = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(zero),
+    });
+    let main = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(0),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::from_slice(&[EffectLabelId::from_u32(7)]),
+        body: ret,
+        ct_only: false,
+        span,
+    });
+    program.set_entrypoints([main]);
+
+    let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
+    let typed = Typed::new(program, DiagnosticBag::default(), sema);
+    let mut mono_summary = MonomorphizationSummary::default();
+    mono_summary.source_to_mono.insert(main, vec![main]);
+    let mono = typed.into_monomorphized(mono_summary);
+
+    let panic = std::panic::catch_unwind(|| {
+        let _ = ct_propagate::run(mono, TargetSpec::default());
+    });
+    assert!(panic.is_err(), "invalid effect rows must panic before staging");
 }
 
 #[test]

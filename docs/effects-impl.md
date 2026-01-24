@@ -512,6 +512,7 @@ Why:
 2. Stable phase-typed artifacts at fused boundaries (`Evaluate+Classify`, `Residualize+Specialize`).
 3. Existing benchmark harness skeleton and staging diagnostics plumbing.
 4. Runtime ABI versioning policy for handler evidence structs.
+   - Policy: `docs/v1/runtime_abi_policy.md`
 
 ### v1-specific prerequisites
 
@@ -557,7 +558,7 @@ Test targets (subtle/ambiguous):
 - Nested handlers with identical op names but different captures.
 
 Oracle references:
-- *Effect Handlers in Scope* (scope/capture discipline): https://arxiv.org/abs/2106.00389
+- *Effect Handlers in Scope* (scope/capture discipline): https://www.cambridge.org/core/journals/journal-of-functional-programming/article/effect-handlers-in-scope/9B0F6299E08F9C2E4B99ADB6E363F10E
 - *Handling Algebraic Effects* (core handler semantics, we have a core similar to Koka): https://lmcs.episciences.org/705
 
 ### V1-Stage 2: Lightweight resumption linearity qualifiers
@@ -828,14 +829,14 @@ Recommended tooling references:
 
 ## Feature-to-formalism map
 
-| Evidence ABI + lexical capability freshness | Removes hot-path dynamic handler lookup; prevents wrong-handler capture | [F1](effects-formalism-oracles.md#f1-evidence-abi-and-lexical-capability-freshness) |
-| Resumption linearity qualifiers | Lets us keep single-shot/direct fast path without full linear types | [F2](effects-formalism-oracles.md#f2-resumption-linearity-qualifiers-without-global-linear-types) |
-| Direct/control lowering boundaries | Makes selective CPS local and testable | [F3](effects-formalism-oracles.md#f3-directcontrol-lowering-correctness) |
-| Bounded specialization | Eliminates handler overhead while preserving termination of specialization | [F4](effects-formalism-oracles.md#f4-bounded-handler-specialization-correctness-and-termination) |
-| Capability-to-region unification | Memory/lifetime win and simpler lowering contract | [G1](effects-formalism-oracles.md#g1-capability-to-region-unification) |
-| Row polymorphism foundation | Enables fusion/specialization APIs without effect-row blow-up | [G2](effects-formalism-oracles.md#g2-row-polymorphism-and-concretization-before-staging) |
-| Handler fusion | Removes intermediate dispatch on nested disjoint handlers | [G3](effects-formalism-oracles.md#g3-disjoint-handler-fusion-correctness) |
-| Generalized specialization | Removes v1 abort class for varying recursive return clauses | [G4](effects-formalism-oracles.md#g4-generalized-specialization-via-return-continuation-parameterization) |
+| Evidence ABI + lexical capability freshness | Removes hot-path dynamic handler lookup; prevents wrong-handler capture | [F1](effect-formalism-oracle.md#f1-evidence-abi-and-lexical-capability-freshness) |
+| Resumption linearity qualifiers | Lets us keep single-shot/direct fast path without full linear types | [F2](effect-formalism-oracle.md#f2-resumption-linearity-qualifiers-without-global-linear-types) |
+| Direct/control lowering boundaries | Makes selective CPS local and testable | [F3](effect-formalism-oracle.md#f3-directcontrol-lowering-correctness) |
+| Bounded specialization | Eliminates handler overhead while preserving termination of specialization | [F4](effect-formalism-oracle.md#f4-bounded-handler-specialization-correctness-and-termination) |
+| Capability-to-region unification | Memory/lifetime win and simpler lowering contract | [G1](effect-formalism-oracle.md#g1-capability-to-region-unification) |
+| Row polymorphism foundation | Enables fusion/specialization APIs without effect-row blow-up | [G2](effect-formalism-oracle.md#g2-row-polymorphism-and-concretization-before-staging) |
+| Handler fusion | Removes intermediate dispatch on nested disjoint handlers | [G3](effect-formalism-oracle.md#g3-disjoint-handler-fusion-correctness) |
+| Generalized specialization | Removes v1 abort class for varying recursive return clauses | [G4](effect-formalism-oracle.md#g4-generalized-specialization-via-return-continuation-parameterization) |
 
 ## References
 
