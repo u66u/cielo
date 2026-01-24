@@ -3,8 +3,12 @@ use std::fs;
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
+use cielo::analysis::bench_thresholds::{
+    check_v1_runtime_per_run_ms, check_v1_runtime_relative_to_pure,
+};
 use cielo::common::ids::SourceId;
 use cielo::common::symbols::Interner;
 use cielo::{Compiler, CompilerConfig};
@@ -87,6 +91,7 @@ fn main() -> Int {
 
 const DEFAULT_WARMUP_RUNS: usize = 5;
 const DEFAULT_MEASURE_RUNS: usize = 25;
+static TEMP_SUFFIX_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy)]
 struct RuntimeBenchCase {
@@ -138,6 +143,18 @@ fn env_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+fn env_bool(name: &str, default: bool) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|raw| raw.trim().to_ascii_lowercase())
+        .map(|raw| match raw.as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            _ => default,
+        })
+        .unwrap_or(default)
+}
+
 fn build_case(case: RuntimeBenchCase, source_id: u32) -> BuiltCase {
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
@@ -148,10 +165,7 @@ fn build_case(case: RuntimeBenchCase, source_id: u32) -> BuiltCase {
         case.name
     );
 
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
+    let stamp = TEMP_SUFFIX_COUNTER.fetch_add(1, Ordering::Relaxed);
     let work_dir = std::env::temp_dir().join(format!(
         "cielo_v1_runtime_bench_{}_{}_{}",
         case.name,
@@ -214,6 +228,7 @@ fn run_binary_iterations(path: &Path, iterations: usize) -> Duration {
 fn main() {
     let warmup_runs = env_usize("CIELO_RUNTIME_BENCH_WARMUP_RUNS", DEFAULT_WARMUP_RUNS);
     let measure_runs = env_usize("CIELO_RUNTIME_BENCH_MEASURE_RUNS", DEFAULT_MEASURE_RUNS);
+    let enforce_thresholds = env_bool("CIELO_RUNTIME_BENCH_ENFORCE_THRESHOLDS", false);
 
     let built_cases = CASES
         .iter()
@@ -233,6 +248,14 @@ fn main() {
         println!("runs={measure_runs}");
         println!("total_ms={:.3}", elapsed.as_secs_f64() * 1_000.0);
         println!("per_run_ms={per_run_ms:.3}");
+        if enforce_thresholds
+            && let Err(violation) = check_v1_runtime_per_run_ms(built.name, per_run_ms)
+        {
+            panic!(
+                "runtime benchmark case `{}` exceeded threshold: measured {:.3}ms/run > limit {:.3}ms/run",
+                violation.case, violation.measured_per_run_ms, violation.per_run_ms_max
+            );
+        }
 
         results.push((built.name, per_run_ms));
         black_box(elapsed);
@@ -240,11 +263,22 @@ fn main() {
 
     if let Some((_, pure_ms)) = results.iter().find(|(name, _)| *name == "pure_runtime_loop") {
         for (name, per_run_ms) in &results {
+            let relative = per_run_ms / pure_ms;
             println!(
                 "relative_to_pure={} {:.3}",
                 name,
-                per_run_ms / pure_ms
+                relative
             );
+            if enforce_thresholds
+                && let Err(violation) = check_v1_runtime_relative_to_pure(name, relative)
+            {
+                panic!(
+                    "runtime benchmark case `{}` exceeded relative threshold: measured {:.3} > limit {:.3}",
+                    violation.case,
+                    violation.measured_relative_to_pure,
+                    violation.relative_to_pure_max
+                );
+            }
         }
     }
 }
