@@ -817,6 +817,74 @@ fn c_emitter_threads_capability_into_scoped_perform_calls() {
 }
 
 #[test]
+fn c_emitter_uses_nearest_capability_for_nested_same_effect_handlers() {
+    let mut interner = Interner::new();
+    let main_name = interner.intern("main");
+    let tick_op = interner.intern("tick");
+
+    let mut program = LinearProgram::default();
+    let one = program.push_expr(LinearExpr::Literal(Literal::Int(1)));
+    let two = program.push_expr(LinearExpr::Literal(Literal::Int(2)));
+    let zero = program.push_expr(LinearExpr::Literal(Literal::Int(0)));
+
+    let final_ret = program.push_stmt(LinearStmt::Return(zero));
+    let outer_perform_after_inner = program.push_stmt(LinearStmt::Perform {
+        result: None,
+        effect: EffectLabelId::from_u32(0),
+        operation: tick_op,
+        args: vec![two],
+        next: final_ret,
+    });
+    let inner_ret = program.push_stmt(LinearStmt::Return(zero));
+    let inner_perform = program.push_stmt(LinearStmt::Perform {
+        result: None,
+        effect: EffectLabelId::from_u32(0),
+        operation: tick_op,
+        args: vec![one],
+        next: inner_ret,
+    });
+    let inner_handle = program.push_stmt(LinearStmt::Handle {
+        effect: EffectLabelId::from_u32(0),
+        body: inner_perform,
+        next: Some(outer_perform_after_inner),
+    });
+    let outer_handle = program.push_stmt(LinearStmt::Handle {
+        effect: EffectLabelId::from_u32(0),
+        body: inner_handle,
+        next: None,
+    });
+    program.functions.push(LinearFunction {
+        id: LinearFuncId::new(0),
+        name: main_name,
+        params: vec![],
+        body: outer_handle,
+    });
+    program.entrypoints = vec![LinearFuncId::new(0)];
+
+    let emitted = emit_c_program(&program, &interner);
+    let capabilities = handler_push_capability_temps_for_effect(&emitted, 0);
+    assert_eq!(
+        capabilities.len(),
+        2,
+        "nested same-effect handlers should create distinct capability bindings"
+    );
+    let perform_caps = scoped_perform_capability_temps_for_effect(&emitted, 0);
+    assert_eq!(
+        perform_caps.len(),
+        2,
+        "expected scoped perform calls in both inner and outer handler regions"
+    );
+    assert_eq!(
+        perform_caps[0], capabilities[1],
+        "perform inside inner handler must target inner capability"
+    );
+    assert_eq!(
+        perform_caps[1], capabilities[0],
+        "perform after inner pop must target outer capability"
+    );
+}
+
+#[test]
 fn lowers_resumptive_clause_into_continuation_flow() {
     let src = r#"
 effect LocalState { fn tick() -> Int }
@@ -1805,6 +1873,19 @@ fn handler_push_capability_temps_for_effect(c_source: &str, effect: u32) -> Vec<
                 return None;
             }
             Some(binding.to_owned())
+        })
+        .collect()
+}
+
+fn scoped_perform_capability_temps_for_effect(c_source: &str, effect: u32) -> Vec<String> {
+    let prefix = format!("(void)cielo_perform_scoped({effect}, ");
+    c_source
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            let payload = trimmed.strip_prefix(prefix.as_str())?;
+            let (capability, _) = payload.split_once(", ")?;
+            Some(capability.to_owned())
         })
         .collect()
 }
