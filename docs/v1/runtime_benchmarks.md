@@ -7,6 +7,7 @@ Tracks runtime execution speed for currently active v1 effect paths.
 - Command: `cargo bench --bench v1_runtime`
 - Warmup runs per case: `5` (default `CIELO_RUNTIME_BENCH_WARMUP_RUNS`)
 - Measured runs per case: `25` (default `CIELO_RUNTIME_BENCH_MEASURE_RUNS`)
+- Threshold gate (optional): `CIELO_RUNTIME_BENCH_ENFORCE_THRESHOLDS=1`
 
 Host snapshot:
 
@@ -56,3 +57,12 @@ Summary:
 | `unhandled_perform_loop` | 35.004 | 1.400 | 1.003 |
 | `direct_handled_loop` | 32.849 | 1.314 | 0.941 |
 | `control_handled_loop` | 32.513 | 1.301 | 0.931 |
+
+Runtime thresholds:
+
+| Case | Max per-run ms | Max relative to pure |
+| --- | ---: | ---: |
+| `pure_runtime_loop` | 2.500 | n/a |
+| `unhandled_perform_loop` | 2.500 | 1.200 |
+| `direct_handled_loop` | 2.500 | 1.200 |
+| `control_handled_loop` | 2.500 | 1.200 |
