@@ -145,6 +145,90 @@ fn main() -> Int {
     }
 }
 
+#[test]
+fn scoped_perform_does_not_dispatch_to_wrong_capability() {
+    if !c_compiler_available() {
+        eprintln!("skipping scoped capability runtime test: no C compiler found");
+        return;
+    }
+
+    let runtime_header =
+        format!("{}/src/backend/cielo_runtime.h", env!("CARGO_MANIFEST_DIR")).replace('\\', "\\\\");
+    let c_source = format!(
+        r#"
+#include <stdint.h>
+#include "{runtime_header}"
+
+static int outer_hits = 0;
+static int inner_hits = 0;
+
+static CieloValue outer_clause(CieloEvidence* evidence, CieloContinuation* continuation, size_t argc, const CieloValue* args) {{
+    (void)evidence;
+    (void)continuation;
+    (void)argc;
+    (void)args;
+    outer_hits += 1;
+    return cv_unit();
+}}
+
+static CieloValue inner_clause(CieloEvidence* evidence, CieloContinuation* continuation, size_t argc, const CieloValue* args) {{
+    (void)evidence;
+    (void)continuation;
+    (void)argc;
+    (void)args;
+    inner_hits += 1;
+    return cv_unit();
+}}
+
+int main(void) {{
+    CieloClauseEntry outer_entries[1] = {{ {{123u, outer_clause}} }};
+    CieloClauseEntry inner_entries[1] = {{ {{123u, inner_clause}} }};
+
+    CieloEvidence outer = {{
+        .abi_version = cielo_runtime_abi_version(),
+        .effect = 7u,
+        .capability_id = 0u,
+        .clause_count = 1u,
+        .clauses = outer_entries,
+        .captures = NULL,
+        .reserved0 = NULL,
+        .reserved1 = NULL
+    }};
+    CieloEvidence inner = {{
+        .abi_version = cielo_runtime_abi_version(),
+        .effect = 7u,
+        .capability_id = 0u,
+        .clause_count = 1u,
+        .clauses = inner_entries,
+        .captures = NULL,
+        .reserved0 = NULL,
+        .reserved1 = NULL
+    }};
+
+    uint32_t outer_cap = cielo_handler_push_with_evidence(7u, &outer);
+    uint32_t inner_cap = cielo_handler_push_with_evidence(7u, &inner);
+    if (outer_cap == 0u || inner_cap == 0u) {{
+        return 3;
+    }}
+
+    (void)cielo_perform_scoped(7u, inner_cap, 123u, "tick", 0u, NULL);
+    cielo_handler_pop(inner_cap);
+
+    (void)cielo_perform_scoped(7u, inner_cap, 123u, "tick", 0u, NULL);
+    cielo_handler_pop(outer_cap);
+
+    return (inner_hits == 1 && outer_hits == 0) ? 0 : 1;
+}}
+"#
+    );
+
+    let actual = compile_and_run_c_exit_code("scoped_capability_guard", c_source.as_str());
+    assert_eq!(
+        actual, 0,
+        "scoped perform should not dispatch into a different capability instance"
+    );
+}
+
 fn evaluator_oracle_exit_code(compiled: &CompiledC, interner: &Interner) -> Option<i32> {
     let program = compiled.residual.program();
     let ct = compiled.residual.ct();

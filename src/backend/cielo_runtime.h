@@ -49,17 +49,23 @@ struct CieloValue {
 
 typedef struct CieloEvidence CieloEvidence;
 typedef struct CieloContinuation CieloContinuation;
+typedef struct CieloClauseEntry CieloClauseEntry;
 
 typedef CieloValue (*CieloClauseFn)(CieloEvidence *evidence,
                                     CieloContinuation *continuation,
                                     size_t argc, const CieloValue *args);
+
+struct CieloClauseEntry {
+  uint32_t op_symbol;
+  CieloClauseFn clause;
+};
 
 struct CieloEvidence {
   uint32_t abi_version;
   uint32_t effect;
   uint32_t capability_id;
   uint32_t clause_count;
-  const CieloClauseFn *clauses;
+  const CieloClauseEntry *clauses;
   void *captures;
   void *reserved0;
   void *reserved1;
@@ -307,6 +313,29 @@ static CieloValue cielo_perform_scoped(uint32_t effect,
                                        uint32_t op_symbol, const char *op,
                                        size_t argc, const CieloValue *args);
 
+static inline bool cielo_dispatch_with_evidence(CieloEvidence *evidence,
+                                                uint32_t op_symbol, size_t argc,
+                                                const CieloValue *args,
+                                                CieloValue *out) {
+  if (evidence == NULL || out == NULL) {
+    return false;
+  }
+  if (evidence->abi_version != cielo_runtime_abi_version()) {
+    return false;
+  }
+  if (evidence->clauses == NULL || evidence->clause_count == 0) {
+    return false;
+  }
+  for (uint32_t i = 0; i < evidence->clause_count; i++) {
+    const CieloClauseEntry *entry = &evidence->clauses[i];
+    if (entry->op_symbol == op_symbol && entry->clause != NULL) {
+      *out = entry->clause(evidence, NULL, argc, args);
+      return true;
+    }
+  }
+  return false;
+}
+
 static CieloValue cielo_perform(uint32_t effect, uint32_t op_symbol,
                                 const char *op, size_t argc,
                                 const CieloValue *args) {
@@ -317,22 +346,32 @@ static CieloValue cielo_perform_scoped(uint32_t effect,
                                        uint32_t expected_capability_id,
                                        uint32_t op_symbol, const char *op,
                                        size_t argc, const CieloValue *args) {
-  (void)op_symbol;
+  CieloValue dispatched = cv_unit();
   if (expected_capability_id != 0) {
     for (size_t i = g_cielo_handler_depth; i > 0; i--) {
       if (g_cielo_handlers[i - 1].effect == effect &&
           g_cielo_handlers[i - 1].capability_id == expected_capability_id) {
         CieloEvidence *evidence = g_cielo_handlers[i - 1].evidence;
-        if (evidence != NULL &&
-            evidence->abi_version != cielo_runtime_abi_version()) {
-          return cv_unit();
+        if (cielo_dispatch_with_evidence(evidence, op_symbol, argc, args,
+                                         &dispatched)) {
+          return dispatched;
         }
         return cv_unit();
       }
     }
-  }
-  if (cielo_handler_active(effect)) {
+    // Scoped performs must not fall back to another handler instance with the
+    // same effect label.
     return cv_unit();
+  }
+  for (size_t i = g_cielo_handler_depth; i > 0; i--) {
+    if (g_cielo_handlers[i - 1].effect == effect) {
+      CieloEvidence *evidence = g_cielo_handlers[i - 1].evidence;
+      if (cielo_dispatch_with_evidence(evidence, op_symbol, argc, args,
+                                       &dispatched)) {
+        return dispatched;
+      }
+      return cv_unit();
+    }
   }
 #ifdef CIELO_OP_SYMBOL_PRINT
   if (op_symbol == CIELO_OP_SYMBOL_PRINT && argc > 0 && args != NULL) {
