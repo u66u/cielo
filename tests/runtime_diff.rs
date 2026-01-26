@@ -229,6 +229,93 @@ int main(void) {{
     );
 }
 
+#[test]
+fn callback_scoped_capability_avoids_wrong_handler_interception() {
+    if !c_compiler_available() {
+        eprintln!("skipping callback capability runtime test: no C compiler found");
+        return;
+    }
+
+    let runtime_header =
+        format!("{}/src/backend/cielo_runtime.h", env!("CARGO_MANIFEST_DIR")).replace('\\', "\\\\");
+    let c_source = format!(
+        r#"
+#include <stdint.h>
+#include "{runtime_header}"
+
+static int user_hits = 0;
+static int internal_hits = 0;
+
+static CieloValue user_clause(CieloEvidence* evidence, CieloContinuation* continuation, size_t argc, const CieloValue* args) {{
+    (void)evidence;
+    (void)continuation;
+    (void)argc;
+    (void)args;
+    user_hits += 1;
+    return cv_unit();
+}}
+
+static CieloValue internal_clause(CieloEvidence* evidence, CieloContinuation* continuation, size_t argc, const CieloValue* args) {{
+    (void)evidence;
+    (void)continuation;
+    (void)argc;
+    (void)args;
+    internal_hits += 1;
+    return cv_unit();
+}}
+
+static void run_user_callback(uint32_t user_capability) {{
+    (void)cielo_perform_scoped(9u, user_capability, 200u, "yield", 0u, NULL);
+}}
+
+int main(void) {{
+    CieloClauseEntry user_entries[1] = {{ {{200u, user_clause}} }};
+    CieloClauseEntry internal_entries[1] = {{ {{200u, internal_clause}} }};
+
+    CieloEvidence user = {{
+        .abi_version = cielo_runtime_abi_version(),
+        .effect = 9u,
+        .capability_id = 0u,
+        .clause_count = 1u,
+        .clauses = user_entries,
+        .captures = NULL,
+        .reserved0 = NULL,
+        .reserved1 = NULL
+    }};
+    CieloEvidence internal = {{
+        .abi_version = cielo_runtime_abi_version(),
+        .effect = 9u,
+        .capability_id = 0u,
+        .clause_count = 1u,
+        .clauses = internal_entries,
+        .captures = NULL,
+        .reserved0 = NULL,
+        .reserved1 = NULL
+    }};
+
+    uint32_t user_cap = cielo_handler_push_with_evidence(9u, &user);
+    uint32_t internal_cap = cielo_handler_push_with_evidence(9u, &internal);
+    if (user_cap == 0u || internal_cap == 0u) {{
+        return 3;
+    }}
+
+    run_user_callback(user_cap);
+
+    cielo_handler_pop(internal_cap);
+    cielo_handler_pop(user_cap);
+
+    return (user_hits == 1 && internal_hits == 0) ? 0 : 1;
+}}
+"#
+    );
+
+    let actual = compile_and_run_c_exit_code("callback_capability_scope", c_source.as_str());
+    assert_eq!(
+        actual, 0,
+        "callback should dispatch to captured capability, not nearest same-effect handler"
+    );
+}
+
 fn evaluator_oracle_exit_code(compiled: &CompiledC, interner: &Interner) -> Option<i32> {
     let program = compiled.residual.program();
     let ct = compiled.residual.ct();
