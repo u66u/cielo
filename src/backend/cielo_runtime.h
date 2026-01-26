@@ -99,34 +99,16 @@ static inline uint32_t cielo_runtime_abi_version(void) {
   return (uint32_t)CIELO_RUNTIME_ABI_VERSION;
 }
 
-static inline CieloValue cv_unit(void) {
-  CieloValue v = {.tag = CV_UNIT};
-  return v;
-}
-static inline CieloValue cv_bool(int x) {
-  CieloValue v = {.tag = CV_BOOL};
-  v.as.b = x != 0;
-  return v;
-}
-static inline CieloValue cv_int(int64_t x) {
-  CieloValue v = {.tag = CV_INT};
-  v.as.i = x;
-  return v;
-}
-static inline CieloValue cv_float(double x) {
-  CieloValue v = {.tag = CV_FLOAT};
-  v.as.f = x;
-  return v;
-}
-static inline CieloValue cv_char(uint32_t x) {
-  CieloValue v = {.tag = CV_CHAR};
-  v.as.c = x;
-  return v;
-}
+#define CV_MAKE(TAG, MEMBER, VALUE)                                            \
+  ((CieloValue){.tag = (TAG), .as.MEMBER = (VALUE)})
+
+static inline CieloValue cv_unit(void) { return (CieloValue){.tag = CV_UNIT}; }
+static inline CieloValue cv_bool(int x) { return CV_MAKE(CV_BOOL, b, x != 0); }
+static inline CieloValue cv_int(int64_t x) { return CV_MAKE(CV_INT, i, x); }
+static inline CieloValue cv_float(double x) { return CV_MAKE(CV_FLOAT, f, x); }
+static inline CieloValue cv_char(uint32_t x) { return CV_MAKE(CV_CHAR, c, x); }
 static inline CieloValue cv_string(const char *s) {
-  CieloValue v = {.tag = CV_STRING};
-  v.as.s = s;
-  return v;
+  return CV_MAKE(CV_STRING, s, s);
 }
 
 static inline bool cielo_ctor_is_variant(CieloValue value,
@@ -274,36 +256,38 @@ static inline CieloValue cv_or(CieloValue a, CieloValue b) {
   return cv_bool(cv_truthy(a) || cv_truthy(b));
 }
 
+static inline const char *cielo_cstr0(const char *s) { return s ? s : ""; }
+
+#define CASE_PUTS(TAG, STR_EXPR)                                               \
+  case TAG:                                                                    \
+    puts((STR_EXPR));                                                          \
+    break
+
+#define CASE_PRINTF(TAG, FMT, ...)                                             \
+  case TAG:                                                                    \
+    printf(FMT "\n", __VA_ARGS__);                                             \
+    break
+
 static inline void cv_print(CieloValue v) {
   switch (v.tag) {
-  case CV_UNIT:
-    printf("()\n");
-    break;
-  case CV_BOOL:
-    printf("%s\n", v.as.b ? "true" : "false");
-    break;
-  case CV_INT:
-    printf("%lld\n", (long long)v.as.i);
-    break;
-  case CV_FLOAT:
-    printf("%f\n", v.as.f);
-    break;
-  case CV_CHAR:
-    printf("%c\n", (int)v.as.c);
-    break;
-  case CV_STRING:
-    printf("%s\n", v.as.s ? v.as.s : "");
-    break;
+    CASE_PUTS(CV_UNIT, "()");
+    CASE_PUTS(CV_BOOL, v.as.b ? "true" : "false");
+    CASE_PRINTF(CV_INT, "%lld", (long long)v.as.i);
+    CASE_PRINTF(CV_FLOAT, "%f", v.as.f);
+    CASE_PRINTF(CV_CHAR, "%c", (int)v.as.c);
+    CASE_PUTS(CV_STRING, cielo_cstr0(v.as.s));
+
   case CV_CTOR:
-    if (v.as.ctor != NULL) {
-      printf("<%s.%s/%zu>\n", v.as.ctor->ty ? v.as.ctor->ty : "",
-             v.as.ctor->variant ? v.as.ctor->variant : "", v.as.ctor->argc);
-    } else {
-      printf("<ctor>\n");
+    if (!v.as.ctor) {
+      puts("<ctor>");
+      break;
     }
+    printf("<%s.%s/%zu>\n", cielo_cstr0(v.as.ctor->ty),
+           cielo_cstr0(v.as.ctor->variant), v.as.ctor->argc);
     break;
+
   default:
-    printf("<value>\n");
+    puts("<value>");
     break;
   }
 }
