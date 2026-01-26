@@ -772,7 +772,16 @@ impl Lowerer {
             AstExprKind::String(value) => ExprKind::Literal(Literal::String(value.clone())),
             AstExprKind::Var(name) => {
                 if let Some(var_id) = locals.get(name) {
-                    ExprKind::Var(*var_id)
+                    if self.active_resume_vars.contains(var_id) {
+                        let error = self.diagnostics.error_node(
+                            "LOWER_RESUME_VALUE_ESCAPE",
+                            "`resume` cannot be captured or passed as a value in v1",
+                            expr.span,
+                        );
+                        ExprKind::Error(error)
+                    } else {
+                        ExprKind::Var(*var_id)
+                    }
                 } else {
                     let error = self.diagnostics.error_node(
                         "LOWER_UNKNOWN_VAR",

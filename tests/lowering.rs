@@ -327,6 +327,60 @@ fn main() -> Int {
 }
 
 #[test]
+fn reports_resume_capture_as_value_in_handler_clause() {
+    let src = r#"
+effect LocalState { fn tick() -> Int }
+fn main() -> Int {
+  let x = handle { do LocalState.tick(); 7 } with LocalState {
+    | tick(resume) => {
+      let k = resume;
+      0
+    }
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    assert!(
+        lowered
+            .diagnostics
+            .entries()
+            .iter()
+            .any(|diag| diag.code == "LOWER_RESUME_VALUE_ESCAPE"),
+        "capturing resume as a value should be rejected explicitly in v1"
+    );
+}
+
+#[test]
+fn reports_resume_passing_as_function_argument() {
+    let src = r#"
+effect LocalState { fn tick() -> Int }
+fn sink(x: Int) -> Int {
+  x
+}
+fn main() -> Int {
+  let x = handle { do LocalState.tick(); 7 } with LocalState {
+    | tick(resume) => sink(resume)
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    assert!(
+        lowered
+            .diagnostics
+            .entries()
+            .iter()
+            .any(|diag| diag.code == "LOWER_RESUME_VALUE_ESCAPE"),
+        "passing resume as a value should be rejected explicitly in v1"
+    );
+}
+
+#[test]
 fn reports_handler_clause_arity_mismatch() {
     let src = r#"
 effect Console { fn print(s: String) -> () }
