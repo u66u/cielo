@@ -89,6 +89,66 @@ fn main() -> Int {
 }
 "#;
 
+const SOURCE_NESTED_DIRECT_SAME_EFFECT_LOOP: &str = r#"
+effect Tick { fn hit() -> Int }
+
+fn nested_direct_loop(n: Int, acc: Int) -> Int with Tick {
+  if n == 0 {
+    acc
+  } else {
+    do Tick.hit();
+    nested_direct_loop(n - 1, acc + 1)
+  }
+}
+
+fn main() -> Int {
+  let n = @runtime { 8000 };
+  let x = handle {
+    let y = handle { nested_direct_loop(n, 0) } with Tick {
+      | hit(resume) => resume(0)
+    };
+    do Tick.hit();
+    y
+  } with Tick {
+    | hit(resume) => resume(0)
+  };
+  x - x
+}
+"#;
+
+const SOURCE_NESTED_CONTROL_SAME_EFFECT_LOOP: &str = r#"
+effect Tick { fn hit() -> Int }
+
+fn nested_control_loop(n: Int, acc: Int) -> Int with Tick {
+  if n == 0 {
+    acc
+  } else {
+    do Tick.hit();
+    nested_control_loop(n - 1, acc + 1)
+  }
+}
+
+fn main() -> Int {
+  let n = @runtime { 8000 };
+  let x = handle {
+    let y = handle { nested_control_loop(n, 0) } with Tick {
+      | hit(resume) => {
+        let z = resume(0);
+        z + 1
+      }
+    };
+    do Tick.hit();
+    y
+  } with Tick {
+    | hit(resume) => {
+      let z = resume(0);
+      z + 1
+    }
+  };
+  x - x
+}
+"#;
+
 const DEFAULT_WARMUP_RUNS: usize = 5;
 const DEFAULT_MEASURE_RUNS: usize = 25;
 static TEMP_SUFFIX_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -115,6 +175,14 @@ const CASES: &[RuntimeBenchCase] = &[
     RuntimeBenchCase {
         name: "control_handled_loop",
         source: SOURCE_CONTROL_HANDLED_LOOP,
+    },
+    RuntimeBenchCase {
+        name: "nested_direct_same_effect_loop",
+        source: SOURCE_NESTED_DIRECT_SAME_EFFECT_LOOP,
+    },
+    RuntimeBenchCase {
+        name: "nested_control_same_effect_loop",
+        source: SOURCE_NESTED_CONTROL_SAME_EFFECT_LOOP,
     },
 ];
 
