@@ -37,6 +37,213 @@ struct DiffCase {
     source: &'static str,
 }
 
+struct GeneratedDiffCase {
+    name: String,
+    source: String,
+    seed: u64,
+    template: &'static str,
+}
+
+struct DeterministicRng {
+    state: u64,
+}
+
+impl DeterministicRng {
+    fn new(seed: u64) -> Self {
+        let initial = if seed == 0 {
+            0x9E37_79B9_7F4A_7C15
+        } else {
+            seed
+        };
+        Self { state: initial }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        // xorshift64*
+        let mut x = self.state;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.state = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    fn next_bool(&mut self) -> bool {
+        (self.next_u64() & 1) == 1
+    }
+
+    fn next_bounded_u64(&mut self, upper_exclusive: u64) -> u64 {
+        if upper_exclusive == 0 {
+            0
+        } else {
+            self.next_u64() % upper_exclusive
+        }
+    }
+
+    fn next_small_int(&mut self, upper_exclusive: i64) -> i64 {
+        self.next_bounded_u64(upper_exclusive as u64) as i64
+    }
+}
+
+fn bool_lit(value: bool) -> &'static str {
+    if value {
+        "true"
+    } else {
+        "false"
+    }
+}
+
+fn build_generated_handler_case(seed: u64, case_index: usize) -> GeneratedDiffCase {
+    let mut rng = DeterministicRng::new(seed);
+    let template_kind = rng.next_bounded_u64(4);
+    let (template, source) = match template_kind {
+        0 => ("abortive", build_abortive_handler_source(&mut rng)),
+        1 => ("direct_resume", build_direct_handler_source(&mut rng)),
+        2 => ("control_resume", build_control_handler_source(&mut rng)),
+        _ => ("nested_same_effect", build_nested_handler_source(&mut rng)),
+    };
+    GeneratedDiffCase {
+        name: format!("generated_handler_{case_index:02}_{template}"),
+        source,
+        seed,
+        template,
+    }
+}
+
+fn build_abortive_handler_source(rng: &mut DeterministicRng) -> String {
+    let perform_flag = bool_lit(rng.next_bool());
+    let guard_flag = bool_lit(rng.next_bool());
+    let base = 1 + rng.next_small_int(25);
+    let then_delta = 1 + rng.next_small_int(12);
+    let else_delta = 1 + rng.next_small_int(12);
+    let clause_true = 1 + rng.next_small_int(40);
+    let clause_false = 1 + rng.next_small_int(40);
+    let tail = rng.next_small_int(8);
+    format!(
+        r#"
+effect LocalState {{ fn tick(flag: Bool) -> Int }}
+
+fn main() -> Int {{
+  let base = {base};
+  let out = handle {{
+    do LocalState.tick({perform_flag});
+    if {guard_flag} {{
+      base + {then_delta}
+    }} else {{
+      base + {else_delta}
+    }}
+  }} with LocalState {{
+    | tick(flag) => if flag {{ {clause_true} }} else {{ {clause_false} }}
+  }};
+  out + {tail}
+}}
+"#
+    )
+}
+
+fn build_direct_handler_source(rng: &mut DeterministicRng) -> String {
+    let perform_flag = bool_lit(rng.next_bool());
+    let guard_flag = bool_lit(rng.next_bool());
+    let base = 1 + rng.next_small_int(25);
+    let then_delta = 1 + rng.next_small_int(12);
+    let else_delta = 1 + rng.next_small_int(12);
+    let resume_true = 1 + rng.next_small_int(30);
+    let resume_false = 1 + rng.next_small_int(30);
+    let tail = rng.next_small_int(8);
+    format!(
+        r#"
+effect LocalState {{ fn tick(flag: Bool) -> Int }}
+
+fn main() -> Int {{
+  let base = {base};
+  let out = handle {{
+    do LocalState.tick({perform_flag});
+    if {guard_flag} {{
+      base + {then_delta}
+    }} else {{
+      base + {else_delta}
+    }}
+  }} with LocalState {{
+    | tick(flag, resume) => if flag {{ resume({resume_true}) }} else {{ resume({resume_false}) }}
+  }};
+  out + {tail}
+}}
+"#
+    )
+}
+
+fn build_control_handler_source(rng: &mut DeterministicRng) -> String {
+    let perform_flag = bool_lit(rng.next_bool());
+    let guard_flag = bool_lit(rng.next_bool());
+    let base = 1 + rng.next_small_int(25);
+    let then_delta = 1 + rng.next_small_int(12);
+    let else_delta = 1 + rng.next_small_int(12);
+    let resume_true = 1 + rng.next_small_int(30);
+    let resume_false = 1 + rng.next_small_int(30);
+    let clause_bonus = 1 + rng.next_small_int(7);
+    let tail = rng.next_small_int(8);
+    format!(
+        r#"
+effect LocalState {{ fn tick(flag: Bool) -> Int }}
+
+fn main() -> Int {{
+  let base = {base};
+  let out = handle {{
+    do LocalState.tick({perform_flag});
+    if {guard_flag} {{
+      base + {then_delta}
+    }} else {{
+      base + {else_delta}
+    }}
+  }} with LocalState {{
+    | tick(flag, resume) => {{
+      let resumed = if flag {{
+        resume({resume_true})
+      }} else {{
+        resume({resume_false})
+      }};
+      resumed + {clause_bonus}
+    }}
+  }};
+  out + {tail}
+}}
+"#
+    )
+}
+
+fn build_nested_handler_source(rng: &mut DeterministicRng) -> String {
+    let inner_flag = bool_lit(rng.next_bool());
+    let outer_flag = bool_lit(rng.next_bool());
+    let inner_tail = 1 + rng.next_small_int(20);
+    let inner_resume_true = 1 + rng.next_small_int(25);
+    let inner_resume_false = 1 + rng.next_small_int(25);
+    let outer_resume_true = 1 + rng.next_small_int(25);
+    let outer_resume_false = 1 + rng.next_small_int(25);
+    let outer_add = 1 + rng.next_small_int(10);
+    let tail = rng.next_small_int(8);
+    format!(
+        r#"
+effect LocalState {{ fn tick(flag: Bool) -> Int }}
+
+fn main() -> Int {{
+  let out = handle {{
+    let inner = handle {{
+      do LocalState.tick({inner_flag});
+      {inner_tail}
+    }} with LocalState {{
+      | tick(flag, resume) => if flag {{ resume({inner_resume_true}) }} else {{ resume({inner_resume_false}) }}
+    }};
+    do LocalState.tick({outer_flag});
+    inner + {outer_add}
+  }} with LocalState {{
+    | tick(flag, resume) => if flag {{ resume({outer_resume_true}) }} else {{ resume({outer_resume_false}) }}
+  }};
+  out + {tail}
+}}
+"#
+    )
+}
+
 #[test]
 fn runtime_exit_matches_evaluator_oracle_for_v1_seeded_cases() {
     if !c_compiler_available() {
@@ -130,18 +337,69 @@ fn main() -> Int {
             SourceId::from_u32(idx as u32),
             &mut interner,
         );
-        let expected = evaluator_oracle_exit_code(&compiled, &interner).unwrap_or_else(|| {
-            panic!(
-                "failed to compute evaluator oracle for case {}",
-                case.name
-            )
-        });
+        let expected = evaluator_oracle_exit_code(&compiled, &interner)
+            .unwrap_or_else(|| panic!("failed to compute evaluator oracle for case {}", case.name));
         let actual = compile_and_run_c_exit_code(case.name, &compiled.c_source);
         assert_eq!(
             actual, expected,
             "runtime/evaluator mismatch for case {}",
             case.name
         );
+    }
+}
+
+#[test]
+fn runtime_exit_matches_evaluator_oracle_for_seed_expanding_handler_cases() {
+    if !c_compiler_available() {
+        eprintln!("skipping randomized runtime diff test: no C compiler found");
+        return;
+    }
+
+    const BASE_SEEDS: [u64; 6] = [
+        0xA12F_0089_8877_55C1,
+        0x6B4E_13DD_F031_9223,
+        0xFF00_F0F0_1234_5678,
+        0x0123_4567_89AB_CDEF,
+        0x0D15_EA5E_CAFE_BEEF,
+        0x3141_5926_5358_9793,
+    ];
+    const VARIANTS_PER_SEED: usize = 3;
+    const VARIANT_MIX: u64 = 0x9E37_79B9_7F4A_7C15;
+    const SOURCE_ID_BASE: u32 = 10_000;
+
+    let compiler = Compiler::new(CompilerConfig::default());
+    let mut case_index = 0u32;
+
+    for base_seed in BASE_SEEDS {
+        for variant in 0..VARIANTS_PER_SEED {
+            let derived_seed = base_seed
+                ^ ((variant as u64 + 1).wrapping_mul(VARIANT_MIX))
+                ^ ((case_index as u64 + 1).wrapping_mul(0xBF58_476D_1CE4_E5B9));
+            let generated = build_generated_handler_case(derived_seed, case_index as usize);
+            let mut interner = Interner::new();
+            let compiled = compiler.compile_source_v0_to_c(
+                generated.source.as_str(),
+                SourceId::from_u32(SOURCE_ID_BASE + case_index),
+                &mut interner,
+            );
+            let expected = evaluator_oracle_exit_code(&compiled, &interner).unwrap_or_else(|| {
+                panic!(
+                    "failed to compute evaluator oracle for generated case {} (seed {:#x}, template {})\nsource:\n{}",
+                    generated.name,
+                    generated.seed,
+                    generated.template,
+                    generated.source
+                )
+            });
+            let actual =
+                compile_and_run_c_exit_code(generated.name.as_str(), compiled.c_source.as_str());
+            assert_eq!(
+                actual, expected,
+                "runtime/evaluator mismatch for generated case {} (seed {:#x}, template {})",
+                generated.name, generated.seed, generated.template
+            );
+            case_index += 1;
+        }
     }
 }
 
@@ -438,13 +696,7 @@ fn eval_stmt(
                 OracleValue::ResumeToken(id) => id,
                 _ => return None,
             };
-            let resumed = resume_continuation(
-                program,
-                ct,
-                continuations,
-                resume_id,
-                arg_value,
-            )?;
+            let resumed = resume_continuation(program, ct, continuations, resume_id, arg_value)?;
             env.insert(*result, resumed);
             eval_stmt(program, ct, *next, env, handler_stack, continuations)
         }
@@ -485,7 +737,10 @@ fn eval_stmt(
                 Some(body_value)
             }
         }
-        StmtKind::Call { .. } | StmtKind::Match { .. } | StmtKind::Hole { .. } | StmtKind::Error(_) => None,
+        StmtKind::Call { .. }
+        | StmtKind::Match { .. }
+        | StmtKind::Hole { .. }
+        | StmtKind::Error(_) => None,
     }
 }
 
@@ -609,7 +864,10 @@ fn eval_expr(
             let right = eval_expr(program, ct, *rhs, env)?;
             eval_binary(*op, left, right)
         }
-        ExprKind::PureCall { .. } | ExprKind::MakeStruct { .. } | ExprKind::MakeEnum { .. } | ExprKind::Error(_) => None,
+        ExprKind::PureCall { .. }
+        | ExprKind::MakeStruct { .. }
+        | ExprKind::MakeEnum { .. }
+        | ExprKind::Error(_) => None,
     };
     direct.or_else(|| ct.ct_cache.get(&expr_id).and_then(literal_to_oracle))
 }
@@ -747,17 +1005,14 @@ fn compile_and_run_c_exit_code(case_name: &str, c_source: &str) -> i32 {
     let run = Command::new(bin_path.as_path())
         .output()
         .expect("failed to execute compiled C binary");
-    let code = run
-        .status
-        .code()
-        .unwrap_or_else(|| {
-            panic!(
-                "runtime execution terminated by signal for case {}:\nstdout:\n{}\nstderr:\n{}",
-                case_name,
-                String::from_utf8_lossy(run.stdout.as_slice()),
-                String::from_utf8_lossy(run.stderr.as_slice())
-            )
-        });
+    let code = run.status.code().unwrap_or_else(|| {
+        panic!(
+            "runtime execution terminated by signal for case {}:\nstdout:\n{}\nstderr:\n{}",
+            case_name,
+            String::from_utf8_lossy(run.stdout.as_slice()),
+            String::from_utf8_lossy(run.stderr.as_slice())
+        )
+    });
     let _ = fs::remove_dir_all(work_dir.as_path());
     code
 }
