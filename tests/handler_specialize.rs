@@ -75,6 +75,52 @@ fn main() -> Int {
 }
 
 #[test]
+fn aborts_specialization_when_recursive_wrapper_shapes_vary() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+
+fn runtime_flag() -> Bool with Console {
+  do Console.print("seed");
+  true
+}
+
+fn loop(flag: Bool) -> Int with Console {
+  if flag {
+    handle { loop(false) } with Console {
+      | print(s) => 1
+    }
+  } else {
+    do Console.print("step");
+    handle { loop(true) } with Console {
+      | print(s) => 2
+    }
+  }
+}
+
+fn main() -> Int {
+  let x = handle { loop(runtime_flag()) } with Console {
+    | print(s) => 0
+  };
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert_eq!(
+        function_count_named(compiled.residual.program(), &interner, "loop"),
+        1,
+        "v1 should skip creating loop specializations when recursive wrapper shapes vary"
+    );
+    let main = function_named(compiled.residual.program(), &interner, "main").expect("main");
+    assert!(
+        contains_handle_stmt(compiled.residual.program(), main.body),
+        "main wrapper should remain unspecialized when recursive wrapper shapes vary"
+    );
+}
+
+#[test]
 fn deduplicates_specialization_for_equivalent_handler_shapes() {
     let src = r#"
 effect Console { fn print(s: String) -> () }
