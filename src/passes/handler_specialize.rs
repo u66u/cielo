@@ -559,6 +559,28 @@ fn ensure_specialized(
     Some(specialized_id)
 }
 
+fn has_varying_recursive_wrapper_shapes(
+    program: &CoreProgram,
+    callee: FuncId,
+    expected_shape: &HandlerShapeKey,
+) -> bool {
+    let Some(function) = program.function(callee) else {
+        return false;
+    };
+
+    let mut stack = vec![(function.body, None::<HandlerId>)];
+    let mut seen_stmts = HashSet::new();
+    let mut shape_cache = HashMap::new();
+
+    while let Some((stmt_id, nearest_handler)) = stack.pop() {
+        if !seen_stmts.insert((stmt_id, nearest_handler)) {
+            continue;
+        }
+        let Some(stmt) = program.stmt(stmt_id) else {
+            continue;
+        };
+    false
+}
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct HandlerShapeKey {
     effect: EffectLabelId,
