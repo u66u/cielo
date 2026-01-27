@@ -504,6 +504,9 @@ fn ensure_specialized(
     if let Some(existing) = specialized.get(&key).copied() {
         return Some(existing);
     }
+    if has_varying_recursive_wrapper_shapes(program, candidate.callee, &candidate.shape) {
+        return None;
+    }
     if *total_specialized >= MAX_TOTAL_SPECIALIZATIONS {
         return None;
     }
@@ -579,8 +582,42 @@ fn has_varying_recursive_wrapper_shapes(
         let Some(stmt) = program.stmt(stmt_id) else {
             continue;
         };
+
+        match &stmt.kind {
+            StmtKind::Call { callee: called, .. } => {
+                if *called == callee
+                    && let Some(handler) = nearest_handler
+                {
+                    let Some(shape) = shape_for_handler(program, handler, &mut shape_cache) else {
+                        continue;
+                    };
+                    if &shape != expected_shape {
+                        return true;
+                    }
+                }
+            }
+            StmtKind::Handle {
+                handler,
+                body,
+                next,
+            } => {
+                stack.push((*body, Some(*handler)));
+                if let Some(next_stmt) = next {
+                    stack.push((*next_stmt, nearest_handler));
+                }
+                continue;
+            }
+            _ => {}
+        }
+
+        for child in stmt.child_stmts() {
+            stack.push((child, nearest_handler));
+        }
+    }
+
     false
 }
+
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct HandlerShapeKey {
     effect: EffectLabelId,
