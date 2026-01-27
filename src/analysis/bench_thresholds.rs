@@ -72,6 +72,16 @@ const V1_RUNTIME_THRESHOLDS: &[V1RuntimeThreshold] = &[
         per_run_ms_max: 2.500,
         relative_to_pure_max: Some(1.200),
     },
+    V1RuntimeThreshold {
+        case: "nested_direct_same_effect_loop",
+        per_run_ms_max: 3.000,
+        relative_to_pure_max: Some(1.350),
+    },
+    V1RuntimeThreshold {
+        case: "nested_control_same_effect_loop",
+        per_run_ms_max: 3.000,
+        relative_to_pure_max: Some(1.350),
+    },
 ];
 
 pub fn v1_pipeline_thresholds() -> &'static [V1PipelineThreshold] {

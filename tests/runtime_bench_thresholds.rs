@@ -10,6 +10,8 @@ fn runtime_thresholds_cover_all_runtime_benchmark_cases() {
         "unhandled_perform_loop",
         "direct_handled_loop",
         "control_handled_loop",
+        "nested_direct_same_effect_loop",
+        "nested_control_same_effect_loop",
     ];
     for case in cases {
         assert!(
@@ -26,6 +28,8 @@ fn runtime_baselines_fit_thresholds() {
         ("unhandled_perform_loop", 1.400),
         ("direct_handled_loop", 1.314),
         ("control_handled_loop", 1.301),
+        ("nested_direct_same_effect_loop", 1.552),
+        ("nested_control_same_effect_loop", 1.588),
     ];
     for (case, per_run_ms) in baseline_per_run_ms {
         assert!(
@@ -42,6 +46,8 @@ fn runtime_relative_baselines_fit_thresholds() {
         ("unhandled_perform_loop", 1.003),
         ("direct_handled_loop", 0.941),
         ("control_handled_loop", 0.931),
+        ("nested_direct_same_effect_loop", 1.112),
+        ("nested_control_same_effect_loop", 1.137),
     ];
     for (case, relative) in baseline_relative {
         assert!(
