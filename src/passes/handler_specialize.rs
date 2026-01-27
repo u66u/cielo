@@ -74,74 +74,44 @@ fn collect_specialize_candidates(program: &CoreProgram) -> Vec<SpecializeCandida
     let mut shape_cache = HashMap::new();
     let mut wrapper_callee_cache = HashMap::new();
     let mut wrapper_callee_visiting = HashSet::new();
-    let reachable_functions = collect_reachable_functions(program);
-    for func_id in reachable_functions {
+    for func_id in collect_reachable_functions(program) {
         let Some(function) = program.function(func_id) else {
             continue;
         };
-        collect_function_candidates(
-            program,
-            function.body,
-            &mut seen_stmts,
-            &mut shape_cache,
-            &mut wrapper_callee_cache,
-            &mut wrapper_callee_visiting,
-            &mut out,
-        );
+        let mut stack = vec![function.body];
+        while let Some(stmt_id) = stack.pop() {
+            if !seen_stmts.insert(stmt_id) {
+                continue;
+            }
+            let Some(stmt) = program.stmt(stmt_id) else {
+                continue;
+            };
+            if let StmtKind::Handle {
+                handler,
+                body,
+                next,
+            } = &stmt.kind
+                && next.is_none()
+                && let Some(callee) = wrapper_call_callee(
+                    program,
+                    *body,
+                    &mut wrapper_callee_cache,
+                    &mut wrapper_callee_visiting,
+                )
+                && let Some(shape) = shape_for_handler(program, *handler, &mut shape_cache)
+            {
+                out.push(SpecializeCandidate {
+                    handler: *handler,
+                    shape,
+                    handle_stmt: stmt_id,
+                    body_stmt: *body,
+                    callee,
+                });
+            }
+            stack.extend(stmt.child_stmts());
+        }
     }
     out
-}
-
-fn collect_function_candidates(
-    program: &CoreProgram,
-    root: StmtId,
-    seen_stmts: &mut HashSet<StmtId>,
-    shape_cache: &mut HashMap<HandlerId, HandlerShapeKey>,
-    wrapper_callee_cache: &mut HashMap<StmtId, Option<FuncId>>,
-    wrapper_callee_visiting: &mut HashSet<StmtId>,
-    out: &mut Vec<SpecializeCandidate>,
-) {
-    let mut stack = vec![root];
-    while let Some(stmt_id) = stack.pop() {
-        if !seen_stmts.insert(stmt_id) {
-            continue;
-        }
-        let Some(stmt) = program.stmt(stmt_id) else {
-            continue;
-        };
-        if let StmtKind::Handle {
-            handler,
-            body,
-            next,
-        } = &stmt.kind
-            && next.is_none()
-            && let Some(callee) = direct_handle_body_callee(
-                program,
-                *body,
-                wrapper_callee_cache,
-                wrapper_callee_visiting,
-            )
-            && let Some(shape) = shape_for_handler(program, *handler, shape_cache)
-        {
-            out.push(SpecializeCandidate {
-                handler: *handler,
-                shape,
-                handle_stmt: stmt_id,
-                body_stmt: *body,
-                callee,
-            });
-        }
-        stack.extend(stmt.child_stmts());
-    }
-}
-
-fn direct_handle_body_callee(
-    program: &CoreProgram,
-    body_stmt: StmtId,
-    cache: &mut HashMap<StmtId, Option<FuncId>>,
-    visiting: &mut HashSet<StmtId>,
-) -> Option<FuncId> {
-    wrapper_call_callee(program, body_stmt, cache, visiting)
 }
 
 fn wrapper_call_callee(
@@ -251,17 +221,18 @@ fn is_forwarding_tail_of_var(program: &CoreProgram, stmt_id: StmtId, source_var:
             return false;
         }
         let result = match program.stmt(stmt_id).map(|stmt| &stmt.kind) {
-            Some(StmtKind::Return(expr_id)) => program
-                .expr(*expr_id)
-                .is_some_and(|expr| matches!(expr.kind, ExprKind::Var(bound) if bound == source_var)),
+            Some(StmtKind::Return(expr_id)) => program.expr(*expr_id).is_some_and(
+                |expr| matches!(expr.kind, ExprKind::Var(bound) if bound == source_var),
+            ),
             Some(StmtKind::Let {
                 binding,
                 value,
                 next,
-            }) => program
-                .expr(*value)
-                .is_some_and(|expr| matches!(expr.kind, ExprKind::Var(var) if var == source_var))
-                && recurse(program, *next, *binding, visiting),
+            }) => {
+                program.expr(*value).is_some_and(
+                    |expr| matches!(expr.kind, ExprKind::Var(var) if var == source_var),
+                ) && recurse(program, *next, *binding, visiting)
+            }
             Some(StmtKind::Val {
                 binding,
                 value,
@@ -288,9 +259,9 @@ fn is_forwarding_tail_of_var(program: &CoreProgram, stmt_id: StmtId, source_var:
             }
             Some(StmtKind::Stage { body, next, .. }) => {
                 recurse(program, *body, source_var, visiting)
-                    && next
-                        .as_ref()
-                        .map_or(true, |next_stmt| recurse(program, *next_stmt, source_var, visiting))
+                    && next.as_ref().map_or(true, |next_stmt| {
+                        recurse(program, *next_stmt, source_var, visiting)
+                    })
             }
             _ => false,
         };
@@ -530,16 +501,10 @@ fn ensure_specialized(
     };
     let specialized_id = program.add_function(placeholder);
 
-    let mut expr_map = HashMap::new();
-    let mut stmt_map = HashMap::new();
-    let cloned_body = clone_stmt_graph(
-        program,
-        source_decl.body,
-        candidate.callee,
-        specialized_id,
-        &mut expr_map,
-        &mut stmt_map,
-    );
+    let cloned_body = {
+        let mut cloner = GraphCloner::new(program, candidate.callee, specialized_id);
+        cloner.clone_stmt(source_decl.body)
+    };
     let wrapped_body = program.push_stmt(StmtNode {
         span: source_decl.span,
         kind: StmtKind::Handle {
@@ -1044,325 +1009,208 @@ fn push_count(len: usize, out: &mut Vec<ShapeToken>) {
     out.push(ShapeToken::Count(u32::try_from(len).unwrap_or(u32::MAX)));
 }
 
-fn clone_stmt_graph(
-    program: &mut CoreProgram,
-    source: StmtId,
+struct GraphCloner<'a> {
+    program: &'a mut CoreProgram,
     source_func: FuncId,
     specialized_func: FuncId,
-    expr_map: &mut HashMap<ExprId, ExprId>,
-    stmt_map: &mut HashMap<StmtId, StmtId>,
-) -> StmtId {
-    if let Some(existing) = stmt_map.get(&source).copied() {
-        return existing;
-    }
-
-    let Some(node) = program.stmt(source).cloned() else {
-        return source;
-    };
-
-    let kind = match node.kind {
-        StmtKind::Return(expr) => StmtKind::Return(clone_expr_graph(
-            program,
-            expr,
-            source_func,
-            specialized_func,
-            expr_map,
-        )),
-        StmtKind::Let {
-            binding,
-            value,
-            next,
-        } => StmtKind::Let {
-            binding,
-            value: clone_expr_graph(program, value, source_func, specialized_func, expr_map),
-            next: clone_stmt_graph(
-                program,
-                next,
-                source_func,
-                specialized_func,
-                expr_map,
-                stmt_map,
-            ),
-        },
-        StmtKind::Val {
-            binding,
-            value,
-            next,
-        } => StmtKind::Val {
-            binding,
-            value: clone_stmt_graph(
-                program,
-                value,
-                source_func,
-                specialized_func,
-                expr_map,
-                stmt_map,
-            ),
-            next: clone_stmt_graph(
-                program,
-                next,
-                source_func,
-                specialized_func,
-                expr_map,
-                stmt_map,
-            ),
-        },
-        StmtKind::Call {
-            result,
-            callee,
-            args,
-            effects,
-            next,
-        } => StmtKind::Call {
-            result,
-            callee: if callee == source_func {
-                specialized_func
-            } else {
-                callee
-            },
-            args: args
-                .into_iter()
-                .map(|arg| clone_expr_graph(program, arg, source_func, specialized_func, expr_map))
-                .collect(),
-            effects,
-            next: clone_stmt_graph(
-                program,
-                next,
-                source_func,
-                specialized_func,
-                expr_map,
-                stmt_map,
-            ),
-        },
-        StmtKind::If {
-            cond,
-            then_branch,
-            else_branch,
-        } => StmtKind::If {
-            cond: clone_expr_graph(program, cond, source_func, specialized_func, expr_map),
-            then_branch: clone_stmt_graph(
-                program,
-                then_branch,
-                source_func,
-                specialized_func,
-                expr_map,
-                stmt_map,
-            ),
-            else_branch: clone_stmt_graph(
-                program,
-                else_branch,
-                source_func,
-                specialized_func,
-                expr_map,
-                stmt_map,
-            ),
-        },
-        StmtKind::Match {
-            scrutinee,
-            arms,
-            default,
-        } => StmtKind::Match {
-            scrutinee: clone_expr_graph(
-                program,
-                scrutinee,
-                source_func,
-                specialized_func,
-                expr_map,
-            ),
-            arms: arms
-                .into_iter()
-                .map(|arm| crate::ir::core::MatchArm {
-                    tag: arm.tag,
-                    binders: arm.binders,
-                    body: clone_stmt_graph(
-                        program,
-                        arm.body,
-                        source_func,
-                        specialized_func,
-                        expr_map,
-                        stmt_map,
-                    ),
-                    span: arm.span,
-                })
-                .collect(),
-            default: default.map(|stmt| {
-                clone_stmt_graph(
-                    program,
-                    stmt,
-                    source_func,
-                    specialized_func,
-                    expr_map,
-                    stmt_map,
-                )
-            }),
-        },
-        StmtKind::Perform {
-            result,
-            effect,
-            operation,
-            args,
-            next,
-        } => StmtKind::Perform {
-            result,
-            effect,
-            operation,
-            args: args
-                .into_iter()
-                .map(|arg| clone_expr_graph(program, arg, source_func, specialized_func, expr_map))
-                .collect(),
-            next: clone_stmt_graph(
-                program,
-                next,
-                source_func,
-                specialized_func,
-                expr_map,
-                stmt_map,
-            ),
-        },
-        StmtKind::Resume {
-            result,
-            resume,
-            arg,
-            next,
-        } => StmtKind::Resume {
-            result,
-            resume,
-            arg: clone_expr_graph(program, arg, source_func, specialized_func, expr_map),
-            next: clone_stmt_graph(
-                program,
-                next,
-                source_func,
-                specialized_func,
-                expr_map,
-                stmt_map,
-            ),
-        },
-        StmtKind::Handle {
-            handler,
-            body,
-            next,
-        } => StmtKind::Handle {
-            handler,
-            body: clone_stmt_graph(
-                program,
-                body,
-                source_func,
-                specialized_func,
-                expr_map,
-                stmt_map,
-            ),
-            next: next.map(|stmt| {
-                clone_stmt_graph(
-                    program,
-                    stmt,
-                    source_func,
-                    specialized_func,
-                    expr_map,
-                    stmt_map,
-                )
-            }),
-        },
-        StmtKind::Stage { stage, body, next } => StmtKind::Stage {
-            stage,
-            body: clone_stmt_graph(
-                program,
-                body,
-                source_func,
-                specialized_func,
-                expr_map,
-                stmt_map,
-            ),
-            next: next.map(|stmt| {
-                clone_stmt_graph(
-                    program,
-                    stmt,
-                    source_func,
-                    specialized_func,
-                    expr_map,
-                    stmt_map,
-                )
-            }),
-        },
-        StmtKind::Hole { ty } => StmtKind::Hole { ty },
-        StmtKind::Error(error) => StmtKind::Error(error),
-    };
-
-    let cloned = program.push_stmt(StmtNode {
-        span: node.span,
-        kind,
-    });
-    stmt_map.insert(source, cloned);
-    cloned
+    expr_map: HashMap<ExprId, ExprId>,
+    stmt_map: HashMap<StmtId, StmtId>,
 }
 
-fn clone_expr_graph(
-    program: &mut CoreProgram,
-    source: ExprId,
-    source_func: FuncId,
-    specialized_func: FuncId,
-    expr_map: &mut HashMap<ExprId, ExprId>,
-) -> ExprId {
-    if let Some(existing) = expr_map.get(&source).copied() {
-        return existing;
+impl<'a> GraphCloner<'a> {
+    fn new(program: &'a mut CoreProgram, source_func: FuncId, specialized_func: FuncId) -> Self {
+        Self {
+            program,
+            source_func,
+            specialized_func,
+            expr_map: HashMap::new(),
+            stmt_map: HashMap::new(),
+        }
     }
 
-    let Some(node) = program.expr(source).cloned() else {
-        return source;
-    };
+    fn remap_callee(&self, callee: FuncId) -> FuncId {
+        if callee == self.source_func {
+            self.specialized_func
+        } else {
+            callee
+        }
+    }
 
-    let kind = match node.kind {
-        ExprKind::Var(var) => ExprKind::Var(var),
-        ExprKind::Literal(literal) => ExprKind::Literal(literal),
-        ExprKind::Unary { op, expr } => ExprKind::Unary {
-            op,
-            expr: clone_expr_graph(program, expr, source_func, specialized_func, expr_map),
-        },
-        ExprKind::Binary { op, lhs, rhs } => ExprKind::Binary {
-            op,
-            lhs: clone_expr_graph(program, lhs, source_func, specialized_func, expr_map),
-            rhs: clone_expr_graph(program, rhs, source_func, specialized_func, expr_map),
-        },
-        ExprKind::PureCall { callee, args } => ExprKind::PureCall {
-            callee: if callee == source_func {
-                specialized_func
-            } else {
-                callee
+    fn clone_expr_list(&mut self, exprs: Vec<ExprId>) -> Vec<ExprId> {
+        exprs
+            .into_iter()
+            .map(|expr| self.clone_expr(expr))
+            .collect()
+    }
+
+    fn clone_optional_stmt(&mut self, stmt: Option<StmtId>) -> Option<StmtId> {
+        stmt.map(|stmt_id| self.clone_stmt(stmt_id))
+    }
+
+    fn clone_stmt(&mut self, source: StmtId) -> StmtId {
+        if let Some(existing) = self.stmt_map.get(&source).copied() {
+            return existing;
+        }
+
+        let Some(node) = self.program.stmt(source).cloned() else {
+            return source;
+        };
+
+        let kind = match node.kind {
+            StmtKind::Return(expr) => StmtKind::Return(self.clone_expr(expr)),
+            StmtKind::Let {
+                binding,
+                value,
+                next,
+            } => StmtKind::Let {
+                binding,
+                value: self.clone_expr(value),
+                next: self.clone_stmt(next),
             },
-            args: args
-                .into_iter()
-                .map(|arg| clone_expr_graph(program, arg, source_func, specialized_func, expr_map))
-                .collect(),
-        },
-        ExprKind::MakeStruct { ty, fields } => ExprKind::MakeStruct {
-            ty,
-            fields: fields
-                .into_iter()
-                .map(|field| {
-                    clone_expr_graph(program, field, source_func, specialized_func, expr_map)
-                })
-                .collect(),
-        },
-        ExprKind::MakeEnum {
-            ty,
-            variant,
-            fields,
-        } => ExprKind::MakeEnum {
-            ty,
-            variant,
-            fields: fields
-                .into_iter()
-                .map(|field| {
-                    clone_expr_graph(program, field, source_func, specialized_func, expr_map)
-                })
-                .collect(),
-        },
-        ExprKind::Error(error) => ExprKind::Error(error),
-    };
+            StmtKind::Val {
+                binding,
+                value,
+                next,
+            } => StmtKind::Val {
+                binding,
+                value: self.clone_stmt(value),
+                next: self.clone_stmt(next),
+            },
+            StmtKind::Call {
+                result,
+                callee,
+                args,
+                effects,
+                next,
+            } => StmtKind::Call {
+                result,
+                callee: self.remap_callee(callee),
+                args: self.clone_expr_list(args),
+                effects,
+                next: self.clone_stmt(next),
+            },
+            StmtKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => StmtKind::If {
+                cond: self.clone_expr(cond),
+                then_branch: self.clone_stmt(then_branch),
+                else_branch: self.clone_stmt(else_branch),
+            },
+            StmtKind::Match {
+                scrutinee,
+                arms,
+                default,
+            } => StmtKind::Match {
+                scrutinee: self.clone_expr(scrutinee),
+                arms: arms
+                    .into_iter()
+                    .map(|arm| crate::ir::core::MatchArm {
+                        tag: arm.tag,
+                        binders: arm.binders,
+                        body: self.clone_stmt(arm.body),
+                        span: arm.span,
+                    })
+                    .collect(),
+                default: self.clone_optional_stmt(default),
+            },
+            StmtKind::Perform {
+                result,
+                effect,
+                operation,
+                args,
+                next,
+            } => StmtKind::Perform {
+                result,
+                effect,
+                operation,
+                args: self.clone_expr_list(args),
+                next: self.clone_stmt(next),
+            },
+            StmtKind::Resume {
+                result,
+                resume,
+                arg,
+                next,
+            } => StmtKind::Resume {
+                result,
+                resume,
+                arg: self.clone_expr(arg),
+                next: self.clone_stmt(next),
+            },
+            StmtKind::Handle {
+                handler,
+                body,
+                next,
+            } => StmtKind::Handle {
+                handler,
+                body: self.clone_stmt(body),
+                next: self.clone_optional_stmt(next),
+            },
+            StmtKind::Stage { stage, body, next } => StmtKind::Stage {
+                stage,
+                body: self.clone_stmt(body),
+                next: self.clone_optional_stmt(next),
+            },
+            StmtKind::Hole { ty } => StmtKind::Hole { ty },
+            StmtKind::Error(error) => StmtKind::Error(error),
+        };
 
-    let cloned = program.push_expr(ExprNode {
-        span: node.span,
-        kind,
-    });
-    expr_map.insert(source, cloned);
-    cloned
+        let cloned = self.program.push_stmt(StmtNode {
+            span: node.span,
+            kind,
+        });
+        self.stmt_map.insert(source, cloned);
+        cloned
+    }
+
+    fn clone_expr(&mut self, source: ExprId) -> ExprId {
+        if let Some(existing) = self.expr_map.get(&source).copied() {
+            return existing;
+        }
+
+        let Some(node) = self.program.expr(source).cloned() else {
+            return source;
+        };
+
+        let kind = match node.kind {
+            ExprKind::Var(var) => ExprKind::Var(var),
+            ExprKind::Literal(literal) => ExprKind::Literal(literal),
+            ExprKind::Unary { op, expr } => ExprKind::Unary {
+                op,
+                expr: self.clone_expr(expr),
+            },
+            ExprKind::Binary { op, lhs, rhs } => ExprKind::Binary {
+                op,
+                lhs: self.clone_expr(lhs),
+                rhs: self.clone_expr(rhs),
+            },
+            ExprKind::PureCall { callee, args } => ExprKind::PureCall {
+                callee: self.remap_callee(callee),
+                args: self.clone_expr_list(args),
+            },
+            ExprKind::MakeStruct { ty, fields } => ExprKind::MakeStruct {
+                ty,
+                fields: self.clone_expr_list(fields),
+            },
+            ExprKind::MakeEnum {
+                ty,
+                variant,
+                fields,
+            } => ExprKind::MakeEnum {
+                ty,
+                variant,
+                fields: self.clone_expr_list(fields),
+            },
+            ExprKind::Error(error) => ExprKind::Error(error),
+        };
+
+        let cloned = self.program.push_expr(ExprNode {
+            span: node.span,
+            kind,
+        });
+        self.expr_map.insert(source, cloned);
+        cloned
+    }
 }
