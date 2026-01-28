@@ -323,6 +323,56 @@ fn main() -> Int {
 }
 "#,
         },
+        DiffCase {
+            name: "deep_disjoint_handler_stack",
+            source: r#"
+effect A { fn ping() -> Int }
+effect B { fn pong() -> Int }
+effect C { fn zap() -> Int }
+
+fn main() -> Int {
+  handle {
+    handle {
+      handle {
+        do A.ping();
+        do B.pong();
+        do C.zap();
+        7
+      } with C {
+        | zap(resume) => resume(0)
+      }
+    } with B {
+      | pong(resume) => resume(0)
+    }
+  } with A {
+    | ping(resume) => resume(0)
+  }
+}
+"#,
+        },
+        DiffCase {
+            name: "deep_overlapping_same_effect_stack",
+            source: r#"
+effect A { fn ping() -> Int }
+
+fn main() -> Int {
+  handle {
+    handle {
+      handle {
+        do A.ping();
+        7
+      } with A {
+        | ping() => 11
+      }
+    } with A {
+      | ping() => 22
+    }
+  } with A {
+    | ping() => 33
+  }
+}
+"#,
+        },
     ];
 
     let compiler = Compiler::new(CompilerConfig::default());
