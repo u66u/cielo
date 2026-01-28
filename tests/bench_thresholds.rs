@@ -4,7 +4,12 @@ use cielo::analysis::bench_thresholds::{
 
 #[test]
 fn v1_thresholds_cover_all_benchmark_cases() {
-    let cases = ["example", "direct_resume", "control_resume", "mixed_handler"];
+    let cases = [
+        "example",
+        "direct_resume",
+        "control_resume",
+        "mixed_handler",
+    ];
     for case in cases {
         assert!(
             v1_pipeline_per_iter_ms_limit(case).is_some(),

@@ -86,11 +86,7 @@ impl DeterministicRng {
 }
 
 fn bool_lit(value: bool) -> &'static str {
-    if value {
-        "true"
-    } else {
-        "false"
-    }
+    if value { "true" } else { "false" }
 }
 
 fn build_generated_handler_case(seed: u64, case_index: usize) -> GeneratedDiffCase {

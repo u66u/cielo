@@ -175,7 +175,8 @@ impl Compiler {
         source_id: SourceId,
         interner: &mut Interner,
     ) -> Residualized {
-        self.compile_source_v0_profiled(source, source_id, interner).0
+        self.compile_source_v0_profiled(source, source_id, interner)
+            .0
     }
 
     pub fn compile_source_v0_profiled(

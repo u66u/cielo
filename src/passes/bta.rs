@@ -25,7 +25,7 @@ use crate::pipeline::phases::{
     SemanticTables, Stage,
 };
 use crate::sema::effect::{
-    first_non_thunkable_effect, is_thunkable, EffectFlags, EffectProperties, SortedEffectRow,
+    EffectFlags, EffectProperties, SortedEffectRow, first_non_thunkable_effect, is_thunkable,
 };
 use crate::sema::ty::Persistability;
 

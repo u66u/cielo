@@ -837,9 +837,11 @@ impl EmitCx<'_> {
     }
 
     fn pop_capability(&mut self, effect: EffectLabelId, binding: &str) {
-        if let Some(idx) = self.active_capabilities.iter().rposition(|(active_effect, name)| {
-            *active_effect == effect.as_u32() && name == binding
-        }) {
+        if let Some(idx) = self
+            .active_capabilities
+            .iter()
+            .rposition(|(active_effect, name)| *active_effect == effect.as_u32() && name == binding)
+        {
             self.active_capabilities.remove(idx);
         }
     }

@@ -50,9 +50,9 @@ fn main() -> Int {
         "perform stubs should thread symbol-prelude ids for op dispatch"
     );
     assert!(
-        compiled.c_source.contains(
-            format!("cielo_perform(0, {expected_print_symbol}, \"print\", 1").as_str()
-        ),
+        compiled
+            .c_source
+            .contains(format!("cielo_perform(0, {expected_print_symbol}, \"print\", 1").as_str()),
         "perform stubs should pass effect id + op symbol id + op name + arity"
     );
     assert!(compiled.c_source.contains("print"));
@@ -1865,8 +1865,7 @@ fn handler_push_capability_temps_for_effect(c_source: &str, effect: u32) -> Vec<
             let declaration = trimmed.strip_prefix("uint32_t ")?;
             let (binding, _) = declaration.split_once(" = ")?;
             let push_with_effect = format!("= cielo_handler_push({effect});");
-            let push_with_evidence =
-                format!("= cielo_handler_push_with_evidence({effect}, &");
+            let push_with_evidence = format!("= cielo_handler_push_with_evidence({effect}, &");
             if !trimmed.ends_with(push_with_effect.as_str())
                 && !trimmed.contains(push_with_evidence.as_str())
             {

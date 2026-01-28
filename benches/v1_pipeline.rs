@@ -136,12 +136,7 @@ fn env_bool(name: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
-fn emit_case(
-    case: BenchCase,
-    warmup_iters: usize,
-    measure_iters: usize,
-    enforce_thresholds: bool,
-) {
+fn emit_case(case: BenchCase, warmup_iters: usize, measure_iters: usize, enforce_thresholds: bool) {
     let _ = run_iterations(case, warmup_iters);
     let measured = run_iterations(case, measure_iters);
     let elapsed = measured.wall;

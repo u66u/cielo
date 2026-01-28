@@ -31,7 +31,8 @@ fn main() -> Int {
     );
     assert_eq!(
         timings.total(),
-        timings.parse
+        timings
+            .parse
             .saturating_add(timings.lower)
             .saturating_add(timings.typecheck)
             .saturating_add(timings.monomorphize)

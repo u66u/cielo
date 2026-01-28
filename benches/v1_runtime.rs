@@ -226,7 +226,8 @@ fn env_bool(name: &str, default: bool) -> bool {
 fn build_case(case: RuntimeBenchCase, source_id: u32) -> BuiltCase {
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(case.source, SourceId::from_u32(source_id), &mut interner);
+    let compiled =
+        compiler.compile_source_v0_to_c(case.source, SourceId::from_u32(source_id), &mut interner);
     assert!(
         !compiled.residual.diagnostics().has_errors(),
         "runtime benchmark source `{}` should compile without diagnostics errors",
@@ -329,14 +330,13 @@ fn main() {
         black_box(elapsed);
     }
 
-    if let Some((_, pure_ms)) = results.iter().find(|(name, _)| *name == "pure_runtime_loop") {
+    if let Some((_, pure_ms)) = results
+        .iter()
+        .find(|(name, _)| *name == "pure_runtime_loop")
+    {
         for (name, per_run_ms) in &results {
             let relative = per_run_ms / pure_ms;
-            println!(
-                "relative_to_pure={} {:.3}",
-                name,
-                relative
-            );
+            println!("relative_to_pure={} {:.3}", name, relative);
             if enforce_thresholds
                 && let Err(violation) = check_v1_runtime_relative_to_pure(name, relative)
             {

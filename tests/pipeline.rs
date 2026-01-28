@@ -67,7 +67,10 @@ fn staging_boundary_rejects_non_concrete_effect_rows() {
     let panic = std::panic::catch_unwind(|| {
         let _ = ct_propagate::run(mono, TargetSpec::default());
     });
-    assert!(panic.is_err(), "invalid effect rows must panic before staging");
+    assert!(
+        panic.is_err(),
+        "invalid effect rows must panic before staging"
+    );
 }
 
 #[test]

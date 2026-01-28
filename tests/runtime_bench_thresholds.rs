@@ -1,6 +1,6 @@
 use cielo::analysis::bench_thresholds::{
-    check_v1_runtime_per_run_ms, check_v1_runtime_relative_to_pure,
-    v1_runtime_per_run_ms_limit, v1_runtime_relative_to_pure_limit, v1_runtime_thresholds,
+    check_v1_runtime_per_run_ms, check_v1_runtime_relative_to_pure, v1_runtime_per_run_ms_limit,
+    v1_runtime_relative_to_pure_limit, v1_runtime_thresholds,
 };
 
 #[test]
@@ -67,9 +67,7 @@ fn runtime_threshold_checker_rejects_regressions() {
     let rel_violation = check_v1_runtime_relative_to_pure("unhandled_perform_loop", 2.0)
         .expect_err("relative runtime regression should be rejected");
     assert_eq!(rel_violation.case, "unhandled_perform_loop");
-    assert!(
-        rel_violation.measured_relative_to_pure > rel_violation.relative_to_pure_max
-    );
+    assert!(rel_violation.measured_relative_to_pure > rel_violation.relative_to_pure_max);
 }
 
 #[test]

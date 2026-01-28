@@ -113,22 +113,25 @@ fn assert_pre_staging_effects_concrete(program: &CoreProgram) {
 
     for (func_idx, function) in program.functions().iter().enumerate() {
         for effect in function.declared_effects.iter() {
-            assert_effect(effect, format!("function f{func_idx} declared_effects").as_str());
+            assert_effect(
+                effect,
+                format!("function f{func_idx} declared_effects").as_str(),
+            );
         }
     }
 
     for (handler_idx, handler) in program.handlers().iter().enumerate() {
-        assert_effect(handler.effect, format!("handler h{handler_idx} effect").as_str());
+        assert_effect(
+            handler.effect,
+            format!("handler h{handler_idx} effect").as_str(),
+        );
     }
 
     for (stmt_idx, stmt) in program.stmts().iter().enumerate() {
         match &stmt.kind {
             crate::ir::core::StmtKind::Call { effects, .. } => {
                 for effect in effects.iter() {
-                    assert_effect(
-                        effect,
-                        format!("stmt s{stmt_idx} call effect row").as_str(),
-                    );
+                    assert_effect(effect, format!("stmt s{stmt_idx} call effect row").as_str());
                 }
             }
             crate::ir::core::StmtKind::Perform { effect, .. } => {

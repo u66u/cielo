@@ -21,11 +21,13 @@ fn main() -> Int {
     let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
 
     assert!(!residual.ct().ct_cache.is_empty());
-    assert!(residual
-        .bta()
-        .stage_of_expr
-        .values()
-        .any(|stage| matches!(stage, Stage::Ct)));
+    assert!(
+        residual
+            .bta()
+            .stage_of_expr
+            .values()
+            .any(|stage| matches!(stage, Stage::Ct))
+    );
 }
 
 #[test]
@@ -289,11 +291,13 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
 
-    assert!(residual
-        .diagnostics()
-        .entries()
-        .iter()
-        .any(|diag| diag.code == "BTA_CT_ONLY_RUNTIME_ARG"));
+    assert!(
+        residual
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|diag| diag.code == "BTA_CT_ONLY_RUNTIME_ARG")
+    );
 }
 
 #[test]
@@ -310,11 +314,13 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
 
-    assert!(!residual
-        .diagnostics()
-        .entries()
-        .iter()
-        .any(|diag| diag.code == "BTA_CT_ONLY_RUNTIME_ARG"));
+    assert!(
+        !residual
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|diag| diag.code == "BTA_CT_ONLY_RUNTIME_ARG")
+    );
 }
 
 #[test]
@@ -334,11 +340,13 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
 
-    assert!(residual
-        .diagnostics()
-        .entries()
-        .iter()
-        .any(|diag| diag.code == "BTA_CT_ONLY_RUNTIME_ARG"));
+    assert!(
+        residual
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|diag| diag.code == "BTA_CT_ONLY_RUNTIME_ARG")
+    );
 }
 
 #[test]

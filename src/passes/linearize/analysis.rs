@@ -9,7 +9,11 @@ use super::types::{
     ClauseConvention, ClauseResumeAnalysis, ResumeQualifier, ResumeUseBound, ResumeUseRange,
 };
 
-pub(super) fn is_identity_return_of_var(program: &CoreProgram, stmt_id: StmtId, var: VarId) -> bool {
+pub(super) fn is_identity_return_of_var(
+    program: &CoreProgram,
+    stmt_id: StmtId,
+    var: VarId,
+) -> bool {
     let Some(stmt) = program.stmt(stmt_id) else {
         return false;
     };
@@ -22,7 +26,10 @@ pub(super) fn is_identity_return_of_var(program: &CoreProgram, stmt_id: StmtId, 
     matches!(expr.kind, ExprKind::Var(bound) if bound == var)
 }
 
-pub(super) fn is_identity_handler_return_clause(program: &CoreProgram, handler: &HandlerDef) -> bool {
+pub(super) fn is_identity_handler_return_clause(
+    program: &CoreProgram,
+    handler: &HandlerDef,
+) -> bool {
     is_identity_return_of_var(program, handler.return_body, handler.return_param)
 }
 
@@ -31,8 +38,7 @@ pub(super) fn stmt_effect_row_contains(
     stmt_id: StmtId,
     effect: EffectLabelId,
 ) -> bool {
-    sema
-        .effects_of_stmt
+    sema.effects_of_stmt
         .get(stmt_id.index())
         .is_some_and(|row| row.contains(effect))
 }
@@ -134,9 +140,7 @@ pub(super) fn resume_convention_reason(
             ResumeQualifier::Affine | ResumeQualifier::Linear => {
                 "resume is not tail-resumptive, so control-path lowering is required"
             }
-            ResumeQualifier::Abortive => {
-                "unreachable: abortive clauses lower directly in v1"
-            }
+            ResumeQualifier::Abortive => "unreachable: abortive clauses lower directly in v1",
         },
     }
 }
@@ -310,7 +314,11 @@ fn stmt_mentions_var(program: &CoreProgram, root: StmtId, var: VarId) -> bool {
     false
 }
 
-fn clause_resume_use_range(program: &CoreProgram, root: StmtId, resume_var: VarId) -> ResumeUseRange {
+fn clause_resume_use_range(
+    program: &CoreProgram,
+    root: StmtId,
+    resume_var: VarId,
+) -> ResumeUseRange {
     let mut memo = HashMap::new();
     let mut visiting = HashSet::new();
     clause_resume_use_range_stmt(program, root, resume_var, &mut memo, &mut visiting)
@@ -343,8 +351,9 @@ fn clause_resume_use_range_stmt(
             clause_resume_use_range_stmt(program, *next, resume_var, memo, visiting)
         }
         StmtKind::Val { value, next, .. } => {
-            clause_resume_use_range_stmt(program, *value, resume_var, memo, visiting)
-                .plus(clause_resume_use_range_stmt(program, *next, resume_var, memo, visiting))
+            clause_resume_use_range_stmt(program, *value, resume_var, memo, visiting).plus(
+                clause_resume_use_range_stmt(program, *next, resume_var, memo, visiting),
+            )
         }
         StmtKind::Resume { resume, next, .. } => {
             let this_resume = if *resume == resume_var {
@@ -385,7 +394,8 @@ fn clause_resume_use_range_stmt(
             }
         }
         StmtKind::Handle { body, next, .. } | StmtKind::Stage { body, next, .. } => {
-            let body_bound = clause_resume_use_range_stmt(program, *body, resume_var, memo, visiting);
+            let body_bound =
+                clause_resume_use_range_stmt(program, *body, resume_var, memo, visiting);
             if let Some(next_stmt) = next {
                 body_bound.plus(clause_resume_use_range_stmt(
                     program, *next_stmt, resume_var, memo, visiting,

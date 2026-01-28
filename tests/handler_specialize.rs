@@ -1039,7 +1039,8 @@ fn main() -> Int {{
 
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src.as_str(), SourceId::from_u32(0), &mut interner);
+    let compiled =
+        compiler.compile_source_v0_to_c(src.as_str(), SourceId::from_u32(0), &mut interner);
     let program = compiled.residual.program();
 
     let specialized_io_copies = function_ids_named(program, &interner, "io")
