@@ -1015,16 +1015,6 @@ fn push_count(len: usize, out: &mut Vec<ShapeToken>) {
     out.push(ShapeToken::Count(u32::try_from(len).unwrap_or(u32::MAX)));
 }
 
-#[allow(dead_code)]
-fn todo_v2_generalized_specialization() {
-    todo!("cont-param worker");
-}
-
-#[allow(dead_code)]
-fn todo_v2_wrapper_matcher() {
-    todo!("broaden wrapper matcher");
-}
-
 struct GraphCloner<'a> {
     program: &'a mut CoreProgram,
     source_func: FuncId,
