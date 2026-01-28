@@ -78,6 +78,7 @@ fn collect_specialize_candidates(program: &CoreProgram) -> Vec<SpecializeCandida
         let Some(function) = program.function(func_id) else {
             continue;
         };
+        // stmt ids are arena-global, so one seen set is enough here.
         let mut stack = vec![function.body];
         while let Some(stmt_id) = stack.pop() {
             if !seen_stmts.insert(stmt_id) {
@@ -120,9 +121,11 @@ fn wrapper_call_callee(
     cache: &mut HashMap<StmtId, Option<FuncId>>,
     visiting: &mut HashSet<StmtId>,
 ) -> Option<FuncId> {
+    // cache keeps the recursion cost low for repeated wrapper scans.
     if let Some(cached) = cache.get(&stmt_id).copied() {
         return cached;
     }
+    // cycle => not a valid direct wrapper shape in v1.
     if !visiting.insert(stmt_id) {
         cache.insert(stmt_id, None);
         return None;
@@ -191,6 +194,7 @@ fn finish_wrapper_callee(
     stmt_id: StmtId,
     resolved: Option<FuncId>,
 ) -> Option<FuncId> {
+    // keep cache + visiting in sync on every exit path.
     visiting.remove(&stmt_id);
     cache.insert(stmt_id, resolved);
     resolved
@@ -475,6 +479,7 @@ fn ensure_specialized(
     if let Some(existing) = specialized.get(&key).copied() {
         return Some(existing);
     }
+    // v1 guard: mixed recursive wrapper shapes stay unspecialized.
     if has_varying_recursive_wrapper_shapes(program, candidate.callee, &candidate.shape) {
         return None;
     }
@@ -566,6 +571,7 @@ fn has_varying_recursive_wrapper_shapes(
                 body,
                 next,
             } => {
+                // body runs under new handler; next keeps prior handler context.
                 stack.push((*body, Some(*handler)));
                 if let Some(next_stmt) = next {
                     stack.push((*next_stmt, nearest_handler));
@@ -1009,6 +1015,16 @@ fn push_count(len: usize, out: &mut Vec<ShapeToken>) {
     out.push(ShapeToken::Count(u32::try_from(len).unwrap_or(u32::MAX)));
 }
 
+#[allow(dead_code)]
+fn todo_v2_generalized_specialization() {
+    todo!("cont-param worker");
+}
+
+#[allow(dead_code)]
+fn todo_v2_wrapper_matcher() {
+    todo!("broaden wrapper matcher");
+}
+
 struct GraphCloner<'a> {
     program: &'a mut CoreProgram,
     source_func: FuncId,
@@ -1029,6 +1045,7 @@ impl<'a> GraphCloner<'a> {
     }
 
     fn remap_callee(&self, callee: FuncId) -> FuncId {
+        // retarget self-recursive edges into the specialized copy.
         if callee == self.source_func {
             self.specialized_func
         } else {
