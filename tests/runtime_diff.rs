@@ -373,6 +373,23 @@ fn main() -> Int {
 }
 "#,
         },
+        DiffCase {
+            name: "discharged_handler_rt_passthrough",
+            source: r#"
+effect LocalState { fn tick() -> Int }
+
+fn main() -> Int {
+  let rt_input = @runtime { 5 };
+  let out = handle {
+    do LocalState.tick();
+    rt_input + 3
+  } with LocalState {
+    | tick(resume) => resume(0)
+  };
+  out
+}
+"#,
+        },
     ];
 
     let compiler = Compiler::new(CompilerConfig::default());
