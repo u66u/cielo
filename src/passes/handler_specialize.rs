@@ -78,7 +78,6 @@ fn collect_specialize_candidates(program: &CoreProgram) -> Vec<SpecializeCandida
         let Some(function) = program.function(func_id) else {
             continue;
         };
-        // stmt ids are arena-global, so one seen set is enough here.
         let mut stack = vec![function.body];
         while let Some(stmt_id) = stack.pop() {
             if !seen_stmts.insert(stmt_id) {
@@ -121,7 +120,6 @@ fn wrapper_call_callee(
     cache: &mut HashMap<StmtId, Option<FuncId>>,
     visiting: &mut HashSet<StmtId>,
 ) -> Option<FuncId> {
-    // cache keeps the recursion cost low for repeated wrapper scans.
     if let Some(cached) = cache.get(&stmt_id).copied() {
         return cached;
     }
@@ -194,7 +192,6 @@ fn finish_wrapper_callee(
     stmt_id: StmtId,
     resolved: Option<FuncId>,
 ) -> Option<FuncId> {
-    // keep cache + visiting in sync on every exit path.
     visiting.remove(&stmt_id);
     cache.insert(stmt_id, resolved);
     resolved
@@ -1035,7 +1032,6 @@ impl<'a> GraphCloner<'a> {
     }
 
     fn remap_callee(&self, callee: FuncId) -> FuncId {
-        // retarget self-recursive edges into the specialized copy.
         if callee == self.source_func {
             self.specialized_func
         } else {
