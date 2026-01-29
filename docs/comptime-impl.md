@@ -68,8 +68,8 @@ This is the source-of-truth checklist to detect plan/literature deviation.
   - `src/passes/ct_propagate.rs:run_with_query_cache`
   - `src/passes/bta.rs:run`
   TODO impl points:
-  - unify surface entry under `evaluate_classify(...)`
-  - add stage-boundary invariants that panic on compiler bugs
+  - [x] unify surface entry under `evaluate_classify(...)`
+  - [ ] add stage-boundary invariants that panic on compiler bugs
 
 - [ ] `EC-2` ct file-dep invalidation discipline
   Mechanism:
@@ -190,6 +190,12 @@ Test targets:
 
 - query cache hit/miss path equivalence
 - ct file dep hash changes invalidate staged outcomes
+
+Progress:
+
+- [x] fused API exposed via `src/passes/comptime.rs`
+- [x] split-vs-fused emitted-C parity regression added
+- [ ] query-cache parity matrix coverage
 
 ### V1-Stage B: Residualize+Specialize entrypoint
 
