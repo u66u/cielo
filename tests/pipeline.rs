@@ -6,7 +6,7 @@ use cielo::ir::core::{
     CoreProgram, CoreTypeRef, ExprKind, ExprNode, FunctionDecl, Literal, MatchArm,
     PrimitiveTypeRef, StmtKind, StmtNode,
 };
-use cielo::passes::{bta, ct_propagate, residualize};
+use cielo::passes::{bta, c_emit, ct_propagate, linearize, residualize};
 use cielo::pipeline::compiler::TargetSpec;
 use cielo::pipeline::phases::{
     BranchDecision, BtaClassified, BtaTables, CtPropagationTables, Knownness,
@@ -2189,5 +2189,39 @@ fn v1_example_contract_oracle_matches_effect_and_staging_intent() {
             .values()
             .any(|stage| matches!(stage, Stage::Rt(Reason::NotPersistable(_)))),
         "example should not trigger non-persistable boundary staging failures"
+    );
+}
+
+#[test]
+fn fused_comptime_entrypoints_match_split_pipeline_c_output() {
+    let src = r#"
+effect LocalState { fn tick() -> Int }
+fn worker(n: Int) -> Int with LocalState {
+  if n == 0 { 0 } else {
+    let x = do LocalState.tick();
+    x + worker(n - 1)
+  }
+}
+fn main() -> Int {
+  handle { worker(3) } with LocalState {
+    | tick(resume) => resume(1)
+  }
+}
+"#;
+
+    let compiler = Compiler::new(CompilerConfig::default());
+
+    let mut fused_interner = Interner::new();
+    let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut fused_interner);
+    let staged = compiler.run_v1_evaluate_classify(core);
+    let residual = compiler.run_v1_residualize_specialize(staged);
+    let fused_emitted = c_emit::run(linearize::run(residual), &fused_interner);
+
+    let mut split_interner = Interner::new();
+    let split_emitted = compiler.compile_source_v0_to_c(src, SourceId::from_u32(1), &mut split_interner);
+
+    assert_eq!(
+        fused_emitted.c_source, split_emitted.c_source,
+        "fused comptime entrypoints should preserve split-pipeline output"
     );
 }
