@@ -2,10 +2,6 @@
 
 v1 active, v2 roadmap.
 
-this mirrors `docs/effects-impl.md` but for the comptime/staging pipeline.
-
----
-
 ## Recommended Baseline
 
 Use the fused conceptual model from `docs/v1/comptime_passes.md`:
