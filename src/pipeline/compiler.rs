@@ -8,6 +8,7 @@ use crate::frontend::parser::parse_source;
 use crate::ir::core::CoreProgram;
 use crate::passes::bta;
 use crate::passes::c_emit;
+use crate::passes::comptime;
 use crate::passes::ct_propagate;
 use crate::passes::handler_specialize;
 use crate::passes::linearize;
@@ -223,6 +224,16 @@ impl Compiler {
         }
     }
 
+    pub fn run_v1_evaluate_classify(&self, built: CoreBuilt) -> BtaClassified {
+        let typed = self.typecheck(built);
+        let mono = self.monomorphize(typed);
+        self.evaluate_classify(mono)
+    }
+
+    pub fn run_v1_residualize_specialize(&self, classified: BtaClassified) -> Residualized {
+        self.residualize_specialize(classified)
+    }
+
     pub fn run_v0_core_pipeline(&self, built: CoreBuilt) -> Residualized {
         self.run_v0_core_pipeline_profiled(built).0
     }
@@ -280,5 +291,17 @@ impl Compiler {
 
     fn residualize(&self, bta: BtaClassified) -> Residualized {
         residualize::run(bta)
+    }
+
+    fn evaluate_classify(&self, mono: Monomorphized) -> BtaClassified {
+        comptime::evaluate_classify(
+            mono,
+            self.config.target,
+            self.config.ct_query_cache_path.as_deref(),
+        )
+    }
+
+    fn residualize_specialize(&self, bta: BtaClassified) -> Residualized {
+        comptime::residualize_specialize(bta)
     }
 }

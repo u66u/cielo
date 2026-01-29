@@ -1,5 +1,6 @@
 pub mod bta;
 pub mod c_emit;
+pub mod comptime;
 pub mod ct_propagate;
 pub mod handler_specialize;
 pub mod linearize;
