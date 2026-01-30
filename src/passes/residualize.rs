@@ -26,20 +26,22 @@ use crate::common::span::Span;
 use crate::ir::core::{CoreProgram, ExprKind, Literal, MatchArm, StmtKind, StmtNode};
 use crate::pipeline::phases::{
     BranchDecision, BtaClassified, BtaTables, CtPropagationTables, Knownness, ResidualTables,
-    Residualized, Stage,
+    ResidualizeStats, Residualized, Stage,
 };
 use crate::sema::effect::SortedEffectRow;
 
 pub fn run(mut bta: BtaClassified) -> Residualized {
     let ct_tables = bta.ct().clone();
     let bta_tables = bta.bta().clone();
-    apply_ct_residualization(bta.program_mut(), &ct_tables, &bta_tables);
+    let residualize_stats = apply_ct_residualization(bta.program_mut(), &ct_tables, &bta_tables);
 
     let function_effect_summary = collect_function_effect_summary(bta.program());
     rewrite_call_effect_rows(bta.program_mut(), &function_effect_summary);
     erase_function_effect_annotations(bta.program_mut());
     bta.into_residualized(ResidualTables {
         function_effect_summary,
+        residualize_stats,
+        specialization_stats: Default::default(),
     })
 }
 
@@ -195,7 +197,12 @@ fn rewrite_call_effect_rows(
     }
 }
 
-fn apply_ct_residualization(program: &mut CoreProgram, ct: &CtPropagationTables, bta: &BtaTables) {
+fn apply_ct_residualization(
+    program: &mut CoreProgram,
+    ct: &CtPropagationTables,
+    bta: &BtaTables,
+) -> ResidualizeStats {
+    let mut stats = ResidualizeStats::default();
     for (expr_id, value) in ct.ct_cache.iter() {
         if !should_embed_ct_value(expr_id, bta) {
             continue;
@@ -204,6 +211,7 @@ fn apply_ct_residualization(program: &mut CoreProgram, ct: &CtPropagationTables,
             continue;
         };
         expr.kind = ExprKind::Literal(value.clone());
+        stats.embedded_literals = stats.embedded_literals.saturating_add(1);
     }
 
     let var_let_defs = collect_let_value_defs(program);
@@ -213,9 +221,11 @@ fn apply_ct_residualization(program: &mut CoreProgram, ct: &CtPropagationTables,
         memo: HashMap::new(),
         visiting: HashSet::new(),
         var_let_defs,
+        stats,
     };
     rewriter.rewrite_function_roots();
     rewriter.rewrite_handler_roots();
+    rewriter.stats
 }
 
 fn should_embed_ct_value(expr_id: ExprId, bta: &BtaTables) -> bool {
@@ -243,6 +253,7 @@ struct StmtRewriter<'a> {
     memo: HashMap<StmtId, StmtId>,
     visiting: HashSet<StmtId>,
     var_let_defs: HashMap<VarId, ExprId>,
+    stats: ResidualizeStats,
 }
 
 #[derive(Clone)]
@@ -419,6 +430,7 @@ impl StmtRewriter<'_> {
                 let then_branch = self.rewrite_stmt(then_branch);
                 let else_branch = self.rewrite_stmt(else_branch);
                 if let Some(live) = self.pick_if_branch(cond, then_branch, else_branch) {
+                    self.stats.pruned_if_branches = self.stats.pruned_if_branches.saturating_add(1);
                     live
                 } else {
                     self.set_stmt(
@@ -446,6 +458,8 @@ impl StmtRewriter<'_> {
                     .collect::<Vec<_>>();
                 let default = default.map(|stmt| self.rewrite_stmt(stmt));
                 if let Some(selection) = self.pick_match_branch(scrutinee, &arms, default) {
+                    self.stats.pruned_match_branches =
+                        self.stats.pruned_match_branches.saturating_add(1);
                     self.materialize_match_selection(selection, stmt.span)
                 } else {
                     self.set_stmt(
