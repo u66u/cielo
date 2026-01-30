@@ -155,6 +155,23 @@ pub struct CtEvalStats {
     pub miss_unsupported: u32,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct ResidualizeStats {
+    pub embedded_literals: u32,
+    pub pruned_if_branches: u32,
+    pub pruned_match_branches: u32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct SpecializationStats {
+    pub candidates_seen: u32,
+    pub created: u32,
+    pub reused_existing: u32,
+    pub rewrites: u32,
+    pub skipped_varying_shapes: u32,
+    pub skipped_limits: u32,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct CtPropagationTables {
     pub ct_cache: DenseMap<ExprId, Literal>,
@@ -199,6 +216,8 @@ impl BtaTables {
 #[derive(Clone, Debug, Default)]
 pub struct ResidualTables {
     pub function_effect_summary: HashMap<FuncId, SortedEffectRow>,
+    pub residualize_stats: ResidualizeStats,
+    pub specialization_stats: SpecializationStats,
 }
 
 impl ResidualTables {
