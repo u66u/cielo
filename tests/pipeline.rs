@@ -2225,3 +2225,101 @@ fn main() -> Int {
         "fused comptime entrypoints should preserve split-pipeline output"
     );
 }
+
+#[test]
+fn fused_evaluate_classify_matches_split_stage_tables() {
+    let src = r#"
+effect LocalState { fn tick() -> Int }
+fn worker(n: Int) -> Int with LocalState {
+  if n == 0 { 0 } else {
+    let x = do LocalState.tick();
+    x + worker(n - 1)
+  }
+}
+fn main() -> Int {
+  handle { worker(3) } with LocalState {
+    | tick(resume) => resume(1)
+  }
+}
+"#;
+    let compiler = Compiler::new(CompilerConfig::default());
+
+    let mut fused_interner = Interner::new();
+    let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut fused_interner);
+    let fused = compiler.run_v1_evaluate_classify(core);
+
+    let mut split_interner = Interner::new();
+    let split = compiler.compile_source_v0(src, SourceId::from_u32(1), &mut split_interner);
+
+    assert_eq!(
+        fused.ct().ct_cache.len(),
+        split.ct().ct_cache.len(),
+        "fused and split ct caches should classify the same expression count"
+    );
+    for (expr_id, fused_value) in fused.ct().ct_cache.iter() {
+        let split_value = split
+            .ct()
+            .ct_cache
+            .get(&expr_id)
+            .expect("split cache should contain every fused cache entry");
+        assert_eq!(
+            fused_value, split_value,
+            "fused/split ct literal mismatch at e{}",
+            expr_id.as_u32()
+        );
+    }
+
+    assert_eq!(
+        fused.ct().branch_decisions.len(),
+        split.ct().branch_decisions.len(),
+        "fused and split branch decisions should have identical coverage"
+    );
+    for (expr_id, fused_decision) in fused.ct().branch_decisions.iter() {
+        let split_decision = split
+            .ct()
+            .branch_decisions
+            .get(&expr_id)
+            .expect("split branch decisions should contain every fused entry");
+        assert_eq!(
+            fused_decision, split_decision,
+            "fused/split branch decision mismatch at e{}",
+            expr_id.as_u32()
+        );
+    }
+
+    assert_eq!(
+        fused.bta().stage_of_expr.len(),
+        split.bta().stage_of_expr.len(),
+        "fused and split stage tables should classify every expression"
+    );
+    for (expr_id, fused_stage) in fused.bta().stage_of_expr.iter() {
+        let split_stage = split
+            .bta()
+            .stage_of_expr
+            .get(&expr_id)
+            .expect("split stage table should contain every fused stage entry");
+        assert_eq!(
+            fused_stage, split_stage,
+            "fused/split stage mismatch at e{}",
+            expr_id.as_u32()
+        );
+    }
+
+    assert_eq!(
+        fused.bta().knownness_of_expr.len(),
+        split.bta().knownness_of_expr.len(),
+        "fused and split knownness tables should classify every expression"
+    );
+    for (expr_id, fused_knownness) in fused.bta().knownness_of_expr.iter() {
+        let split_knownness = split
+            .bta()
+            .knownness_of_expr
+            .get(&expr_id)
+            .expect("split knownness table should contain every fused knownness entry");
+        assert_eq!(
+            fused_knownness, split_knownness,
+            "fused/split knownness mismatch at e{}",
+            expr_id.as_u32()
+        );
+    }
+}
