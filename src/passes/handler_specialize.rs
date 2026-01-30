@@ -23,7 +23,7 @@ use crate::common::ids::{EffectLabelId, ExprId, FuncId, HandlerId, StmtId, Symbo
 use crate::ir::core::{
     CoreProgram, ExprKind, ExprNode, FunctionDecl, HandlerDef, Literal, StmtKind, StmtNode,
 };
-use crate::pipeline::phases::Residualized;
+use crate::pipeline::phases::{Reason, Residualized, SpecializationStats, Stage};
 
 const MAX_SPECIALIZATIONS_PER_CALLEE: usize = 8;
 const MAX_TOTAL_SPECIALIZATIONS: usize = 256;
@@ -31,11 +31,12 @@ const MAX_TOTAL_SPECIALIZATIONS: usize = 256;
 pub fn run(residual: Residualized) -> Residualized {
     let (mut program, diagnostics, sema, mut mono, ct, mut bta, mut residual_tables) =
         residual.into_parts();
-    specialize_handle_wrapped_calls(&mut program);
+    residual_tables.specialization_stats = specialize_handle_wrapped_calls(&mut program);
     let func_remap = prune_unreachable_functions(&mut program);
     mono.remap_func_ids(&func_remap);
     bta.remap_func_ids(&func_remap);
     residual_tables.remap_func_ids(&func_remap);
+    assert_remap_integrity(&program, &mono, &bta, &residual_tables);
     Residualized::new(program, diagnostics, sema, mono, ct, bta, residual_tables)
 }
 
@@ -48,24 +49,30 @@ struct SpecializeCandidate {
     callee: FuncId,
 }
 
-fn specialize_handle_wrapped_calls(program: &mut CoreProgram) {
+fn specialize_handle_wrapped_calls(program: &mut CoreProgram) -> SpecializationStats {
     let candidates = collect_specialize_candidates(program);
     let mut specialized: HashMap<(FuncId, HandlerShapeKey), FuncId> = HashMap::new();
     let mut specialized_count_by_callee: HashMap<FuncId, usize> = HashMap::new();
     let mut total_specialized = 0usize;
+    let mut stats = SpecializationStats::default();
 
     for candidate in candidates {
+        stats.candidates_seen = stats.candidates_seen.saturating_add(1);
         let Some(specialized_callee) = ensure_specialized(
             program,
             &candidate,
             &mut specialized,
             &mut specialized_count_by_callee,
             &mut total_specialized,
+            &mut stats,
         ) else {
             continue;
         };
-        rewrite_direct_handle_callsite(program, &candidate, specialized_callee);
+        if rewrite_direct_handle_callsite(program, &candidate, specialized_callee) {
+            stats.rewrites = stats.rewrites.saturating_add(1);
+        }
     }
+    stats
 }
 
 fn collect_specialize_candidates(program: &CoreProgram) -> Vec<SpecializeCandidate> {
@@ -292,7 +299,7 @@ fn rewrite_direct_handle_callsite(
     program: &mut CoreProgram,
     candidate: &SpecializeCandidate,
     specialized_callee: FuncId,
-) {
+) -> bool {
     let mut rewritten_cache = HashMap::new();
     let mut rewritten_visiting = HashSet::new();
     let Some(replacement) = build_rewritten_body(
@@ -302,15 +309,17 @@ fn rewrite_direct_handle_callsite(
         &mut rewritten_cache,
         &mut rewritten_visiting,
     ) else {
-        return;
+        return false;
     };
 
     let Some(handle_stmt) = program.stmt_mut(candidate.handle_stmt) else {
-        return;
+        return false;
     };
     if matches!(handle_stmt.kind, StmtKind::Handle { next: None, .. }) {
         handle_stmt.kind = replacement;
+        return true;
     }
+    false
 }
 
 fn build_rewritten_body(
@@ -471,16 +480,20 @@ fn ensure_specialized(
     specialized: &mut HashMap<(FuncId, HandlerShapeKey), FuncId>,
     specialized_count_by_callee: &mut HashMap<FuncId, usize>,
     total_specialized: &mut usize,
+    stats: &mut SpecializationStats,
 ) -> Option<FuncId> {
     let key = (candidate.callee, candidate.shape.clone());
     if let Some(existing) = specialized.get(&key).copied() {
+        stats.reused_existing = stats.reused_existing.saturating_add(1);
         return Some(existing);
     }
     // v1 guard: mixed recursive wrapper shapes stay unspecialized.
     if has_varying_recursive_wrapper_shapes(program, candidate.callee, &candidate.shape) {
+        stats.skipped_varying_shapes = stats.skipped_varying_shapes.saturating_add(1);
         return None;
     }
     if *total_specialized >= MAX_TOTAL_SPECIALIZATIONS {
+        stats.skipped_limits = stats.skipped_limits.saturating_add(1);
         return None;
     }
     if specialized_count_by_callee
@@ -489,6 +502,7 @@ fn ensure_specialized(
         .unwrap_or(0)
         >= MAX_SPECIALIZATIONS_PER_CALLEE
     {
+        stats.skipped_limits = stats.skipped_limits.saturating_add(1);
         return None;
     }
 
@@ -526,6 +540,7 @@ fn ensure_specialized(
         .entry(candidate.callee)
         .and_modify(|count| *count += 1)
         .or_insert(1);
+    stats.created = stats.created.saturating_add(1);
     Some(specialized_id)
 }
 
@@ -584,6 +599,81 @@ fn has_varying_recursive_wrapper_shapes(
     }
 
     false
+}
+
+fn assert_remap_integrity(
+    program: &CoreProgram,
+    mono: &crate::pipeline::phases::MonomorphizationSummary,
+    bta: &crate::pipeline::phases::BtaTables,
+    residual: &crate::pipeline::phases::ResidualTables,
+) {
+    let function_count = program.functions().len();
+    for (source, monos) in &mono.source_to_mono {
+        assert_func_id_in_bounds(*source, function_count, "monomorphization source");
+        for mono_id in monos {
+            assert_func_id_in_bounds(*mono_id, function_count, "monomorphization instance");
+        }
+    }
+
+    for stage in bta.stage_of_expr.values() {
+        assert_stage_reason_in_bounds(*stage, function_count, "bta.stage_of_expr");
+    }
+    for stage in bta.stage_of_var.values() {
+        assert_stage_reason_in_bounds(*stage, function_count, "bta.stage_of_var");
+    }
+    for discharge in bta.handler_discharge.values() {
+        if let Some(reason) = discharge.reason {
+            assert_reason_in_bounds(reason, function_count, "bta.handler_discharge");
+        }
+    }
+    for clauses in bta.clause_discharge.values() {
+        for clause in clauses {
+            if let Some(reason) = clause.reason {
+                assert_reason_in_bounds(reason, function_count, "bta.clause_discharge");
+            }
+        }
+    }
+
+    for func_id in residual.function_effect_summary.keys() {
+        assert_func_id_in_bounds(*func_id, function_count, "residual function_effect_summary");
+    }
+    assert!(
+        residual.specialization_stats.created <= residual.specialization_stats.candidates_seen,
+        "compiler bug: specialization created count exceeds candidates seen"
+    );
+    assert!(
+        residual.specialization_stats.rewrites <= residual.specialization_stats.candidates_seen,
+        "compiler bug: specialization rewrite count exceeds candidates seen"
+    );
+}
+
+fn assert_stage_reason_in_bounds(stage: Stage, function_count: usize, context: &str) {
+    if let Stage::Rt(reason) = stage {
+        assert_reason_in_bounds(reason, function_count, context);
+    }
+}
+
+fn assert_reason_in_bounds(reason: Reason, function_count: usize, context: &str) {
+    match reason {
+        Reason::Parameter { func, .. } | Reason::CtOnlyWithRuntimeArgs(func) => {
+            assert_func_id_in_bounds(func, function_count, context);
+        }
+        Reason::UnclassifiedRuntime
+        | Reason::DependsOnVar(_)
+        | Reason::EffectNotDischarged(_)
+        | Reason::HandlerIsRuntime(_)
+        | Reason::BranchOnRuntime(_)
+        | Reason::NotPersistable(_)
+        | Reason::UserForcedRuntime => {}
+    }
+}
+
+fn assert_func_id_in_bounds(func_id: FuncId, function_count: usize, context: &str) {
+    assert!(
+        func_id.index() < function_count,
+        "compiler bug: {context} references out-of-bounds function f{} (functions={function_count})",
+        func_id.as_u32()
+    );
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
