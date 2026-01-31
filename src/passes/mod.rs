@@ -6,4 +6,5 @@ pub mod handler_specialize;
 pub mod linearize;
 pub mod lowering;
 pub mod monomorphize;
+pub mod normalize;
 pub mod residualize;

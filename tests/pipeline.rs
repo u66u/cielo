@@ -2215,10 +2215,12 @@ fn main() -> Int {
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut fused_interner);
     let staged = compiler.run_v1_evaluate_classify(core);
     let residual = compiler.run_v1_residualize_specialize(staged);
-    let fused_emitted = c_emit::run(linearize::run(residual), &fused_interner);
+    let normalized = compiler.run_v1_normalize(residual);
+    let fused_emitted = c_emit::run(linearize::run(normalized), &fused_interner);
 
     let mut split_interner = Interner::new();
-    let split_emitted = compiler.compile_source_v0_to_c(src, SourceId::from_u32(1), &mut split_interner);
+    let split_emitted =
+        compiler.compile_source_v0_to_c(src, SourceId::from_u32(1), &mut split_interner);
 
     assert_eq!(
         fused_emitted.c_source, split_emitted.c_source,
@@ -2263,7 +2265,8 @@ fn main() -> Int {
             .get(&expr_id)
             .expect("split cache should contain every fused cache entry");
         assert_eq!(
-            fused_value, split_value,
+            fused_value,
+            split_value,
             "fused/split ct literal mismatch at e{}",
             expr_id.as_u32()
         );
@@ -2281,7 +2284,8 @@ fn main() -> Int {
             .get(&expr_id)
             .expect("split branch decisions should contain every fused entry");
         assert_eq!(
-            fused_decision, split_decision,
+            fused_decision,
+            split_decision,
             "fused/split branch decision mismatch at e{}",
             expr_id.as_u32()
         );
@@ -2299,7 +2303,8 @@ fn main() -> Int {
             .get(&expr_id)
             .expect("split stage table should contain every fused stage entry");
         assert_eq!(
-            fused_stage, split_stage,
+            fused_stage,
+            split_stage,
             "fused/split stage mismatch at e{}",
             expr_id.as_u32()
         );
@@ -2317,7 +2322,8 @@ fn main() -> Int {
             .get(&expr_id)
             .expect("split knownness table should contain every fused knownness entry");
         assert_eq!(
-            fused_knownness, split_knownness,
+            fused_knownness,
+            split_knownness,
             "fused/split knownness mismatch at e{}",
             expr_id.as_u32()
         );

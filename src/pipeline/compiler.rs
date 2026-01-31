@@ -14,6 +14,7 @@ use crate::passes::handler_specialize;
 use crate::passes::linearize;
 use crate::passes::lowering::{LowerConfig, TargetBuiltinSymbols, lower_program};
 use crate::passes::monomorphize;
+use crate::passes::normalize;
 use crate::passes::residualize;
 use crate::pipeline::phases::{
     BtaClassified, CoreBuilt, CtPropagated, Monomorphized, Parsed, Residualized, Typed,
@@ -215,7 +216,8 @@ impl Compiler {
     ) -> CompiledC {
         let residual = self.compile_source_v0(source, source_id, interner);
         let specialized = handler_specialize::run(residual);
-        let linearized = linearize::run(specialized);
+        let normalized = normalize::run(specialized);
+        let linearized = linearize::run(normalized);
         let emitted = c_emit::run(linearized, interner);
         CompiledC {
             residual: emitted.linearized.residual,
@@ -232,6 +234,10 @@ impl Compiler {
 
     pub fn run_v1_residualize_specialize(&self, classified: BtaClassified) -> Residualized {
         self.residualize_specialize(classified)
+    }
+
+    pub fn run_v1_normalize(&self, residual: Residualized) -> Residualized {
+        self.normalize(residual)
     }
 
     pub fn run_v0_core_pipeline(&self, built: CoreBuilt) -> Residualized {
@@ -303,5 +309,9 @@ impl Compiler {
 
     fn residualize_specialize(&self, bta: BtaClassified) -> Residualized {
         comptime::residualize_specialize(bta)
+    }
+
+    fn normalize(&self, residual: Residualized) -> Residualized {
+        normalize::run(residual)
     }
 }
