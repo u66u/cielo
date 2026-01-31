@@ -2323,3 +2323,38 @@ fn main() -> Int {
         );
     }
 }
+
+#[test]
+fn residualize_stats_track_literal_embedding_and_branch_pruning() {
+    let src = r#"
+enum Option { Some(Int), None }
+
+fn main() -> Int {
+  let cond = true;
+  let x = if cond { 1 + 2 } else { 0 };
+  let y = Some(41);
+  let z = match y {
+    Some(v) => v,
+    None => 0,
+  };
+  x + z
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
+    let stats = residual.residual().residualize_stats;
+
+    assert!(
+        stats.embedded_literals > 0,
+        "residualize should report at least one ct literal embedding"
+    );
+    assert!(
+        stats.pruned_if_branches >= 1,
+        "constant-if pruning should increment residualize branch-prune counters"
+    );
+    assert!(
+        stats.pruned_match_branches >= 1,
+        "known-match pruning should increment residualize branch-prune counters"
+    );
+}
