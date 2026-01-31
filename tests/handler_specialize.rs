@@ -178,6 +178,49 @@ fn main() -> Int {
 }
 
 #[test]
+fn specialization_stats_track_create_reuse_and_rewrite_counts() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+
+fn io() -> Int with Console {
+  do Console.print("x");
+  1
+}
+
+fn main() -> Int {
+  let a = handle { io() } with Console {
+    | print(s) => 0
+  };
+  let b = handle { io() } with Console {
+    | print(s) => 0
+  };
+  a + b
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let stats = compiled.residual.residual().specialization_stats;
+
+    assert!(
+        stats.candidates_seen >= 2,
+        "two direct wrappers should produce at least two specialization candidates"
+    );
+    assert!(
+        stats.created >= 1,
+        "specialization should create at least one specialized function copy"
+    );
+    assert!(
+        stats.reused_existing >= 1,
+        "equivalent wrapper shapes should reuse the first specialization"
+    );
+    assert!(
+        stats.rewrites >= 2,
+        "both wrapper callsites should be rewritten to direct specialized calls"
+    );
+}
+
+#[test]
 fn specializes_handle_wrapped_call_through_let_wrapper_chain() {
     let src = r#"
 effect Console { fn print(s: String) -> () }
