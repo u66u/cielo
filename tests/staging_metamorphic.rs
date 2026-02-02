@@ -166,6 +166,55 @@ fn main() -> Int {
     );
 }
 
+#[test]
+fn staging_is_equivalent_control_flow_reshape_invariant() {
+    let src_direct = r#"
+fn main() -> Int {
+  let x = 1 + 2;
+  x
+}
+"#;
+    let src_branch = r#"
+fn main() -> Int {
+  let x = if true { 1 + 2 } else { 0 };
+  x
+}
+"#;
+
+    let compiler = Compiler::new(CompilerConfig::default());
+
+    let mut interner_direct = Interner::new();
+    let residual_direct =
+        compiler.compile_source_v0(src_direct, SourceId::from_u32(20), &mut interner_direct);
+    let mut interner_branch = Interner::new();
+    let residual_branch =
+        compiler.compile_source_v0(src_branch, SourceId::from_u32(21), &mut interner_branch);
+
+    assert_eq!(
+        stage_signature(&residual_direct),
+        stage_signature(&residual_branch),
+        "equivalent control-flow reshaping should preserve staging signatures"
+    );
+
+    let direct_main = main_func_id(residual_direct.program(), &interner_direct);
+    let branch_main = main_func_id(residual_branch.program(), &interner_branch);
+    let direct_body = residual_direct
+        .program()
+        .function(direct_main)
+        .expect("direct main")
+        .body;
+    let branch_body = residual_branch
+        .program()
+        .function(branch_main)
+        .expect("branch main")
+        .body;
+    assert_eq!(
+        resolved_main_return_int_literal(residual_direct.program(), direct_body),
+        resolved_main_return_int_literal(residual_branch.program(), branch_body),
+        "equivalent control-flow reshaping should preserve normalized return literal"
+    );
+}
+
 fn stage_signature(residual: &Residualized) -> StageSignature {
     let mut ct_exprs = 0usize;
     let mut rt_exprs = 0usize;

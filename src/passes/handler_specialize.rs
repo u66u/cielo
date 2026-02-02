@@ -1303,6 +1303,36 @@ impl<'a> GraphCloner<'a> {
             span: node.span,
             kind,
         });
+
+        // deep copy tables to guarantee provenance survival
+        if let Some(stage) = self.bta.stage_of_expr.get(&source).copied() {
+            self.bta.stage_of_expr.insert(cloned, stage);
+        }
+        if let Some(known) = self.bta.knownness_of_expr.get(&source).copied() {
+            self.bta.knownness_of_expr.insert(cloned, known);
+        }
+        if let Some(ty) = self
+            .sema
+            .type_of_expr
+            .get(source.index())
+            .copied()
+            .flatten()
+        {
+            if self.sema.type_of_expr.len() <= cloned.index() {
+                self.sema.type_of_expr.resize(cloned.index() + 1, None);
+            }
+            self.sema.type_of_expr[cloned.index()] = Some(ty);
+        }
+        if let Some(effects) = self.sema.effects_of_expr.get(source.index()).cloned() {
+            if self.sema.effects_of_expr.len() <= cloned.index() {
+                self.sema.effects_of_expr.resize(
+                    cloned.index() + 1,
+                    crate::sema::effect::SortedEffectRow::empty(),
+                );
+            }
+            self.sema.effects_of_expr[cloned.index()] = effects;
+        }
+
         self.expr_map.insert(source, cloned);
         cloned
     }
