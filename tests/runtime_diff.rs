@@ -426,7 +426,7 @@ fn runtime_exit_matches_evaluator_oracle_for_seed_expanding_handler_cases() {
         0x0D15_EA5E_CAFE_BEEF,
         0x3141_5926_5358_9793,
     ];
-    const VARIANTS_PER_SEED: usize = 3;
+    const VARIANTS_PER_SEED: usize = 5;
     const VARIANT_MIX: u64 = 0x9E37_79B9_7F4A_7C15;
     const SOURCE_ID_BASE: u32 = 10_000;
 
