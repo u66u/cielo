@@ -23,15 +23,20 @@ use crate::common::ids::{EffectLabelId, ExprId, FuncId, HandlerId, StmtId, Symbo
 use crate::ir::core::{
     CoreProgram, ExprKind, ExprNode, FunctionDecl, HandlerDef, Literal, StmtKind, StmtNode,
 };
-use crate::pipeline::phases::{Reason, Residualized, SpecializationStats, Stage};
+use crate::pipeline::phases::{
+    BtaTables, Reason, Residualized, SemanticTables, SpecializationStats, Stage,
+};
 
 const MAX_SPECIALIZATIONS_PER_CALLEE: usize = 8;
 const MAX_TOTAL_SPECIALIZATIONS: usize = 256;
 
 pub fn run(residual: Residualized) -> Residualized {
-    let (mut program, diagnostics, sema, mut mono, ct, mut bta, mut residual_tables) =
+    let (mut program, diagnostics, mut sema, mut mono, ct, mut bta, mut residual_tables) =
         residual.into_parts();
-    residual_tables.specialization_stats = specialize_handle_wrapped_calls(&mut program);
+
+    residual_tables.specialization_stats =
+        specialize_handle_wrapped_calls(&mut program, &mut bta, &mut sema);
+
     let func_remap = prune_unreachable_functions(&mut program);
     mono.remap_func_ids(&func_remap);
     bta.remap_func_ids(&func_remap);
@@ -49,7 +54,11 @@ struct SpecializeCandidate {
     callee: FuncId,
 }
 
-fn specialize_handle_wrapped_calls(program: &mut CoreProgram) -> SpecializationStats {
+fn specialize_handle_wrapped_calls(
+    program: &mut CoreProgram,
+    bta: &mut BtaTables,
+    sema: &mut SemanticTables,
+) -> SpecializationStats {
     let candidates = collect_specialize_candidates(program);
     let mut specialized: HashMap<(FuncId, HandlerShapeKey), FuncId> = HashMap::new();
     let mut specialized_count_by_callee: HashMap<FuncId, usize> = HashMap::new();
@@ -60,6 +69,8 @@ fn specialize_handle_wrapped_calls(program: &mut CoreProgram) -> SpecializationS
         stats.candidates_seen = stats.candidates_seen.saturating_add(1);
         let Some(specialized_callee) = ensure_specialized(
             program,
+            bta,
+            sema,
             &candidate,
             &mut specialized,
             &mut specialized_count_by_callee,
@@ -476,6 +487,8 @@ fn build_rewritten_stmt(
 
 fn ensure_specialized(
     program: &mut CoreProgram,
+    bta: &mut BtaTables,
+    sema: &mut SemanticTables,
     candidate: &SpecializeCandidate,
     specialized: &mut HashMap<(FuncId, HandlerShapeKey), FuncId>,
     specialized_count_by_callee: &mut HashMap<FuncId, usize>,
@@ -518,7 +531,7 @@ fn ensure_specialized(
     let specialized_id = program.add_function(placeholder);
 
     let cloned_body = {
-        let mut cloner = GraphCloner::new(program, candidate.callee, specialized_id);
+        let mut cloner = GraphCloner::new(program, bta, sema, candidate.callee, specialized_id);
         cloner.clone_stmt(source_decl.body)
     };
     let wrapped_body = program.push_stmt(StmtNode {
@@ -529,6 +542,13 @@ fn ensure_specialized(
             next: None,
         },
     });
+
+    if sema.effects_of_stmt.len() <= wrapped_body.index() {
+        sema.effects_of_stmt.resize(
+            wrapped_body.index() + 1,
+            crate::sema::effect::SortedEffectRow::empty(),
+        );
+    }
 
     if let Some(function) = program.function_mut(specialized_id) {
         function.body = wrapped_body;
@@ -1104,6 +1124,8 @@ fn push_count(len: usize, out: &mut Vec<ShapeToken>) {
 
 struct GraphCloner<'a> {
     program: &'a mut CoreProgram,
+    bta: &'a mut BtaTables,
+    sema: &'a mut SemanticTables,
     source_func: FuncId,
     specialized_func: FuncId,
     expr_map: HashMap<ExprId, ExprId>,
@@ -1111,9 +1133,17 @@ struct GraphCloner<'a> {
 }
 
 impl<'a> GraphCloner<'a> {
-    fn new(program: &'a mut CoreProgram, source_func: FuncId, specialized_func: FuncId) -> Self {
+    fn new(
+        program: &'a mut CoreProgram,
+        bta: &'a mut BtaTables,
+        sema: &'a mut SemanticTables,
+        source_func: FuncId,
+        specialized_func: FuncId,
+    ) -> Self {
         Self {
             program,
+            bta,
+            sema,
             source_func,
             specialized_func,
             expr_map: HashMap::new(),
@@ -1254,6 +1284,17 @@ impl<'a> GraphCloner<'a> {
             span: node.span,
             kind,
         });
+
+        if let Some(effects) = self.sema.effects_of_stmt.get(source.index()).cloned() {
+            if self.sema.effects_of_stmt.len() <= cloned.index() {
+                self.sema.effects_of_stmt.resize(
+                    cloned.index() + 1,
+                    crate::sema::effect::SortedEffectRow::empty(),
+                );
+            }
+            self.sema.effects_of_stmt[cloned.index()] = effects;
+        }
+
         self.stmt_map.insert(source, cloned);
         cloned
     }
