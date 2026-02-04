@@ -27,7 +27,7 @@ use std::collections::{HashMap, HashSet};
 use crate::analysis::function_graph::collect_reachable_functions;
 use crate::common::ids::{ExprId, FuncId, HandlerId, StmtId, VarId};
 use crate::common::span::Span;
-use crate::ir::core::{CoreProgram, ExprKind, MatchArm, StmtKind, StmtNode};
+use crate::ir::core::{CoreProgram, ExprKind, ExprNode, MatchArm, StmtKind, StmtNode};
 use crate::pipeline::phases::Residualized;
 
 const MAX_SHRINK_ITERS: usize = 16;
@@ -84,12 +84,18 @@ enum InlineKind {
     Many,
 }
 
+#[derive(Clone)]
+struct InlineCandidate {
+    params: Vec<VarId>,
+    expr: ExprId,
+}
+
 struct Rewriter<'a> {
     program: &'a mut CoreProgram,
     mode: RewriteMode,
     changed: bool,
     var_uses: HashMap<VarId, usize>,
-    inline_candidates: HashMap<FuncId, ExprId>,
+    inline_candidates: HashMap<FuncId, InlineCandidate>,
     var_let_defs: HashMap<VarId, ExprId>,
     memo: HashMap<StmtId, StmtId>,
     visiting: HashSet<StmtId>,
@@ -102,7 +108,7 @@ impl<'a> Rewriter<'a> {
         program: &'a mut CoreProgram,
         mode: RewriteMode,
         var_uses: HashMap<VarId, usize>,
-        inline_candidates: HashMap<FuncId, ExprId>,
+        inline_candidates: HashMap<FuncId, InlineCandidate>,
     ) -> Self {
         Self {
             var_uses,
@@ -303,22 +309,53 @@ impl<'a> Rewriter<'a> {
                 effects,
                 next,
             } => {
-                let args = args.into_iter().map(|arg| self.rewrite_expr(arg)).collect();
+                let args = args
+                    .into_iter()
+                    .map(|arg| self.rewrite_expr(arg))
+                    .collect::<Vec<_>>();
                 let next = self.rewrite_stmt(next);
-                let can_inline = self.inline_candidates.get(&callee).copied();
-                if let Some(inline_expr) = can_inline {
-                    self.changed = true;
-                    let inline_expr = self.rewrite_expr(inline_expr);
-                    self.var_let_defs.insert(result, inline_expr);
-                    self.set_stmt(
-                        stmt_id,
-                        StmtKind::Let {
-                            binding: result,
-                            value: inline_expr,
-                            next,
-                        },
-                    );
-                    stmt_id
+                let can_inline = self.inline_candidates.get(&callee).cloned();
+                if let Some(candidate) = can_inline {
+                    if effects.is_empty() {
+                        if let Some(inline_expr) = self.inline_call_expr(&candidate, &args) {
+                            self.changed = true;
+                            let inline_expr = self.rewrite_expr(inline_expr);
+                            self.var_let_defs.insert(result, inline_expr);
+                            self.set_stmt(
+                                stmt_id,
+                                StmtKind::Let {
+                                    binding: result,
+                                    value: inline_expr,
+                                    next,
+                                },
+                            );
+                            stmt_id
+                        } else {
+                            self.set_stmt(
+                                stmt_id,
+                                StmtKind::Call {
+                                    result,
+                                    callee,
+                                    args,
+                                    effects,
+                                    next,
+                                },
+                            );
+                            stmt_id
+                        }
+                    } else {
+                        self.set_stmt(
+                            stmt_id,
+                            StmtKind::Call {
+                                result,
+                                callee,
+                                args,
+                                effects,
+                                next,
+                            },
+                        );
+                        stmt_id
+                    }
                 } else {
                     self.set_stmt(
                         stmt_id,
@@ -497,8 +534,8 @@ impl<'a> Rewriter<'a> {
                     .into_iter()
                     .map(|arg| self.rewrite_expr(arg))
                     .collect::<Vec<_>>();
-                if let Some(inline_expr) = self.inline_candidates.get(&callee).copied() {
-                    if args.is_empty() {
+                if let Some(candidate) = self.inline_candidates.get(&callee).cloned() {
+                    if let Some(inline_expr) = self.inline_call_expr(&candidate, &args) {
                         self.changed = true;
                         self.rewrite_expr(inline_expr)
                     } else {
@@ -542,6 +579,89 @@ impl<'a> Rewriter<'a> {
         self.expr_memo.insert(expr_id, rewritten);
         self.expr_visiting.remove(&expr_id);
         rewritten
+    }
+
+    fn inline_call_expr(&mut self, candidate: &InlineCandidate, args: &[ExprId]) -> Option<ExprId> {
+        if candidate.params.len() != args.len() {
+            return None;
+        }
+        let param_bindings = candidate
+            .params
+            .iter()
+            .copied()
+            .zip(args.iter().copied())
+            .collect::<HashMap<_, _>>();
+        let mut memo = HashMap::new();
+        self.clone_expr_with_subst(candidate.expr, &param_bindings, &mut memo)
+    }
+
+    fn clone_expr_with_subst(
+        &mut self,
+        expr_id: ExprId,
+        param_bindings: &HashMap<VarId, ExprId>,
+        memo: &mut HashMap<ExprId, ExprId>,
+    ) -> Option<ExprId> {
+        if let Some(mapped) = memo.get(&expr_id).copied() {
+            return Some(mapped);
+        }
+        let expr = self.program.expr(expr_id)?.clone();
+        let span = expr.span;
+        let cloned = match expr.kind {
+            ExprKind::Var(var) => param_bindings.get(&var).copied(),
+            ExprKind::Literal(literal) => Some(self.program.push_expr(ExprNode {
+                span,
+                kind: ExprKind::Literal(literal),
+            })),
+            ExprKind::Unary { op, expr } => {
+                let subexpr = self.clone_expr_with_subst(expr, param_bindings, memo)?;
+                Some(self.program.push_expr(ExprNode {
+                    span,
+                    kind: ExprKind::Unary { op, expr: subexpr },
+                }))
+            }
+            ExprKind::Binary { op, lhs, rhs } => {
+                let lhs = self.clone_expr_with_subst(lhs, param_bindings, memo)?;
+                let rhs = self.clone_expr_with_subst(rhs, param_bindings, memo)?;
+                Some(self.program.push_expr(ExprNode {
+                    span,
+                    kind: ExprKind::Binary { op, lhs, rhs },
+                }))
+            }
+            ExprKind::MakeStruct { ty, fields } => {
+                let mut cloned_fields = Vec::with_capacity(fields.len());
+                for field in fields {
+                    cloned_fields.push(self.clone_expr_with_subst(field, param_bindings, memo)?);
+                }
+                Some(self.program.push_expr(ExprNode {
+                    span,
+                    kind: ExprKind::MakeStruct {
+                        ty,
+                        fields: cloned_fields,
+                    },
+                }))
+            }
+            ExprKind::MakeEnum {
+                ty,
+                variant,
+                fields,
+            } => {
+                let mut cloned_fields = Vec::with_capacity(fields.len());
+                for field in fields {
+                    cloned_fields.push(self.clone_expr_with_subst(field, param_bindings, memo)?);
+                }
+                Some(self.program.push_expr(ExprNode {
+                    span,
+                    kind: ExprKind::MakeEnum {
+                        ty,
+                        variant,
+                        fields: cloned_fields,
+                    },
+                }))
+            }
+            ExprKind::PureCall { .. } | ExprKind::Error(_) => None,
+        }?;
+        memo.insert(expr_id, cloned);
+        Some(cloned)
     }
 
     fn set_expr(&mut self, expr_id: ExprId, kind: ExprKind) {
@@ -832,7 +952,7 @@ fn collect_inline_candidates(
     roots: &[FuncId],
     call_counts: &HashMap<FuncId, usize>,
     kind: InlineKind,
-) -> HashMap<FuncId, ExprId> {
+) -> HashMap<FuncId, InlineCandidate> {
     let reachable = roots.iter().copied().collect::<HashSet<_>>();
     let recursive = collect_direct_recursive_functions(program, &reachable);
     let mut out = HashMap::new();
@@ -844,7 +964,7 @@ fn collect_inline_candidates(
         let Some(function) = program.function(func_id) else {
             continue;
         };
-        if !function.params.is_empty() || !function.declared_effects.is_empty() {
+        if !function.declared_effects.is_empty() {
             continue;
         }
 
@@ -863,10 +983,17 @@ fn collect_inline_candidates(
         if kind == InlineKind::Many && stmt_size > MAX_SPEC_INLINE_STMTS {
             continue;
         }
-        if !expr_is_inlineable(program, ret_expr) {
+        let allowed_vars = function.params.iter().copied().collect::<HashSet<_>>();
+        if !expr_is_inlineable(program, ret_expr, &allowed_vars) {
             continue;
         }
-        out.insert(func_id, ret_expr);
+        out.insert(
+            func_id,
+            InlineCandidate {
+                params: function.params.clone(),
+                expr: ret_expr,
+            },
+        );
     }
 
     out
@@ -897,7 +1024,11 @@ fn count_stmt_nodes(program: &CoreProgram, root: StmtId) -> usize {
     count
 }
 
-fn expr_is_inlineable(program: &CoreProgram, expr_id: ExprId) -> bool {
+fn expr_is_inlineable(
+    program: &CoreProgram,
+    expr_id: ExprId,
+    allowed_vars: &HashSet<VarId>,
+) -> bool {
     let mut stack = vec![expr_id];
     let mut seen = HashSet::new();
     while let Some(current) = stack.pop() {
@@ -908,7 +1039,12 @@ fn expr_is_inlineable(program: &CoreProgram, expr_id: ExprId) -> bool {
             return false;
         };
         match &expr.kind {
-            ExprKind::Var(_) | ExprKind::PureCall { .. } | ExprKind::Error(_) => return false,
+            ExprKind::Var(var) => {
+                if !allowed_vars.contains(var) {
+                    return false;
+                }
+            }
+            ExprKind::PureCall { .. } | ExprKind::Error(_) => return false,
             ExprKind::Literal(_) => {}
             ExprKind::Unary { expr, .. } => stack.push(*expr),
             ExprKind::Binary { lhs, rhs, .. } => {
