@@ -65,6 +65,7 @@ enum DumpKind {
     Functions,
     Effects,
     Sema,
+    StagingReport,
     Linear,
     Anf,
     C,
@@ -169,6 +170,36 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
     let emitted = c_emit::run(linearized, &interner);
     if should_dump(cli, DumpKind::C) || cli.emit_c || cli.run_c {
         println!("=== Emitted C ===\n{}", emitted.c_source);
+    }
+
+    if should_dump(cli, DumpKind::StagingReport) {
+        println!("=== Staging Report ===");
+        let rollups =
+            cielo::pipeline::provenance::staging_root_causes(residual.program(), residual.bta());
+
+        let ct_count = residual
+            .bta()
+            .stage_of_expr
+            .values()
+            .filter(|s| matches!(s, Stage::Ct))
+            .count();
+        let total = residual.program().exprs().len();
+        println!(
+            "{}/{} expressions evaluated at compile time ({:.1}%)\n",
+            ct_count,
+            total,
+            (ct_count as f64 / total as f64) * 100.0
+        );
+
+        println!("Top RT root causes:");
+        for (i, rollup) in rollups.iter().enumerate().take(10) {
+            println!(
+                "  {}. `{}` → taints {} expressions",
+                i + 1,
+                rollup.description,
+                rollup.taint_count
+            );
+        }
     }
 
     if cli.emit_c || cli.run_c {
