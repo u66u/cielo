@@ -795,6 +795,8 @@ fn enforce_ct_only_calls(
     bta: &mut BtaTables,
     diagnostics: &mut crate::common::diagnostics::DiagnosticBag,
 ) {
+    let uses = ExprUseIndex::build(program);
+
     for (idx, expr) in program.exprs().iter().enumerate() {
         let ExprKind::PureCall { callee, args } = &expr.kind else {
             continue;
@@ -809,17 +811,30 @@ fn enforce_ct_only_calls(
         let expr_id = ExprId::new(idx);
         bta.stage_of_expr
             .insert(expr_id, Stage::Rt(Reason::CtOnlyWithRuntimeArgs(*callee)));
+
+        let role_hint = uses
+            .first_boundary_use(expr_id)
+            .map(|u| {
+                format!(
+                    " at statement s{} via {}",
+                    u.stmt_id.as_u32(),
+                    u.kind.describe()
+                )
+            })
+            .unwrap_or_default();
+
         diagnostics.error(
             "BTA_CT_ONLY_RUNTIME_ARG",
             format!(
-                "ct-only function call f{} has runtime arguments; this call cannot be residualized",
-                callee.as_u32()
+                "ct-only function call f{} has runtime arguments{}; this call cannot be residualized",
+                callee.as_u32(),
+                role_hint
             ),
             expr.span,
         );
     }
 
-    for stmt in program.stmts() {
+    for (stmt_idx, stmt) in program.stmts().iter().enumerate() {
         let StmtKind::Call {
             result,
             callee,
@@ -839,11 +854,16 @@ fn enforce_ct_only_calls(
 
         bta.stage_of_var
             .insert(*result, Stage::Rt(Reason::CtOnlyWithRuntimeArgs(*callee)));
+
+        let stmt_id = StmtId::new(stmt_idx);
+        let role_hint = format!(" at statement s{}", stmt_id.as_u32());
+
         diagnostics.error(
             "BTA_CT_ONLY_RUNTIME_ARG",
             format!(
-                "ct-only function call f{} has runtime arguments; this call cannot be residualized",
-                callee.as_u32()
+                "ct-only function call f{} has runtime arguments{}; this call cannot be residualized",
+                callee.as_u32(),
+                role_hint
             ),
             stmt.span,
         );
