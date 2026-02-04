@@ -207,7 +207,8 @@ fn main() -> Int {
     );
 
     let mut interner_6 = Interner::new();
-    let hit_fingerprint = compiler_32.compile_source_v0(src_b, SourceId::from_u32(5), &mut interner_6);
+    let hit_fingerprint =
+        compiler_32.compile_source_v0(src_b, SourceId::from_u32(5), &mut interner_6);
     assert_eq!(
         hit_fingerprint.ct().eval_stats.eval_attempts,
         0,

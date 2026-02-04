@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::common::densemap::DenseId;
 use crate::common::ids::{ExprId, FuncId, StmtId, VarId};
 use crate::ir::core::{CoreProgram, ExprKind, StmtKind};
 use crate::pipeline::phases::{BtaTables, Reason, Stage};
@@ -304,4 +305,118 @@ enum VarSource {
 enum Cursor {
     Expr(ExprId),
     Var(VarId),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RootCauseTaint {
+    pub terminal_reason: Reason,
+    pub description: String,
+    pub taint_count: usize,
+}
+
+pub fn staging_root_causes(program: &CoreProgram, bta: &BtaTables) -> Vec<RootCauseTaint> {
+    let mut counts: HashMap<String, (Reason, usize)> = HashMap::new();
+    let var_sources = VarSources::build(program);
+
+    for (expr_idx, stage) in bta.stage_of_expr.iter() {
+        if let Stage::Rt(_) = stage {
+            let expr_id = ExprId::from_index(expr_idx.index());
+            let terminal = find_terminal_reason(expr_id, program, bta, &var_sources);
+            let desc = reason_text(terminal);
+
+            let entry = counts.entry(desc).or_insert((terminal, 0));
+            entry.1 += 1;
+        }
+    }
+
+    let mut rollups: Vec<RootCauseTaint> = counts
+        .into_iter()
+        .map(
+            |(description, (terminal_reason, taint_count))| RootCauseTaint {
+                terminal_reason,
+                description,
+                taint_count,
+            },
+        )
+        .collect();
+
+    // sort:must be detemernistic. highest taint first, then alphabetically by description
+    rollups.sort_by(|a, b| {
+        b.taint_count
+            .cmp(&a.taint_count)
+            .then(a.description.cmp(&b.description))
+    });
+
+    rollups
+}
+
+fn find_terminal_reason(
+    start_expr: ExprId,
+    program: &CoreProgram,
+    bta: &BtaTables,
+    var_sources: &VarSources,
+) -> Reason {
+    let mut seen_exprs = HashSet::new();
+    let mut seen_vars = HashSet::new();
+    let mut cursor = Cursor::Expr(start_expr);
+    let mut last_reason = Reason::UnclassifiedRuntime;
+
+    for _ in 0..100 {
+        // bounded depth to prevent infinite loops on broken IR (do we need this?)
+        match cursor {
+            Cursor::Expr(expr_id) => {
+                if !seen_exprs.insert(expr_id) {
+                    break;
+                }
+                let Some(Stage::Rt(reason)) = bta.stage_of_expr.get(&expr_id).copied() else {
+                    break;
+                };
+                last_reason = reason;
+
+                if let Some(next) = next_from_reason(reason, program, bta, Some(expr_id)) {
+                    cursor = next;
+                } else {
+                    break;
+                }
+            }
+            Cursor::Var(var_id) => {
+                if !seen_vars.insert(var_id) {
+                    break;
+                }
+                if let Some(Stage::Rt(reason)) = bta.stage_of_var.get(&var_id).copied() {
+                    last_reason = reason;
+                    if let Some(next) = next_from_reason(reason, program, bta, None) {
+                        cursor = next;
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+
+                // variable isn't explicitly staged -> trace back to its definition
+                if let Some(source) = var_sources.0.get(&var_id).copied() {
+                    match source {
+                        VarSource::Param { func, param_index } => {
+                            last_reason = Reason::Parameter {
+                                func,
+                                index: param_index,
+                            };
+                            break;
+                        }
+                        VarSource::Expr(e) => cursor = Cursor::Expr(e),
+                        VarSource::Stmt(s) => {
+                            if let Some(e) = first_runtime_expr_in_stmt(program, bta, s) {
+                                cursor = Cursor::Expr(e);
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+    last_reason
 }

@@ -40,10 +40,9 @@ fn assert_evaluate_classify_invariants(classified: &BtaClassified) {
     );
 
     for (expr_id, decision) in ct.branch_decisions.iter() {
-        let literal = ct
-            .ct_cache
-            .get(&expr_id)
-            .unwrap_or_else(|| panic!("compiler bug: branch decision without ct literal for e{expr_id}"));
+        let literal = ct.ct_cache.get(&expr_id).unwrap_or_else(|| {
+            panic!("compiler bug: branch decision without ct literal for e{expr_id}")
+        });
         match (decision, literal) {
             (BranchDecision::LiveTrue, crate::ir::core::Literal::Bool(true))
             | (BranchDecision::LiveFalse, crate::ir::core::Literal::Bool(false)) => {}
