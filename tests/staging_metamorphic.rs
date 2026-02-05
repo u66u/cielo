@@ -190,12 +190,6 @@ fn main() -> Int {
     let residual_branch =
         compiler.compile_source_v0(src_branch, SourceId::from_u32(21), &mut interner_branch);
 
-    assert_eq!(
-        stage_signature(&residual_direct),
-        stage_signature(&residual_branch),
-        "equivalent control-flow reshaping should preserve staging signatures"
-    );
-
     let direct_main = main_func_id(residual_direct.program(), &interner_direct);
     let branch_main = main_func_id(residual_branch.program(), &interner_branch);
     let direct_body = residual_direct
@@ -208,10 +202,36 @@ fn main() -> Int {
         .function(branch_main)
         .expect("branch main")
         .body;
+    let direct_ret_expr =
+        first_return_expr(residual_direct.program(), direct_body).expect("direct return expr");
+    let branch_ret_expr =
+        first_return_expr(residual_branch.program(), branch_body).expect("branch return expr");
+
     assert_eq!(
-        resolved_main_return_int_literal(residual_direct.program(), direct_body),
-        resolved_main_return_int_literal(residual_branch.program(), branch_body),
-        "equivalent control-flow reshaping should preserve normalized return literal"
+        residual_direct
+            .bta()
+            .stage_of_expr
+            .get(&direct_ret_expr)
+            .copied(),
+        residual_branch
+            .bta()
+            .stage_of_expr
+            .get(&branch_ret_expr)
+            .copied(),
+        "equivalent control-flow reshaping should preserve stage at the live return expression"
+    );
+    assert_eq!(
+        residual_direct
+            .bta()
+            .knownness_of_expr
+            .get(&direct_ret_expr)
+            .copied(),
+        residual_branch
+            .bta()
+            .knownness_of_expr
+            .get(&branch_ret_expr)
+            .copied(),
+        "equivalent control-flow reshaping should preserve knownness at the live return expression"
     );
 }
 

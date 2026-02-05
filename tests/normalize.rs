@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use cielo::common::diagnostics::DiagnosticBag;
-use cielo::common::ids::{FuncId, SourceId, StmtId, SymbolId, VarId};
+use cielo::common::ids::{ExprId, FuncId, SourceId, StmtId, SymbolId, VarId};
 use cielo::common::span::Span;
 use cielo::common::symbols::Interner;
 use cielo::ir::core::{
@@ -226,6 +226,226 @@ fn normalize_keeps_recursive_callee_callsites() {
     );
 }
 
+#[test]
+fn normalize_eliminates_dead_let_binding() {
+    let span = Span::synthetic();
+    let mut program = CoreProgram::new();
+
+    let dead_var = VarId::from_u32(30);
+    let one = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(1)),
+    });
+    let two = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(2)),
+    });
+    let ret = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(two),
+    });
+    let root = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Let {
+            binding: dead_var,
+            value: one,
+            next: ret,
+        },
+    });
+    let main_id = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(31),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::empty(),
+        body: root,
+        ct_only: false,
+        span,
+    });
+    program.set_entrypoints([main_id]);
+
+    let normalized = normalize::run(residualized(program));
+    let main_body = normalized
+        .program()
+        .function(main_id)
+        .expect("main should exist")
+        .body;
+    assert!(
+        matches!(
+            normalized.program().stmt(main_body).map(|stmt| &stmt.kind),
+            Some(StmtKind::Return(_))
+        ),
+        "dead let bindings should be removed in shrink phase"
+    );
+}
+
+#[test]
+fn normalize_commutes_val_return_to_let() {
+    let span = Span::synthetic();
+    let mut program = CoreProgram::new();
+
+    let binding = VarId::from_u32(40);
+    let value_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(9)),
+    });
+    let binding_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Var(binding),
+    });
+    let value_stmt = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(value_expr),
+    });
+    let next_stmt = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(binding_expr),
+    });
+    let root = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Val {
+            binding,
+            value: value_stmt,
+            next: next_stmt,
+        },
+    });
+    let main_id = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(41),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::empty(),
+        body: root,
+        ct_only: false,
+        span,
+    });
+    program.set_entrypoints([main_id]);
+
+    let normalized = normalize::run(residualized(program));
+    let main_body = normalized
+        .program()
+        .function(main_id)
+        .expect("main should exist")
+        .body;
+    let stmt = normalized.program().stmt(main_body).expect("root stmt");
+    match &stmt.kind {
+        StmtKind::Let {
+            binding: out_binding,
+            value,
+            next,
+        } => {
+            assert_eq!(
+                *out_binding, binding,
+                "val->let should preserve binding var"
+            );
+            assert_eq!(
+                *value, value_expr,
+                "val->let should preserve returned value expression"
+            );
+            assert_eq!(*next, next_stmt, "val->let should preserve continuation");
+        }
+        other => panic!("expected Val(Return(_)) to commute into Let, got {other:?}"),
+    }
+}
+
+#[test]
+fn normalize_inlines_once_used_parameterized_call() {
+    let span = Span::synthetic();
+    let mut program = CoreProgram::new();
+
+    let param = VarId::from_u32(50);
+    let param_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Var(param),
+    });
+    let one = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(1)),
+    });
+    let add = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Binary {
+            op: cielo::ir::core::BinaryOp::Add,
+            lhs: param_expr,
+            rhs: one,
+        },
+    });
+    let inc_body = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(add),
+    });
+    let inc_id = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(51),
+        params: vec![param],
+        param_types: vec![CoreTypeRef::Primitive(PrimitiveTypeRef::Int)],
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::empty(),
+        body: inc_body,
+        ct_only: false,
+        span,
+    });
+
+    let arg = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(41)),
+    });
+    let result_var = VarId::from_u32(52);
+    let result_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Var(result_var),
+    });
+    let main_ret = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(result_expr),
+    });
+    let main_body = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Call {
+            result: result_var,
+            callee: inc_id,
+            args: vec![arg],
+            effects: SortedEffectRow::empty(),
+            next: main_ret,
+        },
+    });
+    let main_id = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(53),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::empty(),
+        body: main_body,
+        ct_only: false,
+        span,
+    });
+    program.set_entrypoints([main_id]);
+
+    let normalized = normalize::run(residualized(program));
+    let normalized_main = normalized
+        .program()
+        .function(main_id)
+        .expect("main should exist")
+        .body;
+    assert!(
+        !contains_call_to(normalized.program(), normalized_main, inc_id),
+        "once-used pure helper with args should inline into callsite"
+    );
+
+    let root_stmt = normalized
+        .program()
+        .stmt(normalized_main)
+        .expect("normalized main root stmt");
+    match &root_stmt.kind {
+        StmtKind::Let { value, .. } => {
+            assert!(
+                !expr_contains_var(normalized.program(), *value, param),
+                "inlined expression should substitute away callee parameter vars"
+            );
+        }
+        other => panic!("expected inlined callsite to become Let, got {other:?}"),
+    }
+}
+
 fn residualized(program: CoreProgram) -> Residualized {
     let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
     Residualized::new(
@@ -290,6 +510,36 @@ fn contains_call_to(program: &CoreProgram, root: StmtId, target: FuncId) -> bool
             return true;
         }
         stack.extend(stmt.child_stmts());
+    }
+    false
+}
+
+fn expr_contains_var(program: &CoreProgram, root: ExprId, target: VarId) -> bool {
+    let mut seen_exprs = HashSet::new();
+    let mut stack = vec![root];
+    while let Some(expr_id) = stack.pop() {
+        if !seen_exprs.insert(expr_id) {
+            continue;
+        }
+        let Some(expr) = program.expr(expr_id) else {
+            continue;
+        };
+        match &expr.kind {
+            ExprKind::Var(var) => {
+                if *var == target {
+                    return true;
+                }
+            }
+            ExprKind::Unary { expr, .. } => stack.push(*expr),
+            ExprKind::Binary { lhs, rhs, .. } => {
+                stack.push(*lhs);
+                stack.push(*rhs);
+            }
+            ExprKind::PureCall { args, .. }
+            | ExprKind::MakeStruct { fields: args, .. }
+            | ExprKind::MakeEnum { fields: args, .. } => stack.extend(args.iter().copied()),
+            ExprKind::Literal(_) | ExprKind::Error(_) => {}
+        }
     }
     false
 }
