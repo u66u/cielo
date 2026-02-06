@@ -2,8 +2,8 @@ use cielo::common::ids::SourceId;
 use cielo::common::symbols::Interner;
 use cielo::ir::core::Literal;
 use cielo::{Compiler, CompilerConfig};
-use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::{env, fs};
 
 fn fresh_path(prefix: &str, ext: &str) -> std::path::PathBuf {
     let stamp = SystemTime::now()
@@ -216,4 +216,97 @@ fn main() -> Int {
     );
 
     let _ = fs::remove_file(cache_path);
+}
+
+#[test]
+fn test_query_cache_hit_and_invalidation_matrix() {
+    let temp_dir = env::temp_dir();
+    let cache_path = temp_dir.join("cielo_test_cache.tsv");
+    let _ = fs::remove_file(&cache_path); // Ensure clean state
+    let _ = fs::remove_file(cache_path.with_extension("ctdeps.tsv"));
+
+    let source_v1 = r#"
+    fn main() -> Int {
+        let x = 10 + 20;
+        let y = x * 2;
+        y
+    }
+    "#;
+
+    let source_v2 = r#"
+    fn main() -> Int {
+        let x = 10 + 21; // Changed literal -> different fingerprint
+        let y = x * 2;
+        y
+    }
+    "#;
+
+    // COLD RUN
+    let mut config = CompilerConfig::default();
+    config.ct_query_cache_path = Some(cache_path.clone());
+    let compiler_cold = Compiler::new(config.clone());
+
+    let mut interner1 = Interner::new();
+    let res_cold = compiler_cold.compile_source_v0(source_v1, SourceId::new(1), &mut interner1);
+
+    let cold_hits = res_cold.ct().eval_stats.cache_hits;
+    let cold_iters = res_cold.ct().eval_stats.iterations;
+    assert_eq!(cold_hits, 0, "Cold run should have 0 cache hits");
+    assert!(
+        cold_iters > 1,
+        "Cold run should take multiple fixpoint iterations"
+    );
+
+    // WARM RUN (PERFECT HIT)
+    let compiler_warm = Compiler::new(config.clone());
+    let mut interner2 = Interner::new();
+    let res_warm = compiler_warm.compile_source_v0(source_v1, SourceId::new(2), &mut interner2);
+
+    let warm_hits = res_warm.ct().eval_stats.cache_hits;
+    let warm_iters = res_warm.ct().eval_stats.iterations;
+
+    assert!(
+        warm_hits > 0,
+        "Warm run should successfully hit the query cache"
+    );
+    assert_eq!(
+        warm_iters, 1,
+        "Warm run must complete in exactly 1 iteration via cache load"
+    );
+
+    // both should have evaluated `10 + 20 * 2` down to the exact same Known literal count
+    assert_eq!(
+        res_cold.residual().residualize_stats.embedded_literals,
+        res_warm.residual().residualize_stats.embedded_literals,
+        "Semantic drift: Warm run embedded a different number of literals than Cold run"
+    );
+
+    // INVALIDATION: AST FINGERPRINT CHANGED
+    let compiler_miss = Compiler::new(config.clone());
+    let mut interner3 = Interner::new();
+    let res_miss = compiler_miss.compile_source_v0(source_v2, SourceId::new(3), &mut interner3);
+
+    assert_eq!(
+        res_miss.ct().eval_stats.cache_hits,
+        0,
+        "Cache must invalidate if AST fingerprint changes"
+    );
+
+    // re-warm the cache with source_v1
+    let _ = compiler_warm.compile_source_v0(source_v1, SourceId::new(4), &mut interner2);
+
+    // change target word size from default (64) to 32
+    let mut config_target_miss = config.clone();
+    config_target_miss.target.word_size_bits = 32;
+    let compiler_target_miss = Compiler::new(config_target_miss);
+
+    let mut interner4 = Interner::new();
+    let res_target_miss =
+        compiler_target_miss.compile_source_v0(source_v1, SourceId::new(5), &mut interner4);
+
+    assert_eq!(
+        res_target_miss.ct().eval_stats.cache_hits,
+        0,
+        "Cache must invalidate if TargetSpec word_size_bits changes"
+    );
 }
