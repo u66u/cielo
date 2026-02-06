@@ -28,6 +28,8 @@ fn assert_evaluate_classify_invariants(classified: &BtaClassified) {
     let program = classified.program();
     let ct = classified.ct();
     let bta = classified.bta();
+    let sema = classified.sema();
+
     assert_eq!(
         bta.stage_of_expr.len(),
         program.exprs().len(),
@@ -37,6 +39,23 @@ fn assert_evaluate_classify_invariants(classified: &BtaClassified) {
         bta.knownness_of_expr.len(),
         program.exprs().len(),
         "compiler bug: knownness table must classify every expression at Evaluate+Classify boundary"
+    );
+
+    // if these fall out of sync, Normalizer/Linearizer will panic out-of-bounds.
+    assert_eq!(
+        sema.type_of_expr.len(),
+        program.exprs().len(),
+        "compiler bug: sema.type_of_expr length diverges from program.exprs length"
+    );
+    assert_eq!(
+        sema.effects_of_expr.len(),
+        program.exprs().len(),
+        "compiler bug: sema.effects_of_expr length diverges from program.exprs length"
+    );
+    assert_eq!(
+        sema.effects_of_stmt.len(),
+        program.stmts().len(),
+        "compiler bug: sema.effects_of_stmt length diverges from program.stmts length"
     );
 
     for (expr_id, decision) in ct.branch_decisions.iter() {
@@ -79,10 +98,32 @@ fn assert_evaluate_classify_invariants(classified: &BtaClassified) {
 }
 
 fn assert_residualize_specialize_invariants(residual: &crate::pipeline::phases::Residualized) {
-    for function in residual.program().functions() {
+    let program = residual.program();
+    let bta = residual.bta();
+    let sema = residual.sema();
+
+    for function in program.functions() {
         assert!(
             function.declared_effects.is_empty(),
             "compiler bug: residualized functions must erase declared effects before normalize/lowering"
         );
     }
+
+    //after specialization, the IR should've grown. Ensure the cloner successfully
+    // expanded the tables to cover the newly cloned Stmt and Expr nodes!
+    assert_eq!(
+        bta.stage_of_expr.len(),
+        program.exprs().len(),
+        "compiler bug: GraphCloner failed to map Stage to cloned expressions"
+    );
+    assert_eq!(
+        sema.type_of_expr.len(),
+        program.exprs().len(),
+        "compiler bug: GraphCloner failed to map TypeId to cloned expressions"
+    );
+    assert_eq!(
+        sema.effects_of_stmt.len(),
+        program.stmts().len(),
+        "compiler bug: GraphCloner failed to map effects_of_stmt to cloned statements"
+    );
 }
