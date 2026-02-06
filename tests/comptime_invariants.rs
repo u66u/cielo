@@ -1,6 +1,9 @@
-use cielo::common::ids::{HandlerId, SourceId};
+use std::collections::HashSet;
+
+use cielo::common::ids::{FuncId, HandlerId, SourceId};
 use cielo::common::symbols::Interner;
 use cielo::ir::core::Literal;
+use cielo::ir::core::{ExprKind, StmtKind};
 use cielo::pipeline::phases::{Reason, Stage};
 use cielo::{Compiler, CompilerConfig};
 
@@ -163,10 +166,230 @@ fn main() -> Int {
     );
 }
 
+#[test]
+fn stage_c_normalize_invariants_hold() {
+    let src = r#"
+fn helper(x: Int) -> Int {
+  x + 1
+}
+
+fn loop() -> Int {
+  loop()
+}
+
+fn main() -> Int {
+  let x = helper(41);
+  let y = loop();
+  x
+}
+"#;
+
+    let compiler = Compiler::new(CompilerConfig::default());
+    let mut interner = Interner::new();
+    let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(2), &mut interner);
+    let staged = compiler.run_v1_evaluate_classify(core);
+    let residual = compiler.run_v1_residualize_specialize(staged);
+
+    let before_stmt_count = reachable_stmt_count(residual.program());
+    let once = compiler.run_v1_normalize(residual.clone());
+    let twice = compiler.run_v1_normalize(once.clone());
+    let once_stmt_count = reachable_stmt_count(once.program());
+    let twice_stmt_count = reachable_stmt_count(twice.program());
+
+    assert!(
+        once_stmt_count <= before_stmt_count,
+        "normalize shrink phases should not increase statement count ({once_stmt_count} > {before_stmt_count})"
+    );
+    assert_eq!(
+        once_stmt_count, twice_stmt_count,
+        "normalize should be idempotent after one shrink-inline-shrink run"
+    );
+    assert_eq!(
+        format!("{:?}", once.program()),
+        format!("{:?}", twice.program()),
+        "normalizing an already normalized program should preserve IR shape"
+    );
+
+    let recursive_funcs = collect_direct_recursive_funcs(once.program());
+    assert!(
+        !recursive_funcs.is_empty(),
+        "test fixture should contain at least one recursive function"
+    );
+    let callees = collect_stmt_call_targets(once.program());
+    assert!(
+        !callees.is_empty(),
+        "test fixture should retain runtime calls after normalize"
+    );
+    assert!(
+        callees
+            .iter()
+            .all(|callee| recursive_funcs.contains(callee)),
+        "once-used non-recursive helpers should be inlined; remaining calls should target recursive functions only"
+    );
+}
+
 fn stage_has_valid_func_ids(stage: Stage, func_count: usize) -> bool {
     match stage {
         Stage::Ct => true,
         Stage::Rt(reason) => reason_has_valid_func_ids(reason, func_count),
+    }
+}
+
+fn reachable_stmt_count(program: &cielo::ir::core::CoreProgram) -> usize {
+    let mut seen_stmts = HashSet::new();
+    let mut stack = program
+        .functions()
+        .iter()
+        .map(|function| function.body)
+        .collect::<Vec<_>>();
+    while let Some(stmt_id) = stack.pop() {
+        if !seen_stmts.insert(stmt_id) {
+            continue;
+        }
+        let Some(stmt) = program.stmt(stmt_id) else {
+            continue;
+        };
+        stack.extend(stmt.child_stmts());
+    }
+    seen_stmts.len()
+}
+
+fn collect_direct_recursive_funcs(program: &cielo::ir::core::CoreProgram) -> HashSet<FuncId> {
+    let mut recursive = HashSet::new();
+    for (idx, function) in program.functions().iter().enumerate() {
+        let func_id = FuncId::new(idx);
+        if function_calls_target(program, function.body, func_id) {
+            recursive.insert(func_id);
+        }
+    }
+    recursive
+}
+
+fn collect_stmt_call_targets(program: &cielo::ir::core::CoreProgram) -> HashSet<FuncId> {
+    let mut callees = HashSet::new();
+    for function in program.functions() {
+        collect_stmt_callees(program, function.body, &mut callees);
+    }
+    callees
+}
+
+fn collect_stmt_callees(
+    program: &cielo::ir::core::CoreProgram,
+    root: cielo::common::ids::StmtId,
+    out: &mut HashSet<FuncId>,
+) {
+    let mut stack = vec![root];
+    let mut seen_stmts = HashSet::new();
+    let mut seen_exprs = HashSet::new();
+    while let Some(stmt_id) = stack.pop() {
+        if !seen_stmts.insert(stmt_id) {
+            continue;
+        }
+        let Some(stmt) = program.stmt(stmt_id) else {
+            continue;
+        };
+        if let StmtKind::Call { callee, .. } = stmt.kind {
+            out.insert(callee);
+        }
+        for expr_id in stmt.child_exprs() {
+            collect_expr_callees(program, expr_id, out, &mut seen_exprs);
+        }
+        stack.extend(stmt.child_stmts());
+    }
+}
+
+fn collect_expr_callees(
+    program: &cielo::ir::core::CoreProgram,
+    root: cielo::common::ids::ExprId,
+    out: &mut HashSet<FuncId>,
+    seen: &mut HashSet<cielo::common::ids::ExprId>,
+) {
+    if !seen.insert(root) {
+        return;
+    }
+    let Some(expr) = program.expr(root) else {
+        return;
+    };
+    match &expr.kind {
+        ExprKind::PureCall { callee, args } => {
+            out.insert(*callee);
+            for arg in args {
+                collect_expr_callees(program, *arg, out, seen);
+            }
+        }
+        ExprKind::Unary { expr, .. } => collect_expr_callees(program, *expr, out, seen),
+        ExprKind::Binary { lhs, rhs, .. } => {
+            collect_expr_callees(program, *lhs, out, seen);
+            collect_expr_callees(program, *rhs, out, seen);
+        }
+        ExprKind::MakeStruct { fields, .. } | ExprKind::MakeEnum { fields, .. } => {
+            for field in fields {
+                collect_expr_callees(program, *field, out, seen);
+            }
+        }
+        ExprKind::Var(_) | ExprKind::Literal(_) | ExprKind::Error(_) => {}
+    }
+}
+
+fn function_calls_target(
+    program: &cielo::ir::core::CoreProgram,
+    root: cielo::common::ids::StmtId,
+    target: FuncId,
+) -> bool {
+    let mut stack = vec![root];
+    let mut seen_stmts = HashSet::new();
+    let mut seen_exprs = HashSet::new();
+    while let Some(stmt_id) = stack.pop() {
+        if !seen_stmts.insert(stmt_id) {
+            continue;
+        }
+        let Some(stmt) = program.stmt(stmt_id) else {
+            continue;
+        };
+        if matches!(stmt.kind, StmtKind::Call { callee, .. } if callee == target) {
+            return true;
+        }
+        for expr_id in stmt.child_exprs() {
+            if expr_calls_target(program, expr_id, target, &mut seen_exprs) {
+                return true;
+            }
+        }
+        stack.extend(stmt.child_stmts());
+    }
+    false
+}
+
+fn expr_calls_target(
+    program: &cielo::ir::core::CoreProgram,
+    root: cielo::common::ids::ExprId,
+    target: FuncId,
+    seen: &mut HashSet<cielo::common::ids::ExprId>,
+) -> bool {
+    if !seen.insert(root) {
+        return false;
+    }
+    let Some(expr) = program.expr(root) else {
+        return false;
+    };
+    match &expr.kind {
+        ExprKind::PureCall { callee, args } => {
+            if *callee == target {
+                return true;
+            }
+            args.iter()
+                .copied()
+                .any(|arg| expr_calls_target(program, arg, target, seen))
+        }
+        ExprKind::Unary { expr, .. } => expr_calls_target(program, *expr, target, seen),
+        ExprKind::Binary { lhs, rhs, .. } => {
+            expr_calls_target(program, *lhs, target, seen)
+                || expr_calls_target(program, *rhs, target, seen)
+        }
+        ExprKind::MakeStruct { fields, .. } | ExprKind::MakeEnum { fields, .. } => fields
+            .iter()
+            .copied()
+            .any(|field| expr_calls_target(program, field, target, seen)),
+        ExprKind::Var(_) | ExprKind::Literal(_) | ExprKind::Error(_) => false,
     }
 }
 

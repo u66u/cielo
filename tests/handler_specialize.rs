@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::fmt::Write;
 
-use cielo::common::ids::{FuncId, HandlerId, SourceId, StmtId};
+use cielo::common::ids::{ExprId, FuncId, HandlerId, SourceId, StmtId};
 use cielo::common::symbols::Interner;
 use cielo::ir::core::{CoreProgram, StmtKind};
 use cielo::pipeline::phases::{Reason, Stage};
@@ -1330,5 +1330,59 @@ fn reason_has_valid_func_ids(reason: Reason, func_count: usize) -> bool {
             func.index() < func_count
         }
         _ => true,
+    }
+}
+
+#[test]
+fn test_provenance_stability_across_specialization() {
+    let compiler = Compiler::new(CompilerConfig::default());
+    let mut interner = Interner::new();
+
+    // A classic handler specialization trigger: direct wrapper around a call
+    let source = r#"
+    effect State { fn get() -> Int }
+    
+    fn worker() -> Int {
+        do State.get() + 5
+    }
+    
+    fn main() -> Int {
+        handle worker() with State { | get(resume) => resume(10) }
+    }
+    "#;
+
+    let core = compiler.parse_and_lower_to_core(source, SourceId::new(0), &mut interner);
+    let bta = compiler.run_v1_evaluate_classify(core);
+    let residual = compiler.run_v1_residualize_specialize(bta);
+
+    // Verify that specialization actually fired
+    assert!(
+        residual.residual().specialization_stats.created > 0,
+        "Specialization failed to fire, cannot test cloner stability!"
+    );
+
+    let program = residual.program();
+    let bta_tables = residual.bta();
+    let sema = residual.sema();
+
+    // Check that EVERY expression in the new specialized program has preserved metadata
+    for (idx, _expr) in program.exprs().iter().enumerate() {
+        let expr_id = ExprId::new(idx);
+
+        assert!(
+            bta_tables.stage_of_expr.contains_key(&expr_id),
+            "Cloned expression e{} lost its Stage metadata during GraphCloner!",
+            idx
+        );
+        assert!(
+            bta_tables.knownness_of_expr.contains_key(&expr_id),
+            "Cloned expression e{} lost its Knownness metadata during GraphCloner!",
+            idx
+        );
+        assert!(
+            sema.type_of_expr.get(idx).copied().flatten().is_some(),
+            "Cloned expression e{} lost its TypeId metadata during GraphCloner!",
+            idx
+        );
     }
 }
