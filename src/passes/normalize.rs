@@ -32,6 +32,7 @@ use crate::pipeline::phases::Residualized;
 
 const MAX_SHRINK_ITERS: usize = 16;
 const MAX_SPEC_INLINE_STMTS: usize = 6;
+const MAX_SPEC_INLINE_EXPRS: usize = 24;
 
 pub fn run(residual: Residualized) -> Residualized {
     let (mut program, diagnostics, sema, mono, ct, bta, residual_tables) = residual.into_parts();
@@ -832,10 +833,7 @@ fn collect_var_uses(program: &CoreProgram, roots: &[FuncId]) -> HashMap<VarId, u
     let mut uses: HashMap<VarId, usize> = HashMap::new();
     let mut seen_stmts = HashSet::new();
     let mut seen_exprs = HashSet::new();
-    let mut stack = roots
-        .iter()
-        .filter_map(|func_id| program.function(*func_id).map(|function| function.body))
-        .collect::<Vec<_>>();
+    let mut stack = collect_analysis_roots(program, roots);
 
     while let Some(stmt_id) = stack.pop() {
         if !seen_stmts.insert(stmt_id) {
@@ -889,10 +887,7 @@ fn collect_call_counts(program: &CoreProgram, roots: &[FuncId]) -> HashMap<FuncI
     let mut calls: HashMap<FuncId, usize> = HashMap::new();
     let mut seen_stmts = HashSet::new();
     let mut seen_exprs = HashSet::new();
-    let mut stack = roots
-        .iter()
-        .filter_map(|func_id| program.function(*func_id).map(|function| function.body))
-        .collect::<Vec<_>>();
+    let mut stack = collect_analysis_roots(program, roots);
 
     while let Some(stmt_id) = stack.pop() {
         if !seen_stmts.insert(stmt_id) {
@@ -947,6 +942,18 @@ fn collect_expr_call_counts(
     }
 }
 
+fn collect_analysis_roots(program: &CoreProgram, roots: &[FuncId]) -> Vec<StmtId> {
+    let mut stack = roots
+        .iter()
+        .filter_map(|func_id| program.function(*func_id).map(|function| function.body))
+        .collect::<Vec<_>>();
+    for handler in program.handlers() {
+        stack.push(handler.return_body);
+        stack.extend(handler.clauses.iter().map(|clause| clause.body));
+    }
+    stack
+}
+
 fn collect_inline_candidates(
     program: &CoreProgram,
     roots: &[FuncId],
@@ -977,10 +984,13 @@ fn collect_inline_candidates(
             continue;
         }
 
-        let Some((ret_expr, stmt_size)) = function_inline_shape(program, function.body) else {
+        let Some((ret_expr, stmt_size, expr_size)) = function_inline_shape(program, function.body)
+        else {
             continue;
         };
-        if kind == InlineKind::Many && stmt_size > MAX_SPEC_INLINE_STMTS {
+        if kind == InlineKind::Many
+            && (stmt_size > MAX_SPEC_INLINE_STMTS || expr_size > MAX_SPEC_INLINE_EXPRS)
+        {
             continue;
         }
         let allowed_vars = function.params.iter().copied().collect::<HashSet<_>>();
@@ -999,11 +1009,11 @@ fn collect_inline_candidates(
     out
 }
 
-fn function_inline_shape(program: &CoreProgram, root: StmtId) -> Option<(ExprId, usize)> {
+fn function_inline_shape(program: &CoreProgram, root: StmtId) -> Option<(ExprId, usize, usize)> {
     let stmt_size = count_stmt_nodes(program, root);
     let stmt = program.stmt(root)?;
     match stmt.kind {
-        StmtKind::Return(expr_id) => Some((expr_id, stmt_size)),
+        StmtKind::Return(expr_id) => Some((expr_id, stmt_size, count_expr_nodes(program, expr_id))),
         _ => None,
     }
 }
@@ -1019,6 +1029,33 @@ fn count_stmt_nodes(program: &CoreProgram, root: StmtId) -> usize {
         if let Some(stmt) = program.stmt(stmt_id) {
             count = count.saturating_add(1);
             stack.extend(stmt.child_stmts());
+        }
+    }
+    count
+}
+
+fn count_expr_nodes(program: &CoreProgram, root: ExprId) -> usize {
+    let mut count = 0usize;
+    let mut stack = vec![root];
+    let mut seen = HashSet::new();
+    while let Some(expr_id) = stack.pop() {
+        if !seen.insert(expr_id) {
+            continue;
+        }
+        if let Some(expr) = program.expr(expr_id) {
+            count = count.saturating_add(1);
+            match &expr.kind {
+                ExprKind::Unary { expr, .. } => stack.push(*expr),
+                ExprKind::Binary { lhs, rhs, .. } => {
+                    stack.push(*lhs);
+                    stack.push(*rhs);
+                }
+                ExprKind::PureCall { args, .. } => stack.extend(args.iter().copied()),
+                ExprKind::MakeStruct { fields, .. } | ExprKind::MakeEnum { fields, .. } => {
+                    stack.extend(fields.iter().copied());
+                }
+                ExprKind::Var(_) | ExprKind::Literal(_) | ExprKind::Error(_) => {}
+            }
         }
     }
     count
