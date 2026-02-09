@@ -3,7 +3,8 @@ use std::collections::HashSet;
 use cielo::common::ids::{ExprId, SourceId, StmtId};
 use cielo::common::symbols::Interner;
 use cielo::ir::core::{CoreProgram, StmtKind};
-use cielo::pipeline::provenance::runtime_provenance_lines;
+use cielo::pipeline::phases::Reason;
+use cielo::pipeline::provenance::{runtime_provenance_lines, staging_root_causes};
 use cielo::{Compiler, CompilerConfig};
 
 #[test]
@@ -117,4 +118,42 @@ fn first_return_expr(program: &CoreProgram, root: StmtId) -> Option<ExprId> {
     }
 
     None
+}
+
+#[test]
+fn test_root_cause_rollup_parameter_taint() {
+    let compiler = Compiler::new(CompilerConfig::default());
+    let mut interner = Interner::new();
+
+    // `input` is RT. It taints `a`, `b`, and all the binary operations.
+    let source = r#"
+    fn main(input: Int) -> Int {
+        let a = input + 1;
+        let b = a * 2;
+        b
+    }
+    "#;
+
+    // Stop at the BTA phase so we can inspect the analytical tables
+    let core = compiler.parse_and_lower_to_core(source, SourceId::new(0), &mut interner);
+    let bta = compiler.run_v1_evaluate_classify(core);
+
+    let rollups = staging_root_causes(bta.program(), bta.bta());
+
+    // There should be exactly one distinct root cause: the `input` parameter
+    assert_eq!(rollups.len(), 1, "Expected exactly one root cause");
+
+    let root = &rollups[0];
+    assert!(
+        matches!(root.terminal_reason, Reason::Parameter { .. }),
+        "Root cause should be a parameter, got {:?}",
+        root.terminal_reason
+    );
+
+    // It should taint multiple expressions: `input`, `1`, `input + 1`, `a`, `2`, `a * 2`, `b`, etc.
+    assert!(
+        root.taint_count >= 3,
+        "Root cause should taint multiple dependent expressions, got {}",
+        root.taint_count
+    );
 }
