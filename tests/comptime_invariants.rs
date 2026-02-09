@@ -35,21 +35,72 @@ fn main() -> Int {
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
     let staged = compiler.run_v1_evaluate_classify(core);
+    let expr_count = staged.program().exprs().len();
+    let handler_count = staged.program().handlers().len();
 
     assert_eq!(
         staged.bta().stage_of_expr.len(),
-        staged.program().exprs().len(),
+        expr_count,
         "stage table must classify every expression"
     );
     assert_eq!(
         staged.bta().knownness_of_expr.len(),
-        staged.program().exprs().len(),
+        expr_count,
         "knownness table must classify every expression"
     );
     assert_eq!(
         staged.bta().handler_discharge.len(),
-        staged.program().handlers().len(),
+        handler_count,
         "handler discharge table must classify every handler"
+    );
+
+    assert!(
+        staged
+            .ct()
+            .ct_cache
+            .keys()
+            .all(|expr_id| expr_id.index() < expr_count),
+        "ct cache must never contain out-of-bounds expression ids"
+    );
+    assert!(
+        staged
+            .ct()
+            .branch_decisions
+            .keys()
+            .all(|expr_id| expr_id.index() < expr_count),
+        "branch decision table must never contain out-of-bounds expression ids"
+    );
+    assert!(
+        staged
+            .bta()
+            .stage_of_expr
+            .keys()
+            .all(|expr_id| expr_id.index() < expr_count),
+        "stage table must never contain out-of-bounds expression ids"
+    );
+    assert!(
+        staged
+            .bta()
+            .knownness_of_expr
+            .keys()
+            .all(|expr_id| expr_id.index() < expr_count),
+        "knownness table must never contain out-of-bounds expression ids"
+    );
+    assert!(
+        staged
+            .bta()
+            .handler_discharge
+            .keys()
+            .all(|handler_id| handler_id.index() < handler_count),
+        "handler discharge table must never contain out-of-bounds handler ids"
+    );
+    assert!(
+        staged
+            .bta()
+            .clause_discharge
+            .keys()
+            .all(|handler_id| handler_id.index() < handler_count),
+        "clause discharge table must never contain out-of-bounds handler ids"
     );
 
     for (expr_id, decision) in staged.ct().branch_decisions.iter() {
@@ -106,6 +157,9 @@ fn main() -> Int {
     let staged = compiler.run_v1_evaluate_classify(core);
     let residual = compiler.run_v1_residualize_specialize(staged);
     let func_count = residual.program().functions().len();
+    let expr_count = residual.program().exprs().len();
+    let stmt_count = residual.program().stmts().len();
+    let handler_count = residual.program().handlers().len();
 
     assert!(
         residual
@@ -115,6 +169,38 @@ fn main() -> Int {
             .all(|function| function.declared_effects.is_empty()),
         "residualized functions must erase declared effects before normalize/lowering"
     );
+    assert_eq!(
+        residual.sema().type_of_expr.len(),
+        expr_count,
+        "sema.type_of_expr must stay aligned with residual expressions"
+    );
+    assert_eq!(
+        residual.sema().effects_of_expr.len(),
+        expr_count,
+        "sema.effects_of_expr must stay aligned with residual expressions"
+    );
+    assert_eq!(
+        residual.sema().effects_of_stmt.len(),
+        stmt_count,
+        "sema.effects_of_stmt must stay aligned with residual statements"
+    );
+    assert!(
+        residual
+            .ct()
+            .ct_cache
+            .keys()
+            .all(|expr_id| expr_id.index() < expr_count),
+        "ct cache must not retain out-of-bounds expression ids after specialization remap"
+    );
+    assert!(
+        residual
+            .ct()
+            .branch_decisions
+            .keys()
+            .all(|expr_id| expr_id.index() < expr_count),
+        "branch decision table must not retain out-of-bounds expression ids after specialization remap"
+    );
+
     assert!(
         residual
             .residual()
@@ -133,6 +219,51 @@ fn main() -> Int {
             }),
         "monomorphization summary ids must stay within compacted function id bounds"
     );
+    assert!(
+        residual
+            .bta()
+            .stage_of_expr
+            .keys()
+            .all(|expr_id| expr_id.index() < expr_count),
+        "bta.stage_of_expr must not contain out-of-bounds expression ids after specialization remap"
+    );
+    assert!(
+        residual
+            .bta()
+            .knownness_of_expr
+            .keys()
+            .all(|expr_id| expr_id.index() < expr_count),
+        "bta.knownness_of_expr must not contain out-of-bounds expression ids after specialization remap"
+    );
+    assert!(
+        residual
+            .bta()
+            .handler_discharge
+            .keys()
+            .all(|handler_id| handler_id.index() < handler_count),
+        "bta.handler_discharge must not contain out-of-bounds handler ids after specialization remap"
+    );
+    assert!(
+        residual
+            .bta()
+            .clause_discharge
+            .keys()
+            .all(|handler_id| handler_id.index() < handler_count),
+        "bta.clause_discharge must not contain out-of-bounds handler ids after specialization remap"
+    );
+    for (handler_idx, handler) in residual.program().handlers().iter().enumerate() {
+        let handler_id = HandlerId::new(handler_idx);
+        let clauses = residual
+            .bta()
+            .clause_discharge
+            .get(&handler_id)
+            .expect("missing clause discharge table entry");
+        assert_eq!(
+            clauses.len(),
+            handler.clauses.len(),
+            "handler clause discharge arity must remain aligned after specialization remap"
+        );
+    }
     assert!(
         residual
             .bta()
