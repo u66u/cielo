@@ -19,6 +19,7 @@ use cielo::pipeline::ct_invalidation::{
 use cielo::pipeline::ct_query_cache::sidecar_path as query_cache_sidecar_path;
 use cielo::pipeline::phases::{Residualized, Stage};
 use cielo::pipeline::provenance::runtime_provenance_lines;
+use cielo::pipeline::staging_diagnostics::{render_stage_b_counter_summary, staging_pass_counters};
 use cielo::pipeline::staging_diff::{
     SnapshotStage, collect_snapshot, diff_snapshots, load_snapshot as load_stage_snapshot,
     save_snapshot as save_stage_snapshot,
@@ -189,6 +190,10 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
             ct_count,
             total,
             (ct_count as f64 / total as f64) * 100.0
+        );
+        println!(
+            "{}\n",
+            render_stage_b_counter_summary(staging_pass_counters(&residual))
         );
 
         println!("Top RT root causes:");
@@ -383,6 +388,10 @@ fn dump_sema_summary(residual: &Residualized) {
             "ct-eval caveat: float folds currently use host FP behavior (strict target emulation deferred)"
         );
     }
+    println!(
+        "{}",
+        render_stage_b_counter_summary(staging_pass_counters(residual))
+    );
 
     if rt_exprs == 0 {
         return;
