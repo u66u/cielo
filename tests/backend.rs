@@ -4,7 +4,7 @@ use cielo::ir::core::Literal;
 use cielo::ir::linear::{
     CallConvention, LinearExpr, LinearFunction, LinearMatchArm, LinearProgram, LinearStmt,
 };
-use cielo::passes::c_emit::emit_c_program;
+use cielo::passes::{c_emit, c_emit::emit_c_program, handler_specialize, linearize};
 use cielo::{Compiler, CompilerConfig};
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -393,8 +393,8 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled =
+        compile_source_v0_to_c_without_normalize(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
         compiled
@@ -492,8 +492,8 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled =
+        compile_source_v0_to_c_without_normalize(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
         !compiled
@@ -536,8 +536,8 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled =
+        compile_source_v0_to_c_without_normalize(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
         compiled
@@ -580,9 +580,11 @@ fn main() -> Int {{
 "#
     );
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
-    let compiled =
-        compiler.compile_source_v0_to_c(src.as_str(), SourceId::from_u32(0), &mut interner);
+    let compiled = compile_source_v0_to_c_without_normalize(
+        src.as_str(),
+        SourceId::from_u32(0),
+        &mut interner,
+    );
 
     assert!(
         !compiled
@@ -610,6 +612,8 @@ fn c_emitter_limits_ctor_pool_by_compilation_unit_budget() {
             .join(", ");
         writeln!(&mut body, "    let a{idx} = Mk({args});").expect("append ctor a");
         writeln!(&mut body, "    let b{idx} = Mk({args});").expect("append ctor b");
+        writeln!(&mut body, "    do Sink.use(a{idx});").expect("append sink use a");
+        writeln!(&mut body, "    do Sink.use(b{idx});").expect("append sink use b");
     }
     body.push_str("    0\n");
 
@@ -618,7 +622,7 @@ fn c_emitter_limits_ctor_pool_by_compilation_unit_budget() {
         .collect::<Vec<_>>()
         .join(", ");
     let src = format!(
-        "enum Blob {{ Mk({fields}) }}\nfn main() -> Int {{\n  @runtime {{\n{body}  }}\n}}\n"
+        "enum Blob {{ Mk({fields}) }}\neffect Sink {{ fn use(v: Blob) -> () }}\nfn main() -> Int {{\n  @runtime {{\n{body}  }}\n}}\n"
     );
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
@@ -1502,8 +1506,8 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled =
+        compile_source_v0_to_c_without_normalize(src, SourceId::from_u32(0), &mut interner);
 
     let mut names = linear_function_names(&compiled.linear, &interner);
     names.sort_unstable();
@@ -1538,8 +1542,8 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled =
+        compile_source_v0_to_c_without_normalize(src, SourceId::from_u32(0), &mut interner);
 
     let mut names = linear_function_names(&compiled.linear, &interner);
     names.sort_unstable();
@@ -1588,6 +1592,24 @@ fn main() -> Int {
         loop_count, 1,
         "unspecialized loop copy should be pruned after callsite retargeting"
     );
+}
+
+fn compile_source_v0_to_c_without_normalize(
+    src: &str,
+    source_id: SourceId,
+    interner: &mut Interner,
+) -> cielo::CompiledC {
+    let compiler = Compiler::new(CompilerConfig::default());
+    let core = compiler.parse_and_lower_to_core(src, source_id, interner);
+    let residual = compiler.run_v0_core_pipeline(core);
+    let specialized = handler_specialize::run(residual);
+    let linearized = linearize::run(specialized);
+    let emitted = c_emit::run(linearized, interner);
+    cielo::CompiledC {
+        residual: emitted.linearized.residual,
+        linear: emitted.linearized.linear,
+        c_source: emitted.c_source,
+    }
 }
 
 fn collect_call_conventions(

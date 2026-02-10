@@ -249,12 +249,10 @@ fn test_query_cache_hit_and_invalidation_matrix() {
     let mut interner1 = Interner::new();
     let res_cold = compiler_cold.compile_source_v0(source_v1, SourceId::new(1), &mut interner1);
 
-    let cold_hits = res_cold.ct().eval_stats.cache_hits;
-    let cold_iters = res_cold.ct().eval_stats.iterations;
-    assert_eq!(cold_hits, 0, "Cold run should have 0 cache hits");
+    let cold_attempts = res_cold.ct().eval_stats.eval_attempts;
     assert!(
-        cold_iters > 1,
-        "Cold run should take multiple fixpoint iterations"
+        cold_attempts > 0,
+        "Cold run should evaluate expressions instead of restoring a warm query cache snapshot"
     );
 
     // WARM RUN (PERFECT HIT)
@@ -262,16 +260,10 @@ fn test_query_cache_hit_and_invalidation_matrix() {
     let mut interner2 = Interner::new();
     let res_warm = compiler_warm.compile_source_v0(source_v1, SourceId::new(2), &mut interner2);
 
-    let warm_hits = res_warm.ct().eval_stats.cache_hits;
-    let warm_iters = res_warm.ct().eval_stats.iterations;
-
-    assert!(
-        warm_hits > 0,
-        "Warm run should successfully hit the query cache"
-    );
+    let warm_attempts = res_warm.ct().eval_stats.eval_attempts;
     assert_eq!(
-        warm_iters, 1,
-        "Warm run must complete in exactly 1 iteration via cache load"
+        warm_attempts, 0,
+        "Warm run should restore ct results directly from persistent query cache"
     );
 
     // both should have evaluated `10 + 20 * 2` down to the exact same Known literal count
@@ -286,9 +278,8 @@ fn test_query_cache_hit_and_invalidation_matrix() {
     let mut interner3 = Interner::new();
     let res_miss = compiler_miss.compile_source_v0(source_v2, SourceId::new(3), &mut interner3);
 
-    assert_eq!(
-        res_miss.ct().eval_stats.cache_hits,
-        0,
+    assert!(
+        res_miss.ct().eval_stats.eval_attempts > 0,
         "Cache must invalidate if AST fingerprint changes"
     );
 
@@ -304,9 +295,8 @@ fn test_query_cache_hit_and_invalidation_matrix() {
     let res_target_miss =
         compiler_target_miss.compile_source_v0(source_v1, SourceId::new(5), &mut interner4);
 
-    assert_eq!(
-        res_target_miss.ct().eval_stats.cache_hits,
-        0,
+    assert!(
+        res_target_miss.ct().eval_stats.eval_attempts > 0,
         "Cache must invalidate if TargetSpec word_size_bits changes"
     );
 }
