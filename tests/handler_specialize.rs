@@ -1338,18 +1338,22 @@ fn test_provenance_stability_across_specialization() {
     let compiler = Compiler::new(CompilerConfig::default());
     let mut interner = Interner::new();
 
-    // A classic handler specialization trigger: direct wrapper around a call
+    // A direct wrapper around a handled call should always specialize in v1.
     let source = r#"
-    effect State { fn get() -> Int }
-    
-    fn worker() -> Int {
-        do State.get() + 5
-    }
-    
-    fn main() -> Int {
-        handle worker() with State { | get(resume) => resume(10) }
-    }
-    "#;
+effect Console { fn print(s: String) -> () }
+
+fn worker() -> Int with Console {
+  do Console.print("x");
+  5
+}
+
+fn main() -> Int {
+  let x = handle { worker() } with Console {
+    | print(s) => 10
+  };
+  x
+}
+"#;
 
     let core = compiler.parse_and_lower_to_core(source, SourceId::new(0), &mut interner);
     let bta = compiler.run_v1_evaluate_classify(core);

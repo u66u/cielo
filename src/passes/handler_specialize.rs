@@ -24,8 +24,10 @@ use crate::ir::core::{
     CoreProgram, ExprKind, ExprNode, FunctionDecl, HandlerDef, Literal, StmtKind, StmtNode,
 };
 use crate::pipeline::phases::{
-    BtaTables, Reason, Residualized, SemanticTables, SpecializationStats, Stage,
+    BtaTables, CtPropagationTables, Reason, Residualized, SemanticTables, SpecializationStats,
+    Stage,
 };
+use crate::sema::effect::SortedEffectRow;
 
 const MAX_SPECIALIZATIONS_PER_CALLEE: usize = 8;
 const MAX_TOTAL_SPECIALIZATIONS: usize = 256;
@@ -33,6 +35,7 @@ const MAX_TOTAL_SPECIALIZATIONS: usize = 256;
 pub fn run(residual: Residualized) -> Residualized {
     let (mut program, diagnostics, mut sema, mut mono, ct, mut bta, mut residual_tables) =
         residual.into_parts();
+    synchronize_semantic_tables(&program, &mut sema);
 
     residual_tables.specialization_stats =
         specialize_handle_wrapped_calls(&mut program, &mut bta, &mut sema);
@@ -41,7 +44,8 @@ pub fn run(residual: Residualized) -> Residualized {
     mono.remap_func_ids(&func_remap);
     bta.remap_func_ids(&func_remap);
     residual_tables.remap_func_ids(&func_remap);
-    assert_remap_integrity(&program, &mono, &bta, &residual_tables);
+    synchronize_semantic_tables(&program, &mut sema);
+    assert_remap_integrity(&program, &sema, &mono, &ct, &bta, &residual_tables);
     Residualized::new(program, diagnostics, sema, mono, ct, bta, residual_tables)
 }
 
@@ -79,7 +83,7 @@ fn specialize_handle_wrapped_calls(
         ) else {
             continue;
         };
-        if rewrite_direct_handle_callsite(program, &candidate, specialized_callee) {
+        if rewrite_direct_handle_callsite(program, sema, &candidate, specialized_callee) {
             stats.rewrites = stats.rewrites.saturating_add(1);
         }
     }
@@ -308,6 +312,7 @@ fn shape_for_handler(
 
 fn rewrite_direct_handle_callsite(
     program: &mut CoreProgram,
+    sema: &mut SemanticTables,
     candidate: &SpecializeCandidate,
     specialized_callee: FuncId,
 ) -> bool {
@@ -315,6 +320,7 @@ fn rewrite_direct_handle_callsite(
     let mut rewritten_visiting = HashSet::new();
     let Some(replacement) = build_rewritten_body(
         program,
+        sema,
         candidate.body_stmt,
         specialized_callee,
         &mut rewritten_cache,
@@ -335,6 +341,7 @@ fn rewrite_direct_handle_callsite(
 
 fn build_rewritten_body(
     program: &mut CoreProgram,
+    sema: &mut SemanticTables,
     body_stmt: StmtId,
     specialized_callee: FuncId,
     cache: &mut HashMap<StmtId, Option<StmtId>>,
@@ -361,7 +368,7 @@ fn build_rewritten_body(
             next,
         } => {
             let rewritten_next =
-                build_rewritten_stmt(program, next, specialized_callee, cache, visiting)?;
+                build_rewritten_stmt(program, sema, next, specialized_callee, cache, visiting)?;
             Some(StmtKind::Let {
                 binding,
                 value,
@@ -374,7 +381,7 @@ fn build_rewritten_body(
             next,
         } if is_forwarding_tail_of_var(program, next, binding) => {
             let rewritten_call =
-                build_rewritten_stmt(program, value, specialized_callee, cache, visiting)?;
+                build_rewritten_stmt(program, sema, value, specialized_callee, cache, visiting)?;
             Some(StmtKind::Val {
                 binding,
                 value: rewritten_call,
@@ -386,10 +393,22 @@ fn build_rewritten_body(
             then_branch,
             else_branch,
         } => {
-            let rewritten_then =
-                build_rewritten_stmt(program, then_branch, specialized_callee, cache, visiting)?;
-            let rewritten_else =
-                build_rewritten_stmt(program, else_branch, specialized_callee, cache, visiting)?;
+            let rewritten_then = build_rewritten_stmt(
+                program,
+                sema,
+                then_branch,
+                specialized_callee,
+                cache,
+                visiting,
+            )?;
+            let rewritten_else = build_rewritten_stmt(
+                program,
+                sema,
+                else_branch,
+                specialized_callee,
+                cache,
+                visiting,
+            )?;
             Some(StmtKind::If {
                 cond,
                 then_branch: rewritten_then,
@@ -408,6 +427,7 @@ fn build_rewritten_body(
                     binders: arm.binders,
                     body: build_rewritten_stmt(
                         program,
+                        sema,
                         arm.body,
                         specialized_callee,
                         cache,
@@ -419,6 +439,7 @@ fn build_rewritten_body(
             let rewritten_default = if let Some(default_stmt) = default {
                 Some(build_rewritten_stmt(
                     program,
+                    sema,
                     default_stmt,
                     specialized_callee,
                     cache,
@@ -435,10 +456,11 @@ fn build_rewritten_body(
         }
         StmtKind::Stage { stage, body, next } => {
             let rewritten_body =
-                build_rewritten_stmt(program, body, specialized_callee, cache, visiting)?;
+                build_rewritten_stmt(program, sema, body, specialized_callee, cache, visiting)?;
             let rewritten_next = if let Some(next_stmt) = next {
                 Some(build_rewritten_stmt(
                     program,
+                    sema,
                     next_stmt,
                     specialized_callee,
                     cache,
@@ -459,6 +481,7 @@ fn build_rewritten_body(
 
 fn build_rewritten_stmt(
     program: &mut CoreProgram,
+    sema: &mut SemanticTables,
     stmt_id: StmtId,
     specialized_callee: FuncId,
     cache: &mut HashMap<StmtId, Option<StmtId>>,
@@ -475,8 +498,20 @@ fn build_rewritten_stmt(
     let resolved = match program.stmt(stmt_id) {
         Some(stmt) => {
             let span = stmt.span;
-            let kind = build_rewritten_body(program, stmt_id, specialized_callee, cache, visiting)?;
-            Some(program.push_stmt(StmtNode { span, kind }))
+            let kind =
+                build_rewritten_body(program, sema, stmt_id, specialized_callee, cache, visiting)?;
+            let cloned = program.push_stmt(StmtNode { span, kind });
+            let effects = sema
+                .effects_of_stmt
+                .get(stmt_id.index())
+                .cloned()
+                .unwrap_or_else(SortedEffectRow::empty);
+            if sema.effects_of_stmt.len() <= cloned.index() {
+                sema.effects_of_stmt
+                    .resize(cloned.index() + 1, SortedEffectRow::empty());
+            }
+            sema.effects_of_stmt[cloned.index()] = effects;
+            Some(cloned)
         }
         None => None,
     };
@@ -543,12 +578,16 @@ fn ensure_specialized(
         },
     });
 
+    let wrapped_effects = sema
+        .effects_of_stmt
+        .get(candidate.handle_stmt.index())
+        .cloned()
+        .unwrap_or_else(SortedEffectRow::empty);
     if sema.effects_of_stmt.len() <= wrapped_body.index() {
-        sema.effects_of_stmt.resize(
-            wrapped_body.index() + 1,
-            crate::sema::effect::SortedEffectRow::empty(),
-        );
+        sema.effects_of_stmt
+            .resize(wrapped_body.index() + 1, SortedEffectRow::empty());
     }
+    sema.effects_of_stmt[wrapped_body.index()] = wrapped_effects;
 
     if let Some(function) = program.function_mut(specialized_id) {
         function.body = wrapped_body;
@@ -623,11 +662,48 @@ fn has_varying_recursive_wrapper_shapes(
 
 fn assert_remap_integrity(
     program: &CoreProgram,
+    sema: &SemanticTables,
     mono: &crate::pipeline::phases::MonomorphizationSummary,
+    ct: &CtPropagationTables,
     bta: &crate::pipeline::phases::BtaTables,
     residual: &crate::pipeline::phases::ResidualTables,
 ) {
     let function_count = program.functions().len();
+    let expr_count = program.exprs().len();
+    let stmt_count = program.stmts().len();
+    let handler_count = program.handlers().len();
+
+    assert_eq!(
+        sema.type_of_expr.len(),
+        expr_count,
+        "compiler bug: sema.type_of_expr must stay in sync after specialization remap"
+    );
+    assert_eq!(
+        sema.effects_of_expr.len(),
+        expr_count,
+        "compiler bug: sema.effects_of_expr must stay in sync after specialization remap"
+    );
+    assert_eq!(
+        sema.effects_of_stmt.len(),
+        stmt_count,
+        "compiler bug: sema.effects_of_stmt must stay in sync after specialization remap"
+    );
+
+    for expr_id in ct.ct_cache.keys() {
+        assert!(
+            expr_id.index() < expr_count,
+            "compiler bug: ct_cache contains out-of-bounds expr id e{}",
+            expr_id.as_u32()
+        );
+    }
+    for expr_id in ct.branch_decisions.keys() {
+        assert!(
+            expr_id.index() < expr_count,
+            "compiler bug: branch_decisions contains out-of-bounds expr id e{}",
+            expr_id.as_u32()
+        );
+    }
+
     for (source, monos) in &mono.source_to_mono {
         assert_func_id_in_bounds(*source, function_count, "monomorphization source");
         for mono_id in monos {
@@ -635,11 +711,45 @@ fn assert_remap_integrity(
         }
     }
 
+    for expr_id in bta.stage_of_expr.keys() {
+        assert!(
+            expr_id.index() < expr_count,
+            "compiler bug: bta.stage_of_expr contains out-of-bounds expr id e{}",
+            expr_id.as_u32()
+        );
+    }
     for stage in bta.stage_of_expr.values() {
         assert_stage_reason_in_bounds(*stage, function_count, "bta.stage_of_expr");
     }
     for stage in bta.stage_of_var.values() {
         assert_stage_reason_in_bounds(*stage, function_count, "bta.stage_of_var");
+    }
+    for expr_id in bta.knownness_of_expr.keys() {
+        assert!(
+            expr_id.index() < expr_count,
+            "compiler bug: bta.knownness_of_expr contains out-of-bounds expr id e{}",
+            expr_id.as_u32()
+        );
+    }
+    for handler_id in bta.handler_discharge.keys() {
+        assert!(
+            handler_id.index() < handler_count,
+            "compiler bug: bta.handler_discharge contains out-of-bounds handler id h{}",
+            handler_id.as_u32()
+        );
+    }
+    for (handler_id, clauses) in bta.clause_discharge.iter() {
+        let expected = program
+            .handlers()
+            .get(handler_id.index())
+            .map(|handler| handler.clauses.len())
+            .unwrap_or(0);
+        assert_eq!(
+            clauses.len(),
+            expected,
+            "compiler bug: bta.clause_discharge arity mismatch for handler h{}",
+            handler_id.as_u32()
+        );
     }
     for discharge in bta.handler_discharge.values() {
         if let Some(reason) = discharge.reason {
@@ -665,6 +775,36 @@ fn assert_remap_integrity(
         residual.specialization_stats.rewrites <= residual.specialization_stats.candidates_seen,
         "compiler bug: specialization rewrite count exceeds candidates seen"
     );
+}
+
+fn synchronize_semantic_tables(program: &CoreProgram, sema: &mut SemanticTables) {
+    let expr_count = program.exprs().len();
+    let stmt_count = program.stmts().len();
+
+    assert!(
+        sema.type_of_expr.len() <= expr_count,
+        "compiler bug: sema.type_of_expr exceeds expr arena before specialization remap"
+    );
+    assert!(
+        sema.effects_of_expr.len() <= expr_count,
+        "compiler bug: sema.effects_of_expr exceeds expr arena before specialization remap"
+    );
+    assert!(
+        sema.effects_of_stmt.len() <= stmt_count,
+        "compiler bug: sema.effects_of_stmt exceeds stmt arena before specialization remap"
+    );
+
+    if sema.type_of_expr.len() < expr_count {
+        sema.type_of_expr.resize(expr_count, None);
+    }
+    if sema.effects_of_expr.len() < expr_count {
+        sema.effects_of_expr
+            .resize(expr_count, SortedEffectRow::empty());
+    }
+    if sema.effects_of_stmt.len() < stmt_count {
+        sema.effects_of_stmt
+            .resize(stmt_count, SortedEffectRow::empty());
+    }
 }
 
 fn assert_stage_reason_in_bounds(stage: Stage, function_count: usize, context: &str) {
@@ -1285,15 +1425,18 @@ impl<'a> GraphCloner<'a> {
             kind,
         });
 
-        if let Some(effects) = self.sema.effects_of_stmt.get(source.index()).cloned() {
-            if self.sema.effects_of_stmt.len() <= cloned.index() {
-                self.sema.effects_of_stmt.resize(
-                    cloned.index() + 1,
-                    crate::sema::effect::SortedEffectRow::empty(),
-                );
-            }
-            self.sema.effects_of_stmt[cloned.index()] = effects;
+        let effects = self
+            .sema
+            .effects_of_stmt
+            .get(source.index())
+            .cloned()
+            .unwrap_or_else(SortedEffectRow::empty);
+        if self.sema.effects_of_stmt.len() <= cloned.index() {
+            self.sema
+                .effects_of_stmt
+                .resize(cloned.index() + 1, SortedEffectRow::empty());
         }
+        self.sema.effects_of_stmt[cloned.index()] = effects;
 
         self.stmt_map.insert(source, cloned);
         cloned
@@ -1352,27 +1495,29 @@ impl<'a> GraphCloner<'a> {
         if let Some(known) = self.bta.knownness_of_expr.get(&source).copied() {
             self.bta.knownness_of_expr.insert(cloned, known);
         }
-        if let Some(ty) = self
+        let ty = self
             .sema
             .type_of_expr
             .get(source.index())
             .copied()
-            .flatten()
-        {
-            if self.sema.type_of_expr.len() <= cloned.index() {
-                self.sema.type_of_expr.resize(cloned.index() + 1, None);
-            }
-            self.sema.type_of_expr[cloned.index()] = Some(ty);
+            .flatten();
+        if self.sema.type_of_expr.len() <= cloned.index() {
+            self.sema.type_of_expr.resize(cloned.index() + 1, None);
         }
-        if let Some(effects) = self.sema.effects_of_expr.get(source.index()).cloned() {
-            if self.sema.effects_of_expr.len() <= cloned.index() {
-                self.sema.effects_of_expr.resize(
-                    cloned.index() + 1,
-                    crate::sema::effect::SortedEffectRow::empty(),
-                );
-            }
-            self.sema.effects_of_expr[cloned.index()] = effects;
+        self.sema.type_of_expr[cloned.index()] = ty;
+
+        let effects = self
+            .sema
+            .effects_of_expr
+            .get(source.index())
+            .cloned()
+            .unwrap_or_else(SortedEffectRow::empty);
+        if self.sema.effects_of_expr.len() <= cloned.index() {
+            self.sema
+                .effects_of_expr
+                .resize(cloned.index() + 1, SortedEffectRow::empty());
         }
+        self.sema.effects_of_expr[cloned.index()] = effects;
 
         self.expr_map.insert(source, cloned);
         cloned
