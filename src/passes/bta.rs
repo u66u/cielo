@@ -47,9 +47,9 @@ pub fn run(ct: CtPropagated) -> BtaClassified {
     for function in program.functions() {
         apply_stage_directives(&program, function.body, None, &mut bta, &mut visited);
     }
+    // putting it all together
     enforce_persistability_boundaries(&program, &sema, &mut bta, &mut diagnostics);
     propagate_runtime_reasons(&program, &mut bta);
-
     classify_non_thunkable_effects(&program, &sema, &mut bta);
     classify_handler_discharge(&program, &sema, &mut bta);
     enforce_ct_only_calls(&program, &sema, &mut bta, &mut diagnostics);

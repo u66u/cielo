@@ -163,7 +163,8 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
     }
 
     let specialized = handler_specialize::run(residual.clone());
-    let linearized = linearize::run(specialized);
+    let normalized = cielo::passes::normalize::run(specialized);
+    let linearized = linearize::run(normalized);
     if should_dump(cli, DumpKind::Linear) {
         println!("=== Linear IR ===\n{:#?}", linearized.linear);
     }
