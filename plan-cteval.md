@@ -33,10 +33,10 @@ Scope:
 
 - [x] Add branch-decision recompute/merge for evaluator-added cache entries.
 - [x] Add tests for branch-decision parity on folded call conditions.
-- [ ] Add tests for conservative behavior on unsupported statements (`Match`, `Handle`, `Perform`).
-- [ ] Add tests for effectful callee no-fold guarantees.
-- [ ] Add tests for stage-block interaction (`@comptime` accepted, `@runtime` rejected in evaluator path).
-- [ ] Add tests for call-depth budget determinism.
+- [x] Add tests for conservative behavior on unsupported statements (`Match`, `Handle`, `Perform`).
+- [x] Add tests for effectful callee no-fold guarantees.
+- [x] Add tests for stage-block interaction (`@comptime` accepted, `@runtime` rejected in evaluator path).
+- [x] Add tests for call-depth budget determinism.
 
 ## CTE-3 Integration Gates
 
