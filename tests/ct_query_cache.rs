@@ -219,6 +219,118 @@ fn main() -> Int {
 }
 
 #[test]
+fn fused_stage_a_query_cache_parity_matrix_hit_miss_and_invalidation() {
+    let cache_path = fresh_path("cielo_ct_query_cache_stage_a_matrix", "tsv");
+    let src_a = r#"
+fn main() -> Int {
+  let x = 2147483648;
+  x
+}
+"#;
+    let src_b = r#"
+fn main() -> Int {
+  let x = 2147483649;
+  x
+}
+"#;
+
+    let mut cfg_64 = CompilerConfig::default();
+    cfg_64.ct_query_cache_path = Some(cache_path.clone());
+    let compiler_64 = Compiler::new(cfg_64);
+
+    let mut interner_1 = Interner::new();
+    let cold_core =
+        compiler_64.parse_and_lower_to_core(src_a, SourceId::from_u32(10), &mut interner_1);
+    let cold_64 = compiler_64.run_v1_evaluate_classify(cold_core);
+    assert!(
+        cold_64.ct().eval_stats.eval_attempts > 0,
+        "fused matrix[miss-cold] should compute ct cache on first Stage-A run"
+    );
+    assert!(
+        cold_64
+            .ct()
+            .ct_cache
+            .values()
+            .any(|lit| matches!(lit, Literal::Int(2_147_483_648))),
+        "fused Stage-A 64-bit target should preserve wide folded literal value"
+    );
+
+    let mut interner_2 = Interner::new();
+    let hit_core = compiler_64.parse_and_lower_to_core(src_a, SourceId::from_u32(11), &mut interner_2);
+    let hit_64 = compiler_64.run_v1_evaluate_classify(hit_core);
+    assert_eq!(
+        hit_64.ct().eval_stats.eval_attempts,
+        0,
+        "fused matrix[hit] should reuse persistent cache when key+deps+fingerprint match"
+    );
+    assert_eq!(
+        cold_64.bta().stage_of_expr.len(),
+        hit_64.bta().stage_of_expr.len(),
+        "cache hits must preserve fused Stage-A table coverage"
+    );
+    for (expr_id, cold_stage) in cold_64.bta().stage_of_expr.iter() {
+        assert_eq!(
+            hit_64.bta().stage_of_expr.get(&expr_id),
+            Some(cold_stage),
+            "cache hits must preserve fused Stage-A classifications at e{}",
+            expr_id.as_u32()
+        );
+    }
+
+    let mut cfg_32 = CompilerConfig::default();
+    cfg_32.target.word_size_bits = 32;
+    cfg_32.ct_query_cache_path = Some(cache_path.clone());
+    let compiler_32 = Compiler::new(cfg_32);
+
+    let mut interner_3 = Interner::new();
+    let miss_target_core =
+        compiler_32.parse_and_lower_to_core(src_a, SourceId::from_u32(12), &mut interner_3);
+    let miss_target = compiler_32.run_v1_evaluate_classify(miss_target_core);
+    assert!(
+        miss_target.ct().eval_stats.eval_attempts > 0,
+        "fused matrix[invalidate-target] should invalidate cache when target key changes"
+    );
+    assert!(
+        miss_target
+            .ct()
+            .ct_cache
+            .values()
+            .any(|lit| matches!(lit, Literal::Int(-2_147_483_648))),
+        "fused Stage-A target invalidation should recompute and normalize folded literal"
+    );
+
+    let mut interner_4 = Interner::new();
+    let miss_fp_core =
+        compiler_32.parse_and_lower_to_core(src_b, SourceId::from_u32(13), &mut interner_4);
+    let miss_fingerprint = compiler_32.run_v1_evaluate_classify(miss_fp_core);
+    assert!(
+        miss_fingerprint.ct().eval_stats.eval_attempts > 0,
+        "fused matrix[invalidate-fingerprint] should invalidate cache when source changes"
+    );
+    assert!(
+        miss_fingerprint
+            .ct()
+            .ct_cache
+            .values()
+            .any(|lit| matches!(lit, Literal::Int(-2_147_483_647))),
+        "fused Stage-A fingerprint invalidation should recompute folded values for new source"
+    );
+
+    let mut interner_5 = Interner::new();
+    let hit_fp_core =
+        compiler_32.parse_and_lower_to_core(src_b, SourceId::from_u32(14), &mut interner_5);
+    let hit_fingerprint = compiler_32.run_v1_evaluate_classify(hit_fp_core);
+    assert_eq!(
+        hit_fingerprint.ct().eval_stats.eval_attempts,
+        0,
+        "fused matrix[hit-after-fingerprint] should hit cache after source-specific recompute"
+    );
+
+    let _ = fs::remove_file(cache_path.clone());
+    let _ = fs::remove_file(cache_path.with_extension("ctdeps.tsv"));
+}
+
+#[test]
 fn test_query_cache_hit_and_invalidation_matrix() {
     let temp_dir = env::temp_dir();
     let cache_path = temp_dir.join("cielo_test_cache.tsv");
