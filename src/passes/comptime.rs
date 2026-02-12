@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::passes::{bta, ct_propagate, handler_specialize, residualize};
+use crate::passes::{bta, ct_eval, handler_specialize, residualize};
 use crate::pipeline::compiler::TargetSpec;
 use crate::pipeline::phases::{
     BranchDecision, BtaClassified, Monomorphized, Reason, Residualized, Stage,
@@ -12,7 +12,7 @@ pub fn evaluate_classify(
     target: TargetSpec,
     query_cache_path: Option<&Path>,
 ) -> BtaClassified {
-    let ct = ct_propagate::run_with_query_cache(mono, target, query_cache_path);
+    let ct = ct_eval::run_with_query_cache(mono, target, query_cache_path);
     let classified = bta::run(ct);
     assert_evaluate_classify_invariants(&classified);
     classified
