@@ -1,6 +1,7 @@
 use cielo::common::ids::SourceId;
 use cielo::common::symbols::Interner;
 use cielo::ir::core::{ExprKind, Literal};
+use cielo::pipeline::phases::BranchDecision;
 use cielo::{Compiler, CompilerConfig};
 
 #[test]
@@ -109,4 +110,48 @@ fn main() -> Int {
             expr_id.as_u32()
         );
     }
+}
+
+#[test]
+fn cteval_updates_branch_decisions_for_folded_call_condition() {
+    let src = r#"
+fn always_true() -> Bool {
+  true
+}
+
+fn main() -> Int {
+  if always_true() {
+    1
+  } else {
+    2
+  }
+}
+"#;
+
+    let compiler = Compiler::new(CompilerConfig::default());
+    let mut interner = Interner::new();
+    let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
+    let staged = compiler.run_v1_ct_eval(core);
+
+    let call_expr = staged
+        .program()
+        .exprs()
+        .iter()
+        .enumerate()
+        .find_map(|(idx, expr)| {
+            matches!(expr.kind, ExprKind::PureCall { .. })
+                .then_some(cielo::common::ids::ExprId::new(idx))
+        })
+        .expect("fixture must contain always_true() call");
+
+    assert_eq!(
+        staged.ct().ct_cache.get(&call_expr),
+        Some(&Literal::Bool(true)),
+        "ct evaluator should fold condition helper call to known boolean"
+    );
+    assert_eq!(
+        staged.ct().branch_decisions.get(&call_expr),
+        Some(&BranchDecision::LiveTrue),
+        "branch decision table should include evaluator-folded boolean conditions"
+    );
 }
