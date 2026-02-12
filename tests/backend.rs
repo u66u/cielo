@@ -1489,8 +1489,8 @@ fn main() -> Int {
 #[test]
 fn linearize_prunes_unreachable_recursive_function_cycles() {
     let src = r#"
-fn live() -> Int {
-  7
+fn live(x: Int) -> Int {
+  x + 1
 }
 
 fn dead_a() -> Int {
@@ -1502,7 +1502,8 @@ fn dead_b() -> Int {
 }
 
 fn main() -> Int {
-  live()
+  let seed = @runtime { 7 };
+  live(seed)
 }
 "#;
     let mut interner = Interner::new();
@@ -1529,8 +1530,8 @@ fn helper(x: Int) -> Int {
   x + 1
 }
 
-fn wrapper() -> Int {
-  helper(41)
+fn wrapper(seed: Int) -> Int {
+  helper(seed)
 }
 
 fn dead() -> Int {
@@ -1538,7 +1539,8 @@ fn dead() -> Int {
 }
 
 fn main() -> Int {
-  wrapper()
+  let seed = @runtime { 41 };
+  wrapper(seed)
 }
 "#;
     let mut interner = Interner::new();
