@@ -65,7 +65,7 @@ This is the source-of-truth checklist to detect plan/literature deviation.
   - `src/passes/bta.rs:run`
   TODO impl points:
   - [x] unify surface entry under `evaluate_classify(...)`
-  - [ ] add stage-boundary invariants that panic on compiler bugs
+  - [x] add stage-boundary invariants that panic on compiler bugs
 
 - [ ] `EC-2` ct file-dep invalidation discipline
   Mechanism:
@@ -109,7 +109,7 @@ This is the source-of-truth checklist to detect plan/literature deviation.
   - `src/passes/handler_specialize.rs:run`
   - `src/passes/handler_specialize.rs:specialize_handle_wrapped_calls`
   TODO impl points:
-  - report specialization counters in staging report
+  - [x] report specialization counters in staging report
 
 - [ ] `RS-3` remap integrity across side tables
   Mechanism:
@@ -120,7 +120,7 @@ This is the source-of-truth checklist to detect plan/literature deviation.
   - `src/passes/handler_specialize.rs:run`
   - `src/pipeline/phases.rs:*::remap_func_ids`
   TODO impl points:
-  - add explicit invariants for every carried table
+  - [x] add explicit invariants for every carried table
 
 ### Normalize
 
@@ -191,7 +191,7 @@ Progress:
 
 - [x] fused API exposed via `src/passes/comptime.rs`
 - [x] split-vs-fused emitted-C parity regression added
-- [ ] query-cache parity matrix coverage
+- [x] query-cache parity matrix coverage
 
 ### V1-Stage B: Residualize+Specialize entrypoint
 
