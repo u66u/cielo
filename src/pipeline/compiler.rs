@@ -9,10 +9,11 @@ use crate::ir::core::CoreProgram;
 use crate::passes::bta;
 use crate::passes::c_emit;
 use crate::passes::comptime;
+use crate::passes::ct_eval;
 use crate::passes::ct_propagate;
 use crate::passes::handler_specialize;
 use crate::passes::linearize;
-use crate::passes::lowering::{LowerConfig, TargetBuiltinSymbols, lower_program};
+use crate::passes::lowering::{lower_program, LowerConfig, TargetBuiltinSymbols};
 use crate::passes::monomorphize;
 use crate::passes::normalize;
 use crate::passes::residualize;
@@ -230,6 +231,16 @@ impl Compiler {
         let typed = self.typecheck(built);
         let mono = self.monomorphize(typed);
         self.evaluate_classify(mono)
+    }
+
+    pub fn run_v1_ct_eval(&self, built: CoreBuilt) -> CtPropagated {
+        let typed = self.typecheck(built);
+        let mono = self.monomorphize(typed);
+        ct_eval::run_with_query_cache(
+            mono,
+            self.config.target,
+            self.config.ct_query_cache_path.as_deref(),
+        )
     }
 
     pub fn run_v1_residualize_specialize(&self, classified: BtaClassified) -> Residualized {
