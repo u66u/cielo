@@ -35,7 +35,9 @@ fn main() -> Int {
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
     let staged = compiler.run_v1_evaluate_classify(core);
+    let func_count = staged.program().functions().len();
     let expr_count = staged.program().exprs().len();
+    let stmt_count = staged.program().stmts().len();
     let handler_count = staged.program().handlers().len();
 
     assert_eq!(
@@ -52,6 +54,21 @@ fn main() -> Int {
         staged.bta().handler_discharge.len(),
         handler_count,
         "handler discharge table must classify every handler"
+    );
+    assert_eq!(
+        staged.sema().type_of_expr.len(),
+        expr_count,
+        "sema.type_of_expr must stay aligned with expression count at Stage-A boundary"
+    );
+    assert_eq!(
+        staged.sema().effects_of_expr.len(),
+        expr_count,
+        "sema.effects_of_expr must stay aligned with expression count at Stage-A boundary"
+    );
+    assert_eq!(
+        staged.sema().effects_of_stmt.len(),
+        stmt_count,
+        "sema.effects_of_stmt must stay aligned with statement count at Stage-A boundary"
     );
 
     assert!(
@@ -101,6 +118,37 @@ fn main() -> Int {
             .keys()
             .all(|handler_id| handler_id.index() < handler_count),
         "clause discharge table must never contain out-of-bounds handler ids"
+    );
+    assert!(
+        staged
+            .bta()
+            .stage_of_expr
+            .values()
+            .all(|stage| stage_has_valid_func_ids(*stage, func_count))
+            && staged
+                .bta()
+                .stage_of_var
+                .values()
+                .all(|stage| stage_has_valid_func_ids(*stage, func_count)),
+        "Stage-A reasons must not contain out-of-bounds function ids"
+    );
+    assert!(
+        staged.bta().handler_discharge.values().all(|discharge| {
+            discharge
+                .reason
+                .is_none_or(|reason| reason_has_valid_func_ids(reason, func_count))
+        }),
+        "handler discharge reasons must not contain out-of-bounds function ids at Stage-A boundary"
+    );
+    assert!(
+        staged.bta().clause_discharge.values().all(|clauses| {
+            clauses.iter().all(|clause| {
+                clause
+                    .reason
+                    .is_none_or(|reason| reason_has_valid_func_ids(reason, func_count))
+            })
+        }),
+        "clause discharge reasons must not contain out-of-bounds function ids at Stage-A boundary"
     );
 
     for (expr_id, decision) in staged.ct().branch_decisions.iter() {
@@ -183,6 +231,26 @@ fn main() -> Int {
         residual.sema().effects_of_stmt.len(),
         stmt_count,
         "sema.effects_of_stmt must stay aligned with residual statements"
+    );
+    assert_eq!(
+        residual.bta().stage_of_expr.len(),
+        expr_count,
+        "bta.stage_of_expr must classify every expression after specialization remap"
+    );
+    assert_eq!(
+        residual.bta().knownness_of_expr.len(),
+        expr_count,
+        "bta.knownness_of_expr must classify every expression after specialization remap"
+    );
+    assert_eq!(
+        residual.bta().handler_discharge.len(),
+        handler_count,
+        "bta.handler_discharge must classify every handler after specialization remap"
+    );
+    assert_eq!(
+        residual.bta().clause_discharge.len(),
+        handler_count,
+        "bta.clause_discharge must classify every handler after specialization remap"
     );
     assert!(
         residual
