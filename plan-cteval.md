@@ -40,9 +40,9 @@ Scope:
 
 ## CTE-3 Integration Gates
 
- - [x] Add explicit parity suite: `ct_eval + bta` vs `ct_propagate + bta` for Stage tables.
+- [x] Add explicit parity suite: `ct_eval + bta` vs `ct_propagate + bta` for Stage tables.
 - [ ] Resolve backend-sensitive behavior deltas (reachability/codegen expectations).
-- [ ] Switch fused Stage A (`comptime::evaluate_classify`) to `ct_eval`.
+- [x] Switch fused Stage A (`comptime::evaluate_classify`) to `ct_eval`.
 - [ ] Switch default v0 core pipeline Stage A to `ct_eval`.
 - [ ] Remove redundant/legacy Stage-A plumbing once parity is stable.
 
