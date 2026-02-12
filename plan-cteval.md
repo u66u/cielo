@@ -41,9 +41,9 @@ Scope:
 ## CTE-3 Integration Gates
 
 - [x] Add explicit parity suite: `ct_eval + bta` vs `ct_propagate + bta` for Stage tables.
-- [ ] Resolve backend-sensitive behavior deltas (reachability/codegen expectations).
+- [x] Resolve backend-sensitive behavior deltas (reachability/codegen expectations).
 - [x] Switch fused Stage A (`comptime::evaluate_classify`) to `ct_eval`.
-- [ ] Switch default v0 core pipeline Stage A to `ct_eval`.
+- [x] Switch default v0 core pipeline Stage A to `ct_eval`.
 - [ ] Remove redundant/legacy Stage-A plumbing once parity is stable.
 
 ## CTE-v2 Deferred
@@ -61,6 +61,6 @@ Scope:
 
 ## Verification Checklist (run per CTE task)
 
-- [ ] `cargo test -q --test ct_eval`
-- [ ] `cargo test -q --test backend`
-- [ ] `cargo test -q`
+- [x] `cargo test -q --test ct_eval`
+- [x] `cargo test -q --test backend`
+- [x] `cargo test -q`
