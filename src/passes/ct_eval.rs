@@ -8,7 +8,7 @@ use crate::ir::core::{
 };
 use crate::passes::ct_propagate;
 use crate::pipeline::compiler::TargetSpec;
-use crate::pipeline::phases::{CtPropagated, Monomorphized};
+use crate::pipeline::phases::{BranchDecision, CtPropagated, Monomorphized};
 
 const MAX_CALL_EVAL_DEPTH: usize = 32;
 
@@ -37,8 +37,22 @@ pub fn run_with_query_cache(
         .eval_stats
         .cache_inserts
         .saturating_add(call_folds.inserts);
+    ct.branch_decisions = rebuild_branch_decisions(&ct.ct_cache);
 
     CtPropagated::new(program, diagnostics, sema, mono, ct)
+}
+
+fn rebuild_branch_decisions(
+    ct_cache: &DenseMap<ExprId, Literal>,
+) -> DenseMap<ExprId, BranchDecision> {
+    ct_cache
+        .iter()
+        .filter_map(|(expr_id, literal)| match literal {
+            Literal::Bool(true) => Some((expr_id, BranchDecision::LiveTrue)),
+            Literal::Bool(false) => Some((expr_id, BranchDecision::LiveFalse)),
+            _ => None,
+        })
+        .collect()
 }
 
 #[derive(Default)]
