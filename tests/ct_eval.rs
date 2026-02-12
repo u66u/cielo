@@ -1,7 +1,17 @@
-use cielo::common::ids::SourceId;
+use cielo::common::diagnostics::DiagnosticBag;
+use cielo::common::ids::{EffectLabelId, ExprId, FuncId, HandlerId, SourceId, SymbolId, VarId};
+use cielo::common::span::Span;
 use cielo::common::symbols::Interner;
-use cielo::ir::core::{ExprKind, Literal};
-use cielo::pipeline::phases::BranchDecision;
+use cielo::ir::core::{
+    CoreProgram, CoreTypeRef, EffectDecl, ExprKind, ExprNode, FunctionDecl, HandlerDef, Literal,
+    PrimitiveTypeRef, StmtKind, StmtNode,
+};
+use cielo::passes::ct_eval;
+use cielo::pipeline::compiler::TargetSpec;
+use cielo::pipeline::phases::{
+    BranchDecision, CtPropagated, MonomorphizationSummary, Monomorphized, SemanticTables,
+};
+use cielo::sema::effect::{EffectProperties, SortedEffectRow};
 use cielo::{Compiler, CompilerConfig};
 
 #[test]
@@ -27,8 +37,7 @@ fn main() -> Int {
         .iter()
         .enumerate()
         .filter_map(|(idx, expr)| {
-            matches!(expr.kind, ExprKind::PureCall { .. })
-                .then_some(cielo::common::ids::ExprId::new(idx))
+            matches!(expr.kind, ExprKind::PureCall { .. }).then_some(ExprId::new(idx))
         })
         .collect::<Vec<_>>();
     assert!(
@@ -95,7 +104,7 @@ fn main() -> Int {
             let ExprKind::PureCall { callee, .. } = expr.kind else {
                 return None;
             };
-            (callee.index() == 0).then_some(cielo::common::ids::ExprId::new(idx))
+            (callee.index() == 0).then_some(ExprId::new(idx))
         })
         .collect::<Vec<_>>();
     assert!(
@@ -139,8 +148,7 @@ fn main() -> Int {
         .iter()
         .enumerate()
         .find_map(|(idx, expr)| {
-            matches!(expr.kind, ExprKind::PureCall { .. })
-                .then_some(cielo::common::ids::ExprId::new(idx))
+            matches!(expr.kind, ExprKind::PureCall { .. }).then_some(ExprId::new(idx))
         })
         .expect("fixture must contain always_true() call");
 
@@ -154,4 +162,371 @@ fn main() -> Int {
         Some(&BranchDecision::LiveTrue),
         "branch decision table should include evaluator-folded boolean conditions"
     );
+}
+
+#[test]
+fn cteval_does_not_fold_call_when_callee_uses_match_stmt() {
+    let span = Span::synthetic();
+    let mut program = CoreProgram::new();
+
+    let scrutinee = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(0)),
+    });
+    let fallback_lit = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(7)),
+    });
+    let fallback_ret = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(fallback_lit),
+    });
+    let callee_body = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Match {
+            scrutinee,
+            arms: Vec::new(),
+            default: Some(fallback_ret),
+        },
+    });
+
+    let callee = add_pure_int_function(&mut program, SymbolId::from_u32(100), callee_body, span);
+    let call_expr = add_main_returning_call(&mut program, callee, span);
+
+    let staged = run_ct_eval_on_program(program, TargetSpec::default());
+    assert!(
+        staged.ct().ct_cache.get(&call_expr).is_none(),
+        "callee bodies containing Match should remain conservative in CTE-1"
+    );
+}
+
+#[test]
+fn cteval_does_not_fold_call_when_callee_uses_handle_stmt() {
+    let span = Span::synthetic();
+    let mut program = CoreProgram::new();
+
+    let effect = add_minimal_effect(&mut program, SymbolId::from_u32(200), span);
+    let handler_return_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(0)),
+    });
+    let handler_return = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(handler_return_expr),
+    });
+    let _handler = program.add_handler(HandlerDef {
+        effect,
+        return_param: VarId::from_u32(900),
+        return_body: handler_return,
+        clauses: Vec::new(),
+        span,
+    });
+
+    let body_ret_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(9)),
+    });
+    let body_ret = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(body_ret_expr),
+    });
+    let callee_body = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Handle {
+            handler: HandlerId::new(0),
+            body: body_ret,
+            next: None,
+        },
+    });
+
+    let callee = add_pure_int_function(&mut program, SymbolId::from_u32(201), callee_body, span);
+    let call_expr = add_main_returning_call(&mut program, callee, span);
+
+    let staged = run_ct_eval_on_program(program, TargetSpec::default());
+    assert!(
+        staged.ct().ct_cache.get(&call_expr).is_none(),
+        "callee bodies containing Handle should remain conservative in CTE-1"
+    );
+}
+
+#[test]
+fn cteval_does_not_fold_call_when_callee_uses_perform_stmt() {
+    let span = Span::synthetic();
+    let mut program = CoreProgram::new();
+
+    let effect = add_minimal_effect(&mut program, SymbolId::from_u32(300), span);
+    let ret_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(1)),
+    });
+    let ret_stmt = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(ret_expr),
+    });
+    let callee_body = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Perform {
+            result: None,
+            effect,
+            operation: SymbolId::from_u32(301),
+            args: Vec::new(),
+            next: ret_stmt,
+        },
+    });
+
+    let callee = add_pure_int_function(&mut program, SymbolId::from_u32(302), callee_body, span);
+    let call_expr = add_main_returning_call(&mut program, callee, span);
+
+    let staged = run_ct_eval_on_program(program, TargetSpec::default());
+    assert!(
+        staged.ct().ct_cache.get(&call_expr).is_none(),
+        "callee bodies containing Perform should remain conservative in CTE-1"
+    );
+}
+
+#[test]
+fn cteval_does_not_fold_calls_to_effectful_callee() {
+    let span = Span::synthetic();
+    let mut program = CoreProgram::new();
+
+    let effect = add_minimal_effect(&mut program, SymbolId::from_u32(400), span);
+    let ret_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::Literal(Literal::Int(9)),
+    });
+    let ret_stmt = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(ret_expr),
+    });
+    let callee = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(401),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::singleton(effect),
+        body: ret_stmt,
+        ct_only: false,
+        span,
+    });
+
+    let call_expr = add_main_returning_call(&mut program, callee, span);
+    let staged = run_ct_eval_on_program(program, TargetSpec::default());
+
+    assert!(
+        staged.ct().ct_cache.get(&call_expr).is_none(),
+        "ct evaluator should not fold calls to functions with non-empty effect rows"
+    );
+}
+
+#[test]
+fn cteval_accepts_comptime_stage_blocks_inside_callee() {
+    let src = r#"
+fn helper() -> Int {
+  let y = @comptime { 40 + 2 };
+  y
+}
+
+fn main() -> Int {
+  helper()
+}
+"#;
+
+    let compiler = Compiler::new(CompilerConfig::default());
+    let mut interner = Interner::new();
+    let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
+    let staged = compiler.run_v1_ct_eval(core);
+
+    let helper_call = staged
+        .program()
+        .exprs()
+        .iter()
+        .enumerate()
+        .find_map(|(idx, expr)| match expr.kind {
+            ExprKind::PureCall { callee, .. } if callee.index() == 0 => Some(ExprId::new(idx)),
+            _ => None,
+        })
+        .expect("fixture must contain helper call from main");
+
+    assert_eq!(
+        staged.ct().ct_cache.get(&helper_call),
+        Some(&Literal::Int(42)),
+        "@comptime stage blocks should stay evaluable in CT evaluator path"
+    );
+}
+
+#[test]
+fn cteval_rejects_runtime_stage_blocks_inside_callee() {
+    let src = r#"
+fn helper() -> Int {
+  let y = @runtime { 40 + 2 };
+  y
+}
+
+fn main() -> Int {
+  helper()
+}
+"#;
+
+    let compiler = Compiler::new(CompilerConfig::default());
+    let mut interner = Interner::new();
+    let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
+    let staged = compiler.run_v1_ct_eval(core);
+
+    let helper_call = staged
+        .program()
+        .exprs()
+        .iter()
+        .enumerate()
+        .find_map(|(idx, expr)| match expr.kind {
+            ExprKind::PureCall { callee, .. } if callee.index() == 0 => Some(ExprId::new(idx)),
+            _ => None,
+        })
+        .expect("fixture must contain helper call from main");
+
+    assert!(
+        staged.ct().ct_cache.get(&helper_call).is_none(),
+        "@runtime stage blocks should keep enclosing call non-foldable in CT evaluator path"
+    );
+}
+
+#[test]
+fn cteval_call_depth_budget_is_deterministic() {
+    let src = deep_call_chain_source(33);
+    let compiler = Compiler::new(CompilerConfig::default());
+
+    let mut interner_a = Interner::new();
+    let core_a = compiler.parse_and_lower_to_core(src.as_str(), SourceId::from_u32(0), &mut interner_a);
+    let staged_a = compiler.run_v1_ct_eval(core_a);
+
+    let mut interner_b = Interner::new();
+    let core_b = compiler.parse_and_lower_to_core(src.as_str(), SourceId::from_u32(1), &mut interner_b);
+    let staged_b = compiler.run_v1_ct_eval(core_b);
+
+    let root_call_a = staged_a
+        .program()
+        .exprs()
+        .iter()
+        .enumerate()
+        .find_map(|(idx, expr)| match expr.kind {
+            ExprKind::PureCall { callee, .. } if callee.index() == 0 => Some(ExprId::new(idx)),
+            _ => None,
+        })
+        .expect("expected main to call f0");
+    let root_call_b = staged_b
+        .program()
+        .exprs()
+        .iter()
+        .enumerate()
+        .find_map(|(idx, expr)| match expr.kind {
+            ExprKind::PureCall { callee, .. } if callee.index() == 0 => Some(ExprId::new(idx)),
+            _ => None,
+        })
+        .expect("expected main to call f0");
+
+    assert!(
+        staged_a.ct().ct_cache.get(&root_call_a).is_none()
+            && staged_b.ct().ct_cache.get(&root_call_b).is_none(),
+        "call chains beyond depth budget must remain non-folded"
+    );
+
+    let cache_snapshot_a = staged_a
+        .ct()
+        .ct_cache
+        .iter()
+        .map(|(expr_id, literal)| (expr_id.as_u32(), format!("{literal:?}")))
+        .collect::<Vec<_>>();
+    let cache_snapshot_b = staged_b
+        .ct()
+        .ct_cache
+        .iter()
+        .map(|(expr_id, literal)| (expr_id.as_u32(), format!("{literal:?}")))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        cache_snapshot_a, cache_snapshot_b,
+        "ct cache entries should be deterministic across repeated deep-call runs"
+    );
+    assert_eq!(
+        staged_a.ct().eval_stats,
+        staged_b.ct().eval_stats,
+        "evaluator statistics should be deterministic across repeated deep-call runs"
+    );
+}
+
+fn run_ct_eval_on_program(program: CoreProgram, target: TargetSpec) -> CtPropagated {
+    let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
+    let mono = Monomorphized::new(
+        program,
+        DiagnosticBag::default(),
+        sema,
+        MonomorphizationSummary::default(),
+    );
+    ct_eval::run(mono, target)
+}
+
+fn add_pure_int_function(
+    program: &mut CoreProgram,
+    name: SymbolId,
+    body: cielo::common::ids::StmtId,
+    span: Span,
+) -> FuncId {
+    program.add_function(FunctionDecl {
+        name,
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::empty(),
+        body,
+        ct_only: false,
+        span,
+    })
+}
+
+fn add_main_returning_call(program: &mut CoreProgram, callee: FuncId, span: Span) -> ExprId {
+    let call_expr = program.push_expr(ExprNode {
+        span,
+        kind: ExprKind::PureCall {
+            callee,
+            args: Vec::new(),
+        },
+    });
+    let ret = program.push_stmt(StmtNode {
+        span,
+        kind: StmtKind::Return(call_expr),
+    });
+    let main = program.add_function(FunctionDecl {
+        name: SymbolId::from_u32(999),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+        declared_effects: SortedEffectRow::empty(),
+        body: ret,
+        ct_only: false,
+        span,
+    });
+    program.set_entrypoints([main]);
+    call_expr
+}
+
+fn add_minimal_effect(program: &mut CoreProgram, name: SymbolId, span: Span) -> EffectLabelId {
+    program.add_effect(EffectDecl {
+        label: EffectLabelId::from_u32(0),
+        name,
+        properties: EffectProperties::default(),
+        operations: Vec::new(),
+        span,
+    })
+}
+
+fn deep_call_chain_source(depth: usize) -> String {
+    let mut src = String::new();
+    for idx in (0..=depth).rev() {
+        if idx == depth {
+            src.push_str(format!("fn f{idx}(x: Int) -> Int {{ x }}\n\n").as_str());
+        } else {
+            src.push_str(format!("fn f{idx}(x: Int) -> Int {{ f{}(x) }}\n\n", idx + 1).as_str());
+        }
+    }
+    src.push_str("fn main() -> Int { f0(1) }\n");
+    src
 }
