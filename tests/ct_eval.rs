@@ -7,6 +7,7 @@ use cielo::ir::core::{
     PrimitiveTypeRef, StmtKind, StmtNode,
 };
 use cielo::passes::ct_eval;
+use cielo::passes::bta;
 use cielo::pipeline::compiler::TargetSpec;
 use cielo::pipeline::phases::{
     BranchDecision, CtPropagated, MonomorphizationSummary, Monomorphized, SemanticTables,
@@ -451,6 +452,83 @@ fn cteval_call_depth_budget_is_deterministic() {
         staged_b.ct().eval_stats,
         "evaluator statistics should be deterministic across repeated deep-call runs"
     );
+}
+
+#[test]
+fn cteval_plus_bta_matches_baseline_on_program_without_pure_calls() {
+    let src = r#"
+fn main() -> Int {
+  let x = @runtime { 1 + 2 };
+  let y = x + 3;
+  y
+}
+"#;
+
+    let compiler = Compiler::new(CompilerConfig::default());
+    let mut interner_eval = Interner::new();
+    let core_eval =
+        compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner_eval);
+    let ct_eval_state = compiler.run_v1_ct_eval(core_eval);
+    let eval_classified = bta::run(ct_eval_state);
+
+    let mut interner_base = Interner::new();
+    let core_base =
+        compiler.parse_and_lower_to_core(src, SourceId::from_u32(1), &mut interner_base);
+    let base_classified = compiler.run_v1_evaluate_classify(core_base);
+
+    assert_eq!(
+        eval_classified.bta().stage_of_expr.len(),
+        base_classified.bta().stage_of_expr.len(),
+        "parity fixture should classify equal expression table sizes"
+    );
+    for (expr_id, baseline_stage) in base_classified.bta().stage_of_expr.iter() {
+        assert_eq!(
+            eval_classified.bta().stage_of_expr.get(&expr_id),
+            Some(baseline_stage),
+            "ct_eval+bta should match baseline stage for expression e{}",
+            expr_id.as_u32()
+        );
+    }
+}
+
+#[test]
+fn cteval_plus_bta_never_demotes_baseline_ct_expressions() {
+    let src = r#"
+fn add2(x: Int) -> Int {
+  x + 2
+}
+fn main() -> Int {
+  let a = 1 + 2;
+  let b = add2(40);
+  a + b
+}
+"#;
+
+    let compiler = Compiler::new(CompilerConfig::default());
+    let mut interner_eval = Interner::new();
+    let core_eval =
+        compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner_eval);
+    let ct_eval_state = compiler.run_v1_ct_eval(core_eval);
+    let eval_classified = bta::run(ct_eval_state);
+
+    let mut interner_base = Interner::new();
+    let core_base =
+        compiler.parse_and_lower_to_core(src, SourceId::from_u32(1), &mut interner_base);
+    let base_classified = compiler.run_v1_evaluate_classify(core_base);
+
+    for (expr_id, baseline_stage) in base_classified.bta().stage_of_expr.iter() {
+        if !matches!(baseline_stage, cielo::pipeline::phases::Stage::Ct) {
+            continue;
+        }
+        assert!(
+            matches!(
+                eval_classified.bta().stage_of_expr.get(&expr_id),
+                Some(cielo::pipeline::phases::Stage::Ct)
+            ),
+            "ct_eval+bta must not demote baseline Ct expression e{}",
+            expr_id.as_u32()
+        );
+    }
 }
 
 fn run_ct_eval_on_program(program: CoreProgram, target: TargetSpec) -> CtPropagated {
