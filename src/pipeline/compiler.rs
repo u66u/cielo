@@ -74,7 +74,7 @@ pub struct V0PipelineTimings {
     pub lower: Duration,
     pub typecheck: Duration,
     pub monomorphize: Duration,
-    pub ct_propagate: Duration,
+    pub ct_eval: Duration,
     pub bta: Duration,
     pub residualize: Duration,
 }
@@ -85,7 +85,7 @@ impl V0PipelineTimings {
             .saturating_add(self.lower)
             .saturating_add(self.typecheck)
             .saturating_add(self.monomorphize)
-            .saturating_add(self.ct_propagate)
+            .saturating_add(self.ct_eval)
             .saturating_add(self.bta)
             .saturating_add(self.residualize)
     }
@@ -95,7 +95,7 @@ impl V0PipelineTimings {
         self.lower = self.lower.saturating_add(other.lower);
         self.typecheck = self.typecheck.saturating_add(other.typecheck);
         self.monomorphize = self.monomorphize.saturating_add(other.monomorphize);
-        self.ct_propagate = self.ct_propagate.saturating_add(other.ct_propagate);
+        self.ct_eval = self.ct_eval.saturating_add(other.ct_eval);
         self.bta = self.bta.saturating_add(other.bta);
         self.residualize = self.residualize.saturating_add(other.residualize);
     }
@@ -109,7 +109,7 @@ impl V0PipelineTimings {
             lower: self.lower / iterations,
             typecheck: self.typecheck / iterations,
             monomorphize: self.monomorphize / iterations,
-            ct_propagate: self.ct_propagate / iterations,
+            ct_eval: self.ct_eval / iterations,
             bta: self.bta / iterations,
             residualize: self.residualize / iterations,
         }
@@ -269,8 +269,8 @@ impl Compiler {
         timings.monomorphize = mono_start.elapsed();
 
         let ct_start = Instant::now();
-        let ct = self.ct_propagate(mono);
-        timings.ct_propagate = ct_start.elapsed();
+        let ct = self.ct_eval(mono);
+        timings.ct_eval = ct_start.elapsed();
 
         let bta_start = Instant::now();
         let bta = self.classify_staging(ct);
@@ -293,7 +293,7 @@ impl Compiler {
         monomorphize::run(typed)
     }
 
-    fn ct_propagate(&self, mono: Monomorphized) -> CtPropagated {
+    fn ct_eval(&self, mono: Monomorphized) -> CtPropagated {
         ct_eval::run_with_query_cache(
             mono,
             self.config.target,

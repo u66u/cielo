@@ -36,7 +36,7 @@ fn main() -> Int {
             .saturating_add(timings.lower)
             .saturating_add(timings.typecheck)
             .saturating_add(timings.monomorphize)
-            .saturating_add(timings.ct_propagate)
+            .saturating_add(timings.ct_eval)
             .saturating_add(timings.bta)
             .saturating_add(timings.residualize),
         "total timing should equal the sum of stage timings"
