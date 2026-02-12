@@ -44,7 +44,7 @@ Scope:
 - [x] Resolve backend-sensitive behavior deltas (reachability/codegen expectations).
 - [x] Switch fused Stage A (`comptime::evaluate_classify`) to `ct_eval`.
 - [x] Switch default v0 core pipeline Stage A to `ct_eval`.
-- [ ] Remove redundant/legacy Stage-A plumbing once parity is stable.
+- [x] Remove redundant/legacy Stage-A plumbing once parity is stable.
 
 ## CTE-v2 Deferred
 
