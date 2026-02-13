@@ -168,7 +168,7 @@ fn emit_case(case: BenchCase, warmup_iters: usize, measure_iters: usize, enforce
     );
     println!(
         "phase_ct_propagate_ms={:.3}",
-        stage_per_iter.ct_propagate.as_secs_f64() * 1_000.0
+        stage_per_iter.ct_eval.as_secs_f64() * 1_000.0
     );
     println!(
         "phase_bta_ms={:.3}",
