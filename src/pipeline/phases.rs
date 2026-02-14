@@ -241,6 +241,7 @@ pub enum CtorFieldKey {
     Char(char),
     Float(u64),
     String(String),
+    Ctor(Box<CtorLiteralKey>),
 }
 
 impl CtorFieldKey {

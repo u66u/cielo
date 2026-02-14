@@ -1,8 +1,9 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::common::ids::{ExprId, LinearExprId, SymbolId};
-use crate::ir::core::{CoreProgram, ExprKind, Literal};
-use crate::ir::linear::{LinearExpr, LinearProgram};
+use crate::common::ids::{LinearExprId, SymbolId};
+use crate::ir::core::CoreProgram;
+use crate::ir::linear::LinearProgram;
+use crate::ir::walk::{IrExprNode, IrProgram};
 use crate::pipeline::phases::{
     ConstantEmbedStrategy, ConstantEntry, ConstantKey, ConstantTable, CtorFieldKey, CtorLiteralKey,
     ScalarLiteralKey,
@@ -15,87 +16,43 @@ const ESTIMATED_VALUE_BYTES: usize = 16;
 const ESTIMATED_CTOR_BYTES: usize = 32;
 
 pub fn build_for_core(program: &CoreProgram) -> ConstantTable {
-    let mut counts = ConstantCounts::default();
-    let mut seen_strings = HashSet::new();
-
-    for expr in program.exprs() {
-        match &expr.kind {
-            ExprKind::Literal(literal) => {
-                if let Some(key) = ScalarLiteralKey::from_literal(literal) {
-                    *counts.scalars.entry(key).or_default() += 1;
-                }
-                if let Literal::String(value) = literal
-                    && seen_strings.insert(value.clone())
-                {
-                    counts.strings.push(value.clone());
-                }
-            }
-            ExprKind::MakeStruct { ty, fields } => {
-                if let Some(key) = ctor_key_from_core(program, *ty, SymbolId::INVALID, fields) {
-                    *counts.ctors.entry(key).or_default() += 1;
-                }
-            }
-            ExprKind::MakeEnum {
-                ty,
-                variant,
-                fields,
-            } => {
-                if let Some(key) = ctor_key_from_core(program, *ty, *variant, fields) {
-                    *counts.ctors.entry(key).or_default() += 1;
-                }
-            }
-            ExprKind::Var(_)
-            | ExprKind::Unary { .. }
-            | ExprKind::Binary { .. }
-            | ExprKind::PureCall { .. }
-            | ExprKind::Error(_) => {}
-        }
-    }
-
-    build_constant_table(counts)
+    build_constant_table(program)
 }
 
 pub fn build_for_linear(program: &LinearProgram) -> ConstantTable {
+    build_constant_table(program)
+}
+
+pub fn build_constant_table<P: IrProgram>(program: &P) -> ConstantTable {
     let mut counts = ConstantCounts::default();
     let mut seen_strings = HashSet::new();
+    let mut field_key_memo: HashMap<P::ExprId, Option<CtorFieldKey>> = HashMap::new();
 
-    for expr in program.exprs() {
-        match &expr.kind {
-            LinearExpr::Literal(literal) => {
-                if let Some(key) = ScalarLiteralKey::from_literal(literal) {
-                    *counts.scalars.entry(key).or_default() += 1;
-                }
-                if let Literal::String(value) = literal
-                    && seen_strings.insert(value.clone())
-                {
-                    counts.strings.push(value.clone());
-                }
+    for expr_id in program.expr_ids() {
+        let Some(expr) = program.expr(expr_id) else {
+            continue;
+        };
+
+        if let Some(literal) = expr.literal() {
+            if let Some(key) = ScalarLiteralKey::from_literal(literal) {
+                *counts.scalars.entry(key).or_default() += 1;
             }
-            LinearExpr::MakeStruct { ty, fields } => {
-                if let Some(key) =
-                    ctor_key_from_linear_expr(program, *ty, SymbolId::INVALID, fields)
-                {
-                    *counts.ctors.entry(key).or_default() += 1;
-                }
+            if let crate::ir::core::Literal::String(value) = literal
+                && seen_strings.insert(value.clone())
+            {
+                counts.strings.push(value.clone());
             }
-            LinearExpr::MakeEnum {
-                ty,
-                variant,
-                fields,
-            } => {
-                if let Some(key) = ctor_key_from_linear_expr(program, *ty, *variant, fields) {
-                    *counts.ctors.entry(key).or_default() += 1;
-                }
-            }
-            LinearExpr::Var(_)
-            | LinearExpr::Unary { .. }
-            | LinearExpr::Binary { .. }
-            | LinearExpr::PureCall { .. }
-            | LinearExpr::Error => {}
+        }
+
+        if let Some((ty, variant, fields)) = expr.ctor_fields()
+            && let Some(key) =
+                ctor_key_from_fields(program, ty, variant, fields, &mut field_key_memo)
+        {
+            *counts.ctors.entry(key).or_default() += 1;
         }
     }
 
-    build_constant_table(counts)
+    finalize_constant_table(counts)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -105,7 +62,7 @@ struct ConstantCounts {
     ctors: BTreeMap<CtorLiteralKey, usize>,
 }
 
-fn build_constant_table(counts: ConstantCounts) -> ConstantTable {
+fn finalize_constant_table(counts: ConstantCounts) -> ConstantTable {
     let mut budget = ConstPoolBudget::new(MAX_CONST_POOL_BYTES);
     let mut entries = Vec::new();
 
@@ -187,19 +144,20 @@ impl ConstPoolBudget {
     }
 }
 
-fn ctor_key_from_core(
-    program: &CoreProgram,
+fn ctor_key_from_fields<P: IrProgram>(
+    program: &P,
     ty: SymbolId,
     variant: SymbolId,
-    fields: &[ExprId],
+    fields: &[P::ExprId],
+    field_key_memo: &mut HashMap<P::ExprId, Option<CtorFieldKey>>,
 ) -> Option<CtorLiteralKey> {
     let mut field_keys = Vec::with_capacity(fields.len());
-    for field in fields {
-        let literal = match &program.expr(*field)?.kind {
-            ExprKind::Literal(literal) => literal,
-            _ => return None,
-        };
-        field_keys.push(CtorFieldKey::from_literal(literal)?);
+    for field_id in fields {
+        field_keys.push(ctor_field_key_from_expr(
+            program,
+            *field_id,
+            field_key_memo,
+        )?);
     }
     Some(CtorLiteralKey {
         ty,
@@ -208,25 +166,36 @@ fn ctor_key_from_core(
     })
 }
 
+fn ctor_field_key_from_expr<P: IrProgram>(
+    program: &P,
+    expr_id: P::ExprId,
+    field_key_memo: &mut HashMap<P::ExprId, Option<CtorFieldKey>>,
+) -> Option<CtorFieldKey> {
+    if let Some(cached) = field_key_memo.get(&expr_id).cloned() {
+        return cached;
+    }
+
+    let resolved = program.expr(expr_id).and_then(|expr| {
+        if let Some(literal) = expr.literal() {
+            return CtorFieldKey::from_literal(literal);
+        }
+        let (ty, variant, fields) = expr.ctor_fields()?;
+        let nested = ctor_key_from_fields(program, ty, variant, fields, field_key_memo)?;
+        Some(CtorFieldKey::Ctor(Box::new(nested)))
+    });
+
+    field_key_memo.insert(expr_id, resolved.clone());
+    resolved
+}
+
 pub fn ctor_key_from_linear_expr(
     program: &LinearProgram,
     ty: SymbolId,
     variant: SymbolId,
     fields: &[LinearExprId],
 ) -> Option<CtorLiteralKey> {
-    let mut field_keys = Vec::with_capacity(fields.len());
-    for field in fields {
-        let literal = match &program.expr(*field)?.kind {
-            LinearExpr::Literal(literal) => literal,
-            _ => return None,
-        };
-        field_keys.push(CtorFieldKey::from_literal(literal)?);
-    }
-    Some(CtorLiteralKey {
-        ty,
-        variant,
-        fields: field_keys,
-    })
+    let mut field_key_memo: HashMap<LinearExprId, Option<CtorFieldKey>> = HashMap::new();
+    ctor_key_from_fields(program, ty, variant, fields, &mut field_key_memo)
 }
 
 fn should_pool_ctor_literal(use_count: usize, estimated_bytes: usize) -> bool {
@@ -253,5 +222,6 @@ fn estimate_ctor_field_pool_bytes(field: &CtorFieldKey) -> usize {
         CtorFieldKey::Char(_) => 4,
         CtorFieldKey::Float(_) => 8,
         CtorFieldKey::String(value) => value.len().saturating_add(1),
+        CtorFieldKey::Ctor(key) => estimate_ctor_pool_bytes(key),
     }
 }
