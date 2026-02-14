@@ -5,6 +5,7 @@ use cielo::ir::linear::{
     CallConvention, LinearExpr, LinearFunction, LinearMatchArm, LinearProgram, LinearStmt,
 };
 use cielo::passes::{c_emit, c_emit::emit_c_program, handler_specialize, linearize};
+use cielo::pipeline::phases::{ConstantEmbedStrategy, ConstantKey, ScalarLiteralKey};
 use cielo::{Compiler, CompilerConfig};
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -286,6 +287,19 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
 
+    assert!(
+        compiled
+            .residual
+            .residual()
+            .constant_table
+            .entries
+            .iter()
+            .any(|entry| {
+                matches!(entry.key, ConstantKey::Scalar(ScalarLiteralKey::Int(7)))
+                    && matches!(entry.strategy, ConstantEmbedStrategy::StaticConst)
+            }),
+        "residualize+specialize should precompute scalar embedding strategy in ConstantTable"
+    );
     assert_eq!(
         compiled
             .c_source

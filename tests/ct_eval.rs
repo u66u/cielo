@@ -6,8 +6,8 @@ use cielo::ir::core::{
     CoreProgram, CoreTypeRef, EffectDecl, ExprKind, ExprNode, FunctionDecl, HandlerDef, Literal,
     PrimitiveTypeRef, StmtKind, StmtNode,
 };
-use cielo::passes::ct_eval;
 use cielo::passes::bta;
+use cielo::passes::ct_eval;
 use cielo::pipeline::compiler::TargetSpec;
 use cielo::pipeline::phases::{
     BranchDecision, CtPropagated, MonomorphizationSummary, Monomorphized, SemanticTables,
@@ -396,11 +396,13 @@ fn cteval_call_depth_budget_is_deterministic() {
     let compiler = Compiler::new(CompilerConfig::default());
 
     let mut interner_a = Interner::new();
-    let core_a = compiler.parse_and_lower_to_core(src.as_str(), SourceId::from_u32(0), &mut interner_a);
+    let core_a =
+        compiler.parse_and_lower_to_core(src.as_str(), SourceId::from_u32(0), &mut interner_a);
     let staged_a = compiler.run_v1_ct_eval(core_a);
 
     let mut interner_b = Interner::new();
-    let core_b = compiler.parse_and_lower_to_core(src.as_str(), SourceId::from_u32(1), &mut interner_b);
+    let core_b =
+        compiler.parse_and_lower_to_core(src.as_str(), SourceId::from_u32(1), &mut interner_b);
     let staged_b = compiler.run_v1_ct_eval(core_b);
 
     let root_call_a = staged_a

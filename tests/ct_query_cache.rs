@@ -256,7 +256,8 @@ fn main() -> Int {
     );
 
     let mut interner_2 = Interner::new();
-    let hit_core = compiler_64.parse_and_lower_to_core(src_a, SourceId::from_u32(11), &mut interner_2);
+    let hit_core =
+        compiler_64.parse_and_lower_to_core(src_a, SourceId::from_u32(11), &mut interner_2);
     let hit_64 = compiler_64.run_v1_evaluate_classify(hit_core);
     assert_eq!(
         hit_64.ct().eval_stats.eval_attempts,

@@ -12,7 +12,7 @@ use crate::passes::comptime;
 use crate::passes::ct_eval;
 use crate::passes::handler_specialize;
 use crate::passes::linearize;
-use crate::passes::lowering::{lower_program, LowerConfig, TargetBuiltinSymbols};
+use crate::passes::lowering::{LowerConfig, TargetBuiltinSymbols, lower_program};
 use crate::passes::monomorphize;
 use crate::passes::normalize;
 use crate::passes::residualize;
