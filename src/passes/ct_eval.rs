@@ -3,12 +3,14 @@ use std::path::Path;
 
 use crate::common::densemap::DenseMap;
 use crate::common::ids::{ExprId, FuncId, StmtId, VarId};
-use crate::ir::core::{
-    BinaryOp, CoreProgram, ExprKind, Literal, OpCategory, StageDirective, UnaryOp,
-};
-use crate::passes::ct_propagate;
+use crate::ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, StageDirective, UnaryOp};
+use crate::passes::ct_common;
 use crate::pipeline::compiler::TargetSpec;
-use crate::pipeline::phases::{BranchDecision, CtPropagated, Monomorphized};
+use crate::pipeline::ct_query_cache::{
+    CtQueryCacheSnapshot, deps_match, fingerprint_program, load_snapshot as load_query_snapshot,
+    normalized_file_deps, save_snapshot as save_query_snapshot,
+};
+use crate::pipeline::phases::{CtPropagated, CtPropagationTables, Monomorphized};
 
 const MAX_CALL_EVAL_DEPTH: usize = 32;
 
@@ -21,38 +23,61 @@ pub fn run_with_query_cache(
     target: TargetSpec,
     query_cache_path: Option<&Path>,
 ) -> CtPropagated {
-    let seeded = ct_propagate::run_with_query_cache(mono, target, query_cache_path);
-    let (program, diagnostics, sema, mono, mut ct) = seeded.into_parts();
+    ct_common::assert_pre_staging_effects_concrete(mono.program());
 
-    let call_folds = fold_known_pure_calls(&program, target, &mut ct.ct_cache);
-    ct.eval_stats.iterations = ct
-        .eval_stats
-        .iterations
-        .saturating_add(call_folds.iterations);
-    ct.eval_stats.eval_attempts = ct
-        .eval_stats
-        .eval_attempts
-        .saturating_add(call_folds.attempts);
-    ct.eval_stats.cache_inserts = ct
-        .eval_stats
-        .cache_inserts
-        .saturating_add(call_folds.inserts);
-    ct.branch_decisions = rebuild_branch_decisions(&ct.ct_cache);
+    let mut ct = CtPropagationTables::default();
+    ct.cache_key = ct_common::build_cache_key(target);
+    ct.file_deps = ct_common::collect_file_deps(mono.program(), mono.sema());
+    ct.file_deps = normalized_file_deps(ct.file_deps);
 
-    CtPropagated::new(program, diagnostics, sema, mono, ct)
-}
+    let mut used_query_cache = false;
+    if let Some(path) = query_cache_path {
+        let program_fingerprint = fingerprint_program(mono.program());
+        if let Ok(snapshot) = load_query_snapshot(path)
+            && snapshot.program_fingerprint == program_fingerprint
+            && snapshot.cache_key == ct.cache_key
+            && deps_match(snapshot.file_deps.as_slice(), ct.file_deps.as_slice())
+        {
+            ct.ct_cache = snapshot.ct_cache;
+            used_query_cache = true;
+            ct.eval_stats.iterations = 1;
+            ct.eval_stats.cache_hits = ct.ct_cache.len().try_into().unwrap_or(u32::MAX);
+        }
+    }
 
-fn rebuild_branch_decisions(
-    ct_cache: &DenseMap<ExprId, Literal>,
-) -> DenseMap<ExprId, BranchDecision> {
-    ct_cache
-        .iter()
-        .filter_map(|(expr_id, literal)| match literal {
-            Literal::Bool(true) => Some((expr_id, BranchDecision::LiveTrue)),
-            Literal::Bool(false) => Some((expr_id, BranchDecision::LiveFalse)),
-            _ => None,
-        })
-        .collect()
+    if !used_query_cache {
+        let (ct_cache, eval_stats) = ct_common::compute_ct_cache(mono.program(), target);
+        ct.ct_cache = ct_cache;
+        ct.eval_stats = eval_stats;
+
+        let call_folds = fold_known_pure_calls(mono.program(), target, &mut ct.ct_cache);
+        ct.eval_stats.iterations = ct
+            .eval_stats
+            .iterations
+            .saturating_add(call_folds.iterations);
+        ct.eval_stats.eval_attempts = ct
+            .eval_stats
+            .eval_attempts
+            .saturating_add(call_folds.attempts);
+        ct.eval_stats.cache_inserts = ct
+            .eval_stats
+            .cache_inserts
+            .saturating_add(call_folds.inserts);
+
+        if let Some(path) = query_cache_path {
+            let snapshot = CtQueryCacheSnapshot {
+                cache_key: ct.cache_key.clone(),
+                file_deps: ct.file_deps.clone(),
+                program_fingerprint: fingerprint_program(mono.program()),
+                ct_cache: ct.ct_cache.clone(),
+            };
+            let _ = save_query_snapshot(path, &snapshot);
+        }
+    }
+
+    ct.branch_decisions = ct_common::rebuild_branch_decisions(&ct.ct_cache);
+
+    mono.into_ct_propagated(ct)
 }
 
 #[derive(Default)]
@@ -209,7 +234,7 @@ impl CallEvaluator<'_> {
 
         let expr = self.program.expr(expr_id)?;
         match &expr.kind {
-            ExprKind::Literal(lit) => Some(normalize_literal(lit.clone(), self.target)),
+            ExprKind::Literal(lit) => Some(ct_common::normalize_literal(lit.clone(), self.target)),
             ExprKind::Var(var) => env.get(var).cloned(),
             ExprKind::Unary { op, expr } => {
                 let value = self.eval_expr(*expr, env)?;
@@ -232,22 +257,8 @@ impl CallEvaluator<'_> {
     }
 }
 
-fn normalize_literal(literal: Literal, target: TargetSpec) -> Literal {
-    match literal {
-        Literal::Int(raw) => Literal::Int(normalize_int(raw, target)),
-        _ => literal,
-    }
-}
-
 fn eval_unary(op: UnaryOp, value: &Literal, target: TargetSpec) -> Option<Literal> {
-    match (op, value) {
-        (UnaryOp::Neg, Literal::Int(v)) => {
-            Some(Literal::Int(normalize_int(v.wrapping_neg(), target)))
-        }
-        (UnaryOp::Neg, Literal::Float(v)) if v.is_finite() => Some(Literal::Float(-v)),
-        (UnaryOp::Not, Literal::Bool(v)) => Some(Literal::Bool(!v)),
-        _ => None,
-    }
+    ct_common::eval_unary(op, value, target).map(|(value, _)| value)
 }
 
 fn eval_binary(
@@ -256,105 +267,5 @@ fn eval_binary(
     right: &Literal,
     target: TargetSpec,
 ) -> Option<Literal> {
-    use BinaryOp::*;
-    use Literal::*;
-    use OpCategory::*;
-
-    match (op.category(), left, right) {
-        (Arithmetic, Int(a), Int(b)) => eval_int_arith(op, *a, *b, target),
-        (Arithmetic, Float(a), Float(b)) => eval_float_arith(op, *a, *b),
-
-        (Comparison, Int(a), Int(b)) => {
-            let lhs = normalize_int(*a, target);
-            let rhs = normalize_int(*b, target);
-            eval_cmp(op, &lhs, &rhs)
-        }
-        (Comparison, Float(a), Float(b)) if host_float_operands_supported(*a, *b) => {
-            eval_cmp(op, a, b)
-        }
-        (Comparison, Char(a), Char(b)) => eval_cmp(op, a, b),
-
-        (Equality, Int(a), Int(b)) => {
-            let lhs = normalize_int(*a, target);
-            let rhs = normalize_int(*b, target);
-            eval_eq(op, &lhs, &rhs)
-        }
-        (Equality, Bool(a), Bool(b)) => eval_eq(op, a, b),
-        (Equality, Float(a), Float(b)) if host_float_operands_supported(*a, *b) => {
-            eval_eq(op, a, b)
-        }
-        (Equality, Char(a), Char(b)) => eval_eq(op, a, b),
-        (Equality, String(a), String(b)) => eval_eq(op, a, b),
-        (Equality, Unit, Unit) => eval_eq(op, &(), &()),
-
-        (Logical, Bool(a), Bool(b)) => match op {
-            And => Some(Literal::Bool(*a && *b)),
-            Or => Some(Literal::Bool(*a || *b)),
-            _ => None,
-        },
-
-        _ => None,
-    }
-}
-
-fn eval_cmp<T: PartialOrd>(op: BinaryOp, lhs: &T, rhs: &T) -> Option<Literal> {
-    let value = match op {
-        BinaryOp::Lt => lhs < rhs,
-        BinaryOp::Le => lhs <= rhs,
-        BinaryOp::Gt => lhs > rhs,
-        BinaryOp::Ge => lhs >= rhs,
-        _ => return None,
-    };
-    Some(Literal::Bool(value))
-}
-
-fn eval_eq<T: PartialEq>(op: BinaryOp, lhs: &T, rhs: &T) -> Option<Literal> {
-    let value = match op {
-        BinaryOp::Eq => lhs == rhs,
-        BinaryOp::Ne => lhs != rhs,
-        _ => return None,
-    };
-    Some(Literal::Bool(value))
-}
-
-fn eval_int_arith(op: BinaryOp, left: i64, right: i64, target: TargetSpec) -> Option<Literal> {
-    let lhs = normalize_int(left, target);
-    let rhs = normalize_int(right, target);
-    let value = match op {
-        BinaryOp::Add => lhs.wrapping_add(rhs),
-        BinaryOp::Sub => lhs.wrapping_sub(rhs),
-        BinaryOp::Mul => lhs.wrapping_mul(rhs),
-        BinaryOp::Div if rhs != 0 => lhs.wrapping_div(rhs),
-        BinaryOp::Mod if rhs != 0 => lhs.wrapping_rem(rhs),
-        _ => return None,
-    };
-    Some(Literal::Int(normalize_int(value, target)))
-}
-
-fn eval_float_arith(op: BinaryOp, left: f64, right: f64) -> Option<Literal> {
-    if !host_float_operands_supported(left, right) {
-        return None;
-    }
-    let value = match op {
-        BinaryOp::Add => left + right,
-        BinaryOp::Sub => left - right,
-        BinaryOp::Mul => left * right,
-        BinaryOp::Div if right != 0.0 => left / right,
-        BinaryOp::Mod if right != 0.0 => left % right,
-        _ => return None,
-    };
-    value.is_finite().then_some(Literal::Float(value))
-}
-
-fn normalize_int(value: i64, target: TargetSpec) -> i64 {
-    let bits = target.word_size_bits.clamp(1, 64);
-    if bits >= 64 {
-        return value;
-    }
-    let shift = 64u8.saturating_sub(bits);
-    (value << shift) >> shift
-}
-
-fn host_float_operands_supported(lhs: f64, rhs: f64) -> bool {
-    lhs.is_finite() && rhs.is_finite()
+    ct_common::eval_binary(op, left, right, target).map(|(value, _)| value)
 }
