@@ -23,6 +23,7 @@ use crate::common::ids::{EffectLabelId, ExprId, FuncId, HandlerId, StmtId, Symbo
 use crate::ir::core::{
     CoreProgram, ExprKind, ExprNode, FunctionDecl, HandlerDef, Literal, StmtKind, StmtNode,
 };
+use crate::passes::constant_table;
 use crate::pipeline::phases::{
     BtaTables, CtPropagationTables, Reason, Residualized, SemanticTables, SpecializationStats,
     Stage,
@@ -44,6 +45,7 @@ pub fn run(residual: Residualized) -> Residualized {
     mono.remap_func_ids(&func_remap);
     bta.remap_func_ids(&func_remap);
     residual_tables.remap_func_ids(&func_remap);
+    residual_tables.constant_table = constant_table::build_for_core(&program);
     synchronize_semantic_tables(&program, &mut sema);
     assert_remap_integrity(&program, &sema, &mono, &ct, &bta, &residual_tables);
     Residualized::new(program, diagnostics, sema, mono, ct, bta, residual_tables)

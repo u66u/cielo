@@ -28,6 +28,7 @@ use crate::analysis::function_graph::collect_reachable_functions;
 use crate::common::ids::{ExprId, FuncId, HandlerId, StmtId, VarId};
 use crate::common::span::Span;
 use crate::ir::core::{CoreProgram, ExprKind, ExprNode, MatchArm, StmtKind, StmtNode};
+use crate::passes::constant_table;
 use crate::pipeline::phases::Residualized;
 
 const MAX_SHRINK_ITERS: usize = 16;
@@ -35,10 +36,12 @@ const MAX_SPEC_INLINE_STMTS: usize = 6;
 const MAX_SPEC_INLINE_EXPRS: usize = 24;
 
 pub fn run(residual: Residualized) -> Residualized {
-    let (mut program, diagnostics, sema, mono, ct, bta, residual_tables) = residual.into_parts();
+    let (mut program, diagnostics, sema, mono, ct, bta, mut residual_tables) =
+        residual.into_parts();
     shrink_to_fixpoint(&mut program);
     speculative_inline_once(&mut program);
     shrink_to_fixpoint(&mut program);
+    residual_tables.constant_table = constant_table::build_for_core(&program);
     Residualized::new(program, diagnostics, sema, mono, ct, bta, residual_tables)
 }
 

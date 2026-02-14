@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use crate::passes::{bta, ct_eval, handler_specialize, residualize};
@@ -287,6 +288,29 @@ fn assert_residualize_specialize_invariants(residual: &crate::pipeline::phases::
             func_id.as_u32()
         );
     }
+
+    let mut seen_constant_keys = HashSet::new();
+    let mut total_constant_bytes = 0usize;
+    for entry in &residual_tables.constant_table.entries {
+        assert!(
+            seen_constant_keys.insert(entry.key.clone()),
+            "compiler bug: residual constant_table contains duplicate key"
+        );
+        assert!(
+            entry.estimated_size_bytes <= residual_tables.constant_table.entry_cap_bytes,
+            "compiler bug: residual constant_table entry exceeds entry cap"
+        );
+        total_constant_bytes = total_constant_bytes.saturating_add(entry.estimated_size_bytes);
+    }
+    assert!(
+        residual_tables.constant_table.total_size_bytes
+            <= residual_tables.constant_table.unit_cap_bytes,
+        "compiler bug: residual constant_table total size exceeds unit cap"
+    );
+    assert!(
+        residual_tables.constant_table.total_size_bytes <= total_constant_bytes,
+        "compiler bug: residual constant_table size accounting is inconsistent"
+    );
 }
 
 fn assert_stage_reason_in_bounds(stage: Stage, function_count: usize, context: &str) {
