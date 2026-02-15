@@ -1,17 +1,18 @@
 use std::collections::BTreeMap;
-use std::fmt::Write;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::pipeline::phases::{CtCacheKey, CtFileDep};
 
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub struct CtDepSnapshot {
     pub cache_key: CtCacheKey,
     pub file_deps: Vec<CtFileDep>,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum CtInvalidationReason {
     TargetWordSizeChanged {
         before: u8,
@@ -49,7 +50,7 @@ pub enum CtInvalidationReason {
 }
 
 pub fn sidecar_path(snapshot_path: &Path) -> PathBuf {
-    snapshot_path.with_extension("ctdeps.tsv")
+    snapshot_path.with_extension("ctdeps.bin")
 }
 
 pub fn diff(previous: &CtDepSnapshot, current: &CtDepSnapshot) -> Vec<CtInvalidationReason> {
@@ -60,84 +61,33 @@ pub fn diff(previous: &CtDepSnapshot, current: &CtDepSnapshot) -> Vec<CtInvalida
 }
 
 pub fn load_snapshot(path: &Path) -> io::Result<CtDepSnapshot> {
-    let text = std::fs::read_to_string(path)?;
-    let mut snapshot = CtDepSnapshot::default();
-    let mut file_deps = Vec::new();
+    let bytes = std::fs::read(path)?;
+    let mut snapshot: CtDepSnapshot =
+        bincode::deserialize(&bytes).map_err(deserialize_error(path))?;
 
-    for line in text.lines() {
-        let parts = line.splitn(3, '\t').collect::<Vec<_>>();
-        if parts.len() != 3 {
-            continue;
-        }
-        match parts[0] {
-            "key" => apply_cache_key_field(&mut snapshot.cache_key, parts[1], parts[2]),
-            "dep" => file_deps.push(CtFileDep {
-                path: parts[1].to_owned(),
-                content_hash: parts[2].to_owned(),
-            }),
-            _ => {}
-        }
-    }
-
-    file_deps.sort_by(|lhs, rhs| {
+    snapshot.file_deps.sort_by(|lhs, rhs| {
         lhs.path
             .cmp(&rhs.path)
             .then(lhs.content_hash.cmp(&rhs.content_hash))
     });
-    snapshot.file_deps = file_deps;
     Ok(snapshot)
 }
 
 pub fn save_snapshot(path: &Path, snapshot: &CtDepSnapshot) -> io::Result<()> {
-    let mut text = String::new();
-    writeln!(
-        text,
-        "key\ttarget_word_size_bits\t{}",
-        snapshot.cache_key.target_word_size_bits
-    )
-    .expect("in-memory write should not fail");
-    writeln!(
-        text,
-        "key\ttarget_endianness\t{}",
-        snapshot.cache_key.target_endianness
-    )
-    .expect("in-memory write should not fail");
-    writeln!(
-        text,
-        "key\ttarget_pointer_alignment\t{}",
-        snapshot.cache_key.target_pointer_alignment
-    )
-    .expect("in-memory write should not fail");
-    writeln!(
-        text,
-        "key\tevaluator_policy\t{}",
-        snapshot.cache_key.evaluator_policy
-    )
-    .expect("in-memory write should not fail");
-    writeln!(
-        text,
-        "key\tcompiler_version\t{}",
-        snapshot.cache_key.compiler_version
-    )
-    .expect("in-memory write should not fail");
-
-    let mut deps = snapshot.file_deps.clone();
-    deps.sort_by(|lhs, rhs| {
+    let mut to_save = snapshot.clone();
+    to_save.file_deps.sort_by(|lhs, rhs| {
         lhs.path
             .cmp(&rhs.path)
             .then(lhs.content_hash.cmp(&rhs.content_hash))
     });
-    for dep in deps {
-        writeln!(text, "dep\t{}\t{}", dep.path, dep.content_hash)
-            .expect("in-memory write should not fail");
-    }
+    let bytes = bincode::serialize(&to_save).map_err(serialize_error(path))?;
 
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, text)
+    std::fs::write(path, bytes)
 }
 
 fn diff_cache_key(
@@ -217,17 +167,16 @@ fn diff_file_deps(
     }
 }
 
-fn apply_cache_key_field(cache_key: &mut CtCacheKey, field: &str, value: &str) {
-    match field {
-        "target_word_size_bits" => {
-            cache_key.target_word_size_bits = value.parse::<u8>().unwrap_or_default();
-        }
-        "target_endianness" => cache_key.target_endianness = value.to_owned(),
-        "target_pointer_alignment" => {
-            cache_key.target_pointer_alignment = value.parse::<u8>().unwrap_or_default();
-        }
-        "evaluator_policy" => cache_key.evaluator_policy = value.to_owned(),
-        "compiler_version" => cache_key.compiler_version = value.to_owned(),
-        _ => {}
-    }
+fn serialize_error(path: &Path) -> impl FnOnce(bincode::Error) -> io::Error + '_ {
+    move |err| io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("failed to serialize ct dep snapshot {}: {err}", path.display()),
+    )
+}
+
+fn deserialize_error(path: &Path) -> impl FnOnce(bincode::Error) -> io::Error + '_ {
+    move |err| io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("failed to deserialize ct dep snapshot {}: {err}", path.display()),
+    )
 }

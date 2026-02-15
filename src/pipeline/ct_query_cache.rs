@@ -1,7 +1,8 @@
-use std::fmt::Write;
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
 
 use crate::common::densemap::DenseMap;
 use crate::common::ids::ExprId;
@@ -16,89 +17,81 @@ pub struct CtQueryCacheSnapshot {
     pub ct_cache: DenseMap<ExprId, Literal>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct CtQueryCacheSnapshotWire {
+    cache_key: CtCacheKey,
+    file_deps: Vec<CtFileDep>,
+    program_fingerprint: u64,
+    ct_cache: Vec<CtCacheEntry>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct CtCacheEntry {
+    expr_index: u32,
+    literal: Literal,
+}
+
 pub fn sidecar_path(snapshot_path: &Path) -> PathBuf {
-    snapshot_path.with_extension("ctquery.tsv")
+    snapshot_path.with_extension("ctquery.bin")
 }
 
 pub fn load_snapshot(path: &Path) -> io::Result<CtQueryCacheSnapshot> {
-    let text = std::fs::read_to_string(path)?;
-    let mut snapshot = CtQueryCacheSnapshot::default();
-    let mut deps = Vec::new();
-    let mut cache = DenseMap::default();
+    let bytes = std::fs::read(path)?;
+    let wire: CtQueryCacheSnapshotWire =
+        bincode::deserialize(&bytes).map_err(deserialize_error(path))?;
 
-    for line in text.lines() {
-        let parts = line.splitn(3, '\t').collect::<Vec<_>>();
-        if parts.len() != 3 {
-            continue;
-        }
-        match parts[0] {
-            "meta" if parts[1] == "program_fingerprint" => {
-                snapshot.program_fingerprint = parts[2].parse::<u64>().unwrap_or_default();
-            }
-            "key" => apply_cache_key_field(&mut snapshot.cache_key, parts[1], parts[2]),
-            "dep" => deps.push(CtFileDep {
-                path: parts[1].to_owned(),
-                content_hash: parts[2].to_owned(),
-            }),
-            "expr" => {
-                let Ok(idx) = parts[1].parse::<usize>() else {
-                    continue;
-                };
-                let Some(literal) = decode_literal(parts[2]) else {
-                    continue;
-                };
-                cache.insert(ExprId::new(idx), literal);
-            }
-            _ => {}
-        }
-    }
-    deps.sort_by(|lhs, rhs| {
+    let mut file_deps = wire.file_deps;
+    file_deps.sort_by(|lhs, rhs| {
         lhs.path
             .cmp(&rhs.path)
             .then(lhs.content_hash.cmp(&rhs.content_hash))
     });
-    snapshot.file_deps = deps;
-    snapshot.ct_cache = cache;
-    Ok(snapshot)
+
+    let mut ct_cache = DenseMap::default();
+    for entry in wire.ct_cache {
+        let _ = ct_cache.insert(ExprId::from_u32(entry.expr_index), entry.literal);
+    }
+
+    Ok(CtQueryCacheSnapshot {
+        cache_key: wire.cache_key,
+        file_deps,
+        program_fingerprint: wire.program_fingerprint,
+        ct_cache,
+    })
 }
 
 pub fn save_snapshot(path: &Path, snapshot: &CtQueryCacheSnapshot) -> io::Result<()> {
-    let mut text = String::new();
-    writeln!(
-        text,
-        "meta\tprogram_fingerprint\t{}",
-        snapshot.program_fingerprint
-    )
-    .expect("in-memory write should not fail");
-    write_cache_key(&mut text, &snapshot.cache_key);
-
-    let mut deps = snapshot.file_deps.clone();
-    deps.sort_by(|lhs, rhs| {
+    let mut file_deps = snapshot.file_deps.clone();
+    file_deps.sort_by(|lhs, rhs| {
         lhs.path
             .cmp(&rhs.path)
             .then(lhs.content_hash.cmp(&rhs.content_hash))
     });
-    for dep in deps {
-        writeln!(text, "dep\t{}\t{}", dep.path, dep.content_hash)
-            .expect("in-memory write should not fail");
-    }
 
-    let mut entries = snapshot
+    let mut ct_cache = snapshot
         .ct_cache
         .iter()
-        .map(|(expr_id, literal)| (expr_id.index(), encode_literal(literal)))
+        .map(|(expr_id, literal)| CtCacheEntry {
+            expr_index: expr_id.as_u32(),
+            literal: literal.clone(),
+        })
         .collect::<Vec<_>>();
-    entries.sort_by_key(|(idx, _)| *idx);
-    for (idx, literal) in entries {
-        writeln!(text, "expr\t{}\t{}", idx, literal).expect("in-memory write should not fail");
-    }
+    ct_cache.sort_by_key(|entry| entry.expr_index);
+
+    let wire = CtQueryCacheSnapshotWire {
+        cache_key: snapshot.cache_key.clone(),
+        file_deps,
+        program_fingerprint: snapshot.program_fingerprint,
+        ct_cache,
+    };
+    let bytes = bincode::serialize(&wire).map_err(serialize_error(path))?;
 
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, text)
+    std::fs::write(path, bytes)
 }
 
 pub fn normalized_file_deps(mut deps: Vec<CtFileDep>) -> Vec<CtFileDep> {
@@ -176,46 +169,6 @@ pub fn fingerprint_program(program: &CoreProgram) -> u64 {
     hasher.finish()
 }
 
-fn write_cache_key(out: &mut String, cache_key: &CtCacheKey) {
-    writeln!(
-        out,
-        "key\ttarget_word_size_bits\t{}",
-        cache_key.target_word_size_bits
-    )
-    .expect("in-memory write should not fail");
-    writeln!(
-        out,
-        "key\ttarget_endianness\t{}",
-        cache_key.target_endianness
-    )
-    .expect("in-memory write should not fail");
-    writeln!(
-        out,
-        "key\ttarget_pointer_alignment\t{}",
-        cache_key.target_pointer_alignment
-    )
-    .expect("in-memory write should not fail");
-    writeln!(out, "key\tevaluator_policy\t{}", cache_key.evaluator_policy)
-        .expect("in-memory write should not fail");
-    writeln!(out, "key\tcompiler_version\t{}", cache_key.compiler_version)
-        .expect("in-memory write should not fail");
-}
-
-fn apply_cache_key_field(cache_key: &mut CtCacheKey, field: &str, value: &str) {
-    match field {
-        "target_word_size_bits" => {
-            cache_key.target_word_size_bits = value.parse::<u8>().unwrap_or_default();
-        }
-        "target_endianness" => cache_key.target_endianness = value.to_owned(),
-        "target_pointer_alignment" => {
-            cache_key.target_pointer_alignment = value.parse::<u8>().unwrap_or_default();
-        }
-        "evaluator_policy" => cache_key.evaluator_policy = value.to_owned(),
-        "compiler_version" => cache_key.compiler_version = value.to_owned(),
-        _ => {}
-    }
-}
-
 fn hash_literal<H: Hasher>(literal: &Literal, hasher: &mut H) {
     match literal {
         Literal::Unit => 0u8.hash(hasher),
@@ -242,77 +195,16 @@ fn hash_literal<H: Hasher>(literal: &Literal, hasher: &mut H) {
     }
 }
 
-fn encode_literal(literal: &Literal) -> String {
-    match literal {
-        Literal::Unit => "u".to_owned(),
-        Literal::Bool(value) => format!("b:{}", if *value { 1 } else { 0 }),
-        Literal::Int(value) => format!("i:{value}"),
-        Literal::Float(value) => format!("f:{}", value.to_bits()),
-        Literal::Char(value) => format!("c:{}", *value as u32),
-        Literal::String(value) => format!("s:{}", encode_hex(value.as_bytes())),
-    }
+fn serialize_error(path: &Path) -> impl FnOnce(bincode::Error) -> io::Error + '_ {
+    move |err| io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("failed to serialize query snapshot {}: {err}", path.display()),
+    )
 }
 
-fn decode_literal(text: &str) -> Option<Literal> {
-    if text == "u" {
-        return Some(Literal::Unit);
-    }
-    let mut parts = text.splitn(2, ':');
-    let tag = parts.next()?;
-    let payload = parts.next()?;
-    match tag {
-        "b" => match payload {
-            "0" => Some(Literal::Bool(false)),
-            "1" => Some(Literal::Bool(true)),
-            _ => None,
-        },
-        "i" => payload.parse::<i64>().ok().map(Literal::Int),
-        "f" => payload
-            .parse::<u64>()
-            .ok()
-            .map(f64::from_bits)
-            .map(Literal::Float),
-        "c" => payload
-            .parse::<u32>()
-            .ok()
-            .and_then(char::from_u32)
-            .map(Literal::Char),
-        "s" => decode_hex(payload)
-            .and_then(|bytes| String::from_utf8(bytes).ok())
-            .map(Literal::String),
-        _ => None,
-    }
-}
-
-fn encode_hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        write!(out, "{:02x}", byte).expect("in-memory write should not fail");
-    }
-    out
-}
-
-fn decode_hex(encoded: &str) -> Option<Vec<u8>> {
-    if !encoded.len().is_multiple_of(2) {
-        return None;
-    }
-    let mut out = Vec::with_capacity(encoded.len() / 2);
-    let bytes = encoded.as_bytes();
-    let mut idx = 0usize;
-    while idx < bytes.len() {
-        let hi = decode_nibble(bytes[idx])?;
-        let lo = decode_nibble(bytes[idx + 1])?;
-        out.push((hi << 4) | lo);
-        idx += 2;
-    }
-    Some(out)
-}
-
-fn decode_nibble(ch: u8) -> Option<u8> {
-    match ch {
-        b'0'..=b'9' => Some(ch - b'0'),
-        b'a'..=b'f' => Some(10 + (ch - b'a')),
-        b'A'..=b'F' => Some(10 + (ch - b'A')),
-        _ => None,
-    }
+fn deserialize_error(path: &Path) -> impl FnOnce(bincode::Error) -> io::Error + '_ {
+    move |err| io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("failed to deserialize query snapshot {}: {err}", path.display()),
+    )
 }

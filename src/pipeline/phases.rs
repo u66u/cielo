@@ -7,6 +7,7 @@ use crate::frontend::ast::Program as AstProgram;
 use crate::ir::core::{CoreProgram, Literal};
 use crate::sema::effect::{EffectProperties, SortedEffectRow};
 use crate::sema::ty::Persistability;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Stage {
@@ -114,13 +115,13 @@ impl MonomorphizationSummary {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub struct CtFileDep {
     pub path: String,
     pub content_hash: String,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct CtCacheKey {
     pub target_word_size_bits: u8,
     pub target_endianness: String,

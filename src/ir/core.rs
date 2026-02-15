@@ -4,10 +4,11 @@ use crate::common::ids::{
 };
 use crate::common::span::Span;
 use crate::sema::effect::{EffectProperties, SortedEffectRow};
+use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 use std::collections::HashSet;
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum Literal {
     Unit,
     Bool(bool),

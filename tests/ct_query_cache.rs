@@ -15,7 +15,7 @@ fn fresh_path(prefix: &str, ext: &str) -> std::path::PathBuf {
 
 #[test]
 fn ct_query_cache_reuses_results_with_stable_key_and_deps() {
-    let cache_path = fresh_path("cielo_ct_query_cache", "tsv");
+    let cache_path = fresh_path("cielo_ct_query_cache", "bin");
     let mut config = CompilerConfig::default();
     config.ct_query_cache_path = Some(cache_path.clone());
     let compiler = Compiler::new(config);
@@ -69,7 +69,7 @@ fn main() -> Int {
 
 #[test]
 fn ct_query_cache_invalidates_when_comptime_file_dep_changes() {
-    let cache_path = fresh_path("cielo_ct_query_cache_dep", "tsv");
+    let cache_path = fresh_path("cielo_ct_query_cache_dep", "bin");
     let dep_path = fresh_path("cielo_ct_dep_input", "txt");
     fs::write(dep_path.as_path(), "alpha").expect("write dep");
     let dep_text = dep_path.to_string_lossy().replace('\\', "\\\\");
@@ -121,7 +121,7 @@ fn main() -> Int {{
 
 #[test]
 fn ct_query_cache_parity_matrix_hit_miss_and_invalidation() {
-    let cache_path = fresh_path("cielo_ct_query_cache_matrix", "tsv");
+    let cache_path = fresh_path("cielo_ct_query_cache_matrix", "bin");
     let src_a = r#"
 fn main() -> Int {
   let x = 2147483648;
@@ -220,7 +220,7 @@ fn main() -> Int {
 
 #[test]
 fn fused_stage_a_query_cache_parity_matrix_hit_miss_and_invalidation() {
-    let cache_path = fresh_path("cielo_ct_query_cache_stage_a_matrix", "tsv");
+    let cache_path = fresh_path("cielo_ct_query_cache_stage_a_matrix", "bin");
     let src_a = r#"
 fn main() -> Int {
   let x = 2147483648;
@@ -328,15 +328,15 @@ fn main() -> Int {
     );
 
     let _ = fs::remove_file(cache_path.clone());
-    let _ = fs::remove_file(cache_path.with_extension("ctdeps.tsv"));
+    let _ = fs::remove_file(cache_path.with_extension("ctdeps.bin"));
 }
 
 #[test]
 fn test_query_cache_hit_and_invalidation_matrix() {
     let temp_dir = env::temp_dir();
-    let cache_path = temp_dir.join("cielo_test_cache.tsv");
+    let cache_path = temp_dir.join("cielo_test_cache.bin");
     let _ = fs::remove_file(&cache_path); // Ensure clean state
-    let _ = fs::remove_file(cache_path.with_extension("ctdeps.tsv"));
+    let _ = fs::remove_file(cache_path.with_extension("ctdeps.bin"));
 
     let source_v1 = r#"
     fn main() -> Int {

@@ -128,7 +128,7 @@ fn snapshot_roundtrip_is_stable_and_sorted() {
     let path = std::env::temp_dir().join(format!("cielo_ctdeps_{stamp}.tsv"));
     let sidecar = sidecar_path(path.as_path());
     assert!(
-        sidecar.to_string_lossy().ends_with(".ctdeps.tsv"),
+        sidecar.to_string_lossy().ends_with(".ctdeps.bin"),
         "sidecar naming should stay stable for tooling integration"
     );
 
