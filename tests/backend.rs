@@ -5,9 +5,7 @@ use cielo::ir::linear::{
     CallConvention, LinearExpr, LinearFunction, LinearMatchArm, LinearProgram, LinearStmt,
 };
 use cielo::passes::{c_emit, c_emit::emit_c_program, handler_specialize, linearize};
-use cielo::pipeline::phases::{
-    ConstantEmbedStrategy, ConstantKey, CtorFieldKey, ScalarLiteralKey,
-};
+use cielo::pipeline::phases::{ConstantEmbedStrategy, ConstantKey, CtorFieldKey, ScalarLiteralKey};
 use cielo::{Compiler, CompilerConfig};
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -542,7 +540,9 @@ fn main() -> Int {
         "nested ctor pooling should still emit pooled ctor values"
     );
     assert!(
-        compiled.c_source.contains("static CieloCtor cielo_const_ctor_nested_"),
+        compiled
+            .c_source
+            .contains("static CieloCtor cielo_const_ctor_nested_"),
         "nested ctor fields should materialize nested static ctor descriptors"
     );
     assert!(
