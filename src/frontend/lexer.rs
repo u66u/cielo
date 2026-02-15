@@ -10,7 +10,7 @@ macro_rules! define_keywords {
             $($variant),*
         }
 
-        fn keyword_from_text(text: &str) -> Option<Keyword> {
+        fn from_str(text: &str) -> Option<Keyword> {
             match text {
                 $($text => Some(Keyword::$variant),)*
                 _ => None,
@@ -286,7 +286,7 @@ impl<'a> Lexer<'a> {
         }
 
         let text = String::from_utf8_lossy(&self.bytes[start..self.offset]);
-        if let Some(keyword) = keyword_from_text(&text) {
+        if let Some(keyword) = from_str(&text) {
             self.tokens.push(Token {
                 kind: TokenKind::Keyword(keyword),
                 span: self.span(start, self.offset),
