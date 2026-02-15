@@ -1042,15 +1042,25 @@ fn emit_string_const_pool(out: &mut String, pool: &StringConstPool) {
 }
 
 fn emit_ctor_const_pool(out: &mut String, pool: &CtorConstPool, interner: &Interner) {
+    let mut nested_counter = 0usize;
     for entry in &pool.entries {
         if let Some(fields_symbol) = &entry.fields_symbol {
+            let mut nested_decls = String::new();
+            let mut field_initializers = Vec::with_capacity(entry.key.fields.len());
+            for field in &entry.key.fields {
+                let rendered = ctor_field_value_initializer(field, interner, &mut nested_counter);
+                nested_decls.push_str(rendered.declarations.as_str());
+                field_initializers.push(rendered.initializer);
+            }
+            out.push_str(nested_decls.as_str());
+
             write!(out, "static CieloValue {fields_symbol}[] = {{")
                 .expect("in-memory write should not fail");
-            for (idx, field) in entry.key.fields.iter().enumerate() {
+            for (idx, initializer) in field_initializers.iter().enumerate() {
                 if idx > 0 {
                     out.push_str(", ");
                 }
-                out.push_str(ctor_field_value_initializer(field).as_str());
+                out.push_str(initializer.as_str());
             }
             out.push_str("};\n");
         }
@@ -1082,29 +1092,103 @@ fn emit_ctor_const_pool(out: &mut String, pool: &CtorConstPool, interner: &Inter
     }
 }
 
-fn ctor_field_value_initializer(field: &CtorFieldKey) -> String {
+struct RenderedCtorField {
+    declarations: String,
+    initializer: String,
+}
+
+fn ctor_field_value_initializer(
+    field: &CtorFieldKey,
+    interner: &Interner,
+    nested_counter: &mut usize,
+) -> RenderedCtorField {
     match field {
-        CtorFieldKey::Unit => "{ .tag = CV_UNIT }".to_owned(),
-        CtorFieldKey::Bool(value) => format!(
-            "{{ .tag = CV_BOOL, .as.b = {} }}",
-            if *value { "true" } else { "false" }
-        ),
-        CtorFieldKey::Int(value) => format!("{{ .tag = CV_INT, .as.i = {value} }}"),
-        CtorFieldKey::Char(value) => {
-            format!("{{ .tag = CV_CHAR, .as.c = {}u }}", *value as u32)
-        }
+        CtorFieldKey::Unit => RenderedCtorField {
+            declarations: String::new(),
+            initializer: "{ .tag = CV_UNIT }".to_owned(),
+        },
+        CtorFieldKey::Bool(value) => RenderedCtorField {
+            declarations: String::new(),
+            initializer: format!(
+                "{{ .tag = CV_BOOL, .as.b = {} }}",
+                if *value { "true" } else { "false" }
+            ),
+        },
+        CtorFieldKey::Int(value) => RenderedCtorField {
+            declarations: String::new(),
+            initializer: format!("{{ .tag = CV_INT, .as.i = {value} }}"),
+        },
+        CtorFieldKey::Char(value) => RenderedCtorField {
+            declarations: String::new(),
+            initializer: format!("{{ .tag = CV_CHAR, .as.c = {}u }}", *value as u32),
+        },
         CtorFieldKey::Float(bits) => {
             let value = f64::from_bits(*bits);
-            format!(
-                "{{ .tag = CV_FLOAT, .as.f = {} }}",
-                format_float_literal(value)
-            )
+            RenderedCtorField {
+                declarations: String::new(),
+                initializer: format!(
+                    "{{ .tag = CV_FLOAT, .as.f = {} }}",
+                    format_float_literal(value)
+                ),
+            }
         }
-        CtorFieldKey::String(value) => {
-            format!(
+        CtorFieldKey::String(value) => RenderedCtorField {
+            declarations: String::new(),
+            initializer: format!(
                 "{{ .tag = CV_STRING, .as.s = \"{}\" }}",
                 escape_c_string(value)
+            ),
+        },
+        CtorFieldKey::Ctor(key) => {
+            let nested_id = *nested_counter;
+            *nested_counter = nested_counter.saturating_add(1);
+
+            let ctor_symbol = format!("cielo_const_ctor_nested_{nested_id}");
+            let fields_symbol = (!key.fields.is_empty())
+                .then(|| format!("cielo_const_ctor_nested_fields_{nested_id}"));
+            let mut declarations = String::new();
+
+            if let Some(fields_symbol) = &fields_symbol {
+                let mut nested_field_initializers = Vec::with_capacity(key.fields.len());
+                for nested_field in &key.fields {
+                    let nested_rendered =
+                        ctor_field_value_initializer(nested_field, interner, nested_counter);
+                    declarations.push_str(nested_rendered.declarations.as_str());
+                    nested_field_initializers.push(nested_rendered.initializer);
+                }
+
+                write!(declarations, "static CieloValue {fields_symbol}[] = {{")
+                    .expect("in-memory write should not fail");
+                for (idx, initializer) in nested_field_initializers.iter().enumerate() {
+                    if idx > 0 {
+                        declarations.push_str(", ");
+                    }
+                    declarations.push_str(initializer.as_str());
+                }
+                declarations.push_str("};\n");
+            }
+
+            let ty_name = escape_c_string(symbol_text(interner, key.ty).as_str());
+            let variant_name = if key.variant.is_valid() {
+                escape_c_string(symbol_text(interner, key.variant).as_str())
+            } else {
+                String::new()
+            };
+            let fields_ref = fields_symbol.as_deref().unwrap_or("NULL");
+            writeln!(
+                declarations,
+                "static CieloCtor {ctor_symbol} = {{ .ty = \"{}\", .variant = \"{}\", .argc = {}, .fields = {} }};",
+                ty_name,
+                variant_name,
+                key.fields.len(),
+                fields_ref
             )
+            .unwrap();
+
+            RenderedCtorField {
+                declarations,
+                initializer: format!("{{ .tag = CV_CTOR, .as.ctor = &{ctor_symbol} }}"),
+            }
         }
     }
 }
