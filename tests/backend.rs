@@ -5,7 +5,9 @@ use cielo::ir::linear::{
     CallConvention, LinearExpr, LinearFunction, LinearMatchArm, LinearProgram, LinearStmt,
 };
 use cielo::passes::{c_emit, c_emit::emit_c_program, handler_specialize, linearize};
-use cielo::pipeline::phases::{ConstantEmbedStrategy, ConstantKey, ScalarLiteralKey};
+use cielo::pipeline::phases::{
+    ConstantEmbedStrategy, ConstantKey, CtorFieldKey, ScalarLiteralKey,
+};
 use cielo::{Compiler, CompilerConfig};
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -488,6 +490,66 @@ fn c_emitter_pools_repeated_runtime_ctor_literals_with_float_fields() {
     assert!(
         !emitted.contains("cielo_make_ctor(\"PairF\", \"Mk\", 2"),
         "pooled repeated float ctor literals should avoid repeated inline ctor construction"
+    );
+}
+
+#[test]
+fn c_emitter_pools_repeated_runtime_nested_ctor_literals() {
+    let src = r#"
+enum Pair { Mk(Int, Int) }
+enum Boxed { Wrap(Pair, Pair) }
+fn main() -> Int {
+  @runtime {
+    let a = Wrap(Mk(1, 2), Mk(3, 4));
+    let b = Wrap(Mk(1, 2), Mk(3, 4));
+    match b {
+      | Wrap(left, right) => 0
+      | _ => 0
+    }
+  }
+}
+"#;
+    let mut interner = Interner::new();
+    let compiled =
+        compile_source_v0_to_c_without_normalize(src, SourceId::from_u32(0), &mut interner);
+
+    assert!(
+        compiled
+            .residual
+            .residual()
+            .constant_table
+            .entries
+            .iter()
+            .any(|entry| match (&entry.key, entry.strategy) {
+                (ConstantKey::Ctor(key), ConstantEmbedStrategy::Pooled) => {
+                    interner.resolve(key.ty) == Some("Boxed")
+                        && interner.resolve(key.variant) == Some("Wrap")
+                        && key
+                            .fields
+                            .iter()
+                            .all(|field| matches!(field, CtorFieldKey::Ctor(_)))
+                }
+                _ => false,
+            }),
+        "constant table should pool the outer nested constructor and keep nested ctor field keys"
+    );
+    assert!(
+        compiled
+            .c_source
+            .matches("static const CieloValue cielo_const_ctor_v_")
+            .count()
+            >= 1,
+        "nested ctor pooling should still emit pooled ctor values"
+    );
+    assert!(
+        compiled.c_source.contains("static CieloCtor cielo_const_ctor_nested_"),
+        "nested ctor fields should materialize nested static ctor descriptors"
+    );
+    assert!(
+        !compiled
+            .c_source
+            .contains("cielo_make_ctor(\"Boxed\", \"Wrap\", 2"),
+        "pooled nested ctor literals should avoid inline outer ctor construction"
     );
 }
 
