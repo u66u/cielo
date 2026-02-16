@@ -4,7 +4,7 @@ use std::ops::Deref;
 use crate::common::ids::EffectLabelId;
 use smallvec::SmallVec;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum CapabilityLevel {
     Pure,
     Diverge,
@@ -49,7 +49,7 @@ impl std::ops::BitOr for EffectFlags {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct EffectProperties {
     pub level: CapabilityLevel,
     pub flags: EffectFlags,
@@ -74,7 +74,7 @@ impl Default for EffectProperties {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub struct SortedEffectRow(SmallVec<[EffectLabelId; 4]>);
 
 impl SortedEffectRow {

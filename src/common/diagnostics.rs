@@ -17,7 +17,7 @@ pub struct Diagnostic {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ErrorNode {
     pub span: Span,
     pub message: String,

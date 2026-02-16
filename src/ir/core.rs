@@ -7,8 +7,9 @@ use crate::sema::effect::{EffectProperties, SortedEffectRow};
 use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 
-#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Literal {
     Unit,
     Bool(bool),
@@ -18,7 +19,52 @@ pub enum Literal {
     String(String),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+impl PartialEq for Literal {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Unit, Self::Unit) => true,
+            (Self::Bool(lhs), Self::Bool(rhs)) => lhs == rhs,
+            (Self::Int(lhs), Self::Int(rhs)) => lhs == rhs,
+            (Self::Float(lhs), Self::Float(rhs)) => {
+                if lhs.is_nan() || rhs.is_nan() {
+                    lhs.is_nan() && rhs.is_nan()
+                } else {
+                    lhs == rhs
+                }
+            }
+            (Self::Char(lhs), Self::Char(rhs)) => lhs == rhs,
+            (Self::String(lhs), Self::String(rhs)) => lhs == rhs,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Literal {}
+
+impl Hash for Literal {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Self::Unit => {}
+            Self::Bool(value) => value.hash(state),
+            Self::Int(value) => value.hash(state),
+            Self::Float(value) => {
+                let normalized = if value.is_nan() {
+                    f64::NAN.to_bits()
+                } else if *value == 0.0 {
+                    0.0f64.to_bits()
+                } else {
+                    value.to_bits()
+                };
+                normalized.hash(state);
+            }
+            Self::Char(value) => value.hash(state),
+            Self::String(value) => value.hash(state),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum UnaryOp {
     Neg,
     Not,
@@ -33,7 +79,7 @@ impl UnaryOp {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum BinaryOp {
     Add,
     Sub,
@@ -50,7 +96,7 @@ pub enum BinaryOp {
     Or,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum OpCategory {
     Arithmetic,
     Comparison,
@@ -87,13 +133,13 @@ impl BinaryOp {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum StageDirective {
     Comptime,
     Runtime,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum PrimitiveTypeRef {
     Bool,
     Int,
@@ -102,7 +148,7 @@ pub enum PrimitiveTypeRef {
     String,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum CoreTypeRef {
     Unit,
     Primitive(PrimitiveTypeRef),
@@ -110,13 +156,13 @@ pub enum CoreTypeRef {
     Unknown,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct ExprNode {
     pub span: Span,
     pub kind: ExprKind,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum ExprKind {
     Var(VarId),
     Literal(Literal),
@@ -145,7 +191,7 @@ pub enum ExprKind {
     Error(ErrorNode),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct StmtNode {
     pub span: Span,
     pub kind: StmtKind,
@@ -205,7 +251,7 @@ impl StmtNode {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum StmtKind {
     Return(ExprId),
     Let {
@@ -264,7 +310,7 @@ pub enum StmtKind {
     Error(ErrorNode),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct MatchArm {
     pub tag: SymbolId,
     pub binders: Vec<VarId>,
@@ -272,7 +318,7 @@ pub struct MatchArm {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct HandlerClause {
     pub operation: SymbolId,
     pub params: Vec<VarId>,
@@ -281,7 +327,7 @@ pub struct HandlerClause {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct EffectOperationDecl {
     pub name: SymbolId,
     pub param_types: Vec<CoreTypeRef>,
@@ -289,7 +335,7 @@ pub struct EffectOperationDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct EffectDecl {
     pub label: EffectLabelId,
     pub name: SymbolId,
@@ -298,7 +344,7 @@ pub struct EffectDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct HandlerDef {
     pub effect: EffectLabelId,
     pub return_param: VarId,
@@ -307,7 +353,7 @@ pub struct HandlerDef {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct FunctionDecl {
     pub name: SymbolId,
     pub params: Vec<VarId>,
@@ -319,21 +365,21 @@ pub struct FunctionDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct AdtStructDecl {
     pub name: SymbolId,
     pub fields: Vec<CoreTypeRef>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct AdtEnumVariantDecl {
     pub name: SymbolId,
     pub fields: Vec<CoreTypeRef>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct AdtEnumDecl {
     pub name: SymbolId,
     pub variants: Vec<AdtEnumVariantDecl>,
