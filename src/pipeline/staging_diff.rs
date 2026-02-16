@@ -6,7 +6,7 @@ use std::path::Path;
 
 use crate::common::ids::ExprId;
 use crate::ir::core::{CoreProgram, ExprKind};
-use crate::pipeline::phases::{BtaTables, Reason, Stage};
+use crate::pipeline::phases::{BtaTables, Stage};
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct StageSnapshotEntry {
@@ -20,6 +20,37 @@ pub struct StageSnapshotEntry {
 pub enum SnapshotStage {
     Ct,
     Rt,
+}
+
+impl SnapshotStage {
+    pub fn from_stage(stage: Stage) -> Self {
+        match stage {
+            Stage::Ct => Self::Ct,
+            Stage::Rt(_) => Self::Rt,
+        }
+    }
+
+    pub fn from_snapshot_token(token: &str) -> Option<Self> {
+        match token {
+            "ct" => Some(Self::Ct),
+            "rt" => Some(Self::Rt),
+            _ => None,
+        }
+    }
+
+    pub const fn snapshot_token(self) -> &'static str {
+        match self {
+            Self::Ct => "ct",
+            Self::Rt => "rt",
+        }
+    }
+
+    pub const fn display_text(self) -> &'static str {
+        match self {
+            Self::Ct => "CT",
+            Self::Rt => "RT",
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -39,13 +70,10 @@ pub fn collect_snapshot(program: &CoreProgram, bta: &BtaTables) -> Vec<StageSnap
         let Some(stage) = bta.stage_of_expr.get(&expr_id).copied() else {
             continue;
         };
-        let stage_tag = match stage {
-            Stage::Ct => SnapshotStage::Ct,
-            Stage::Rt(_) => SnapshotStage::Rt,
-        };
+        let stage_tag = SnapshotStage::from_stage(stage);
         let top_reason = match stage {
             Stage::Ct => String::new(),
-            Stage::Rt(reason) => reason_text(reason),
+            Stage::Rt(reason) => reason.stable_tag(),
         };
         let stable_id = stable_expr_id(
             expr.span.start,
@@ -99,10 +127,8 @@ pub fn load_snapshot(path: &Path) -> io::Result<Vec<StageSnapshotEntry>> {
         if parts.len() != 4 {
             continue;
         }
-        let stage = match parts[1] {
-            "ct" => SnapshotStage::Ct,
-            "rt" => SnapshotStage::Rt,
-            _ => continue,
+        let Some(stage) = SnapshotStage::from_snapshot_token(parts[1]) else {
+            continue;
         };
         let cause_hash = parts[2].parse::<u64>().unwrap_or_default();
         out.push(StageSnapshotEntry {
@@ -118,14 +144,13 @@ pub fn load_snapshot(path: &Path) -> io::Result<Vec<StageSnapshotEntry>> {
 pub fn save_snapshot(path: &Path, entries: &[StageSnapshotEntry]) -> io::Result<()> {
     let mut text = String::new();
     for entry in entries {
-        let stage = match entry.stage {
-            SnapshotStage::Ct => "ct",
-            SnapshotStage::Rt => "rt",
-        };
         writeln!(
             text,
             "{}\t{}\t{}\t{}",
-            entry.stable_id, stage, entry.cause_hash, entry.top_reason
+            entry.stable_id,
+            entry.stage.snapshot_token(),
+            entry.cause_hash,
+            entry.top_reason
         )
         .expect("in-memory write should not fail");
     }
@@ -172,21 +197,6 @@ fn hash_reason(reason: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     reason.hash(&mut hasher);
     hasher.finish()
-}
-
-// impl fmt is probably cleaner
-fn reason_text(reason: Reason) -> String {
-    match reason {
-        Reason::UnclassifiedRuntime => "unclassified-runtime".to_owned(),
-        Reason::Parameter { func, index } => format!("param-f{}-{}", func.as_u32(), index),
-        Reason::DependsOnVar(var) => format!("depends-v{}", var.as_u32()),
-        Reason::EffectNotDischarged(effect) => format!("effect-e{}", effect.as_u32()),
-        Reason::HandlerIsRuntime(handler) => format!("handler-h{}", handler.as_u32()),
-        Reason::BranchOnRuntime(expr) => format!("branch-e{}", expr.as_u32()),
-        Reason::NotPersistable(ty) => format!("non-persistable-t{}", ty.as_u32()),
-        Reason::UserForcedRuntime => "forced-runtime".to_owned(),
-        Reason::CtOnlyWithRuntimeArgs(func) => format!("ct-only-f{}", func.as_u32()),
-    }
 }
 
 fn collect_expr_fingerprints(program: &CoreProgram) -> Vec<u64> {

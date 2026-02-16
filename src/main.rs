@@ -495,41 +495,11 @@ fn emit_staging_diff(snapshot_path: &Path, residual: &Residualized) {
 }
 
 fn stage_text(stage: SnapshotStage) -> &'static str {
-    match stage {
-        SnapshotStage::Ct => "CT",
-        SnapshotStage::Rt => "RT",
-    }
+    stage.display_text()
 }
 
 fn invalidation_text(reason: &CtInvalidationReason) -> String {
-    match reason {
-        CtInvalidationReason::TargetWordSizeChanged { before, after } => {
-            format!("target word size changed: {before} -> {after}")
-        }
-        CtInvalidationReason::TargetEndiannessChanged { before, after } => {
-            format!("target endianness changed: {before} -> {after}")
-        }
-        CtInvalidationReason::TargetAlignmentChanged { before, after } => {
-            format!("target pointer alignment changed: {before} -> {after}")
-        }
-        CtInvalidationReason::EvaluatorPolicyChanged { before, after } => {
-            format!("ct evaluator policy changed: {before} -> {after}")
-        }
-        CtInvalidationReason::CompilerVersionChanged { before, after } => {
-            format!("compiler version changed: {before} -> {after}")
-        }
-        CtInvalidationReason::FileAdded { path, content_hash } => {
-            format!("dependency added: {path} ({content_hash})")
-        }
-        CtInvalidationReason::FileRemoved { path, content_hash } => {
-            format!("dependency removed: {path} ({content_hash})")
-        }
-        CtInvalidationReason::FileChanged {
-            path,
-            before_hash,
-            after_hash,
-        } => format!("dependency changed: {path} ({before_hash} -> {after_hash})"),
-    }
+    reason.describe()
 }
 
 fn symbol_name(interner: &Interner, symbol: SymbolId) -> String {

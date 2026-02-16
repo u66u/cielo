@@ -49,6 +49,39 @@ pub enum CtInvalidationReason {
     },
 }
 
+impl CtInvalidationReason {
+    pub fn describe(&self) -> String {
+        match self {
+            Self::TargetWordSizeChanged { before, after } => {
+                format!("target word size changed: {before} -> {after}")
+            }
+            Self::TargetEndiannessChanged { before, after } => {
+                format!("target endianness changed: {before} -> {after}")
+            }
+            Self::TargetAlignmentChanged { before, after } => {
+                format!("target pointer alignment changed: {before} -> {after}")
+            }
+            Self::EvaluatorPolicyChanged { before, after } => {
+                format!("ct evaluator policy changed: {before} -> {after}")
+            }
+            Self::CompilerVersionChanged { before, after } => {
+                format!("compiler version changed: {before} -> {after}")
+            }
+            Self::FileAdded { path, content_hash } => {
+                format!("dependency added: {path} ({content_hash})")
+            }
+            Self::FileRemoved { path, content_hash } => {
+                format!("dependency removed: {path} ({content_hash})")
+            }
+            Self::FileChanged {
+                path,
+                before_hash,
+                after_hash,
+            } => format!("dependency changed: {path} ({before_hash} -> {after_hash})"),
+        }
+    }
+}
+
 pub fn sidecar_path(snapshot_path: &Path) -> PathBuf {
     snapshot_path.with_extension("ctdeps.bin")
 }
@@ -168,15 +201,25 @@ fn diff_file_deps(
 }
 
 fn serialize_error(path: &Path) -> impl FnOnce(bincode::Error) -> io::Error + '_ {
-    move |err| io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!("failed to serialize ct dep snapshot {}: {err}", path.display()),
-    )
+    move |err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "failed to serialize ct dep snapshot {}: {err}",
+                path.display()
+            ),
+        )
+    }
 }
 
 fn deserialize_error(path: &Path) -> impl FnOnce(bincode::Error) -> io::Error + '_ {
-    move |err| io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!("failed to deserialize ct dep snapshot {}: {err}", path.display()),
-    )
+    move |err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "failed to deserialize ct dep snapshot {}: {err}",
+                path.display()
+            ),
+        )
+    }
 }

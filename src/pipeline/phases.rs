@@ -47,6 +47,47 @@ impl Reason {
             _ => self,
         }
     }
+
+    pub fn stable_tag(self) -> String {
+        match self {
+            Self::UnclassifiedRuntime => "unclassified-runtime".to_owned(),
+            Self::Parameter { func, index } => format!("param-f{}-{}", func.as_u32(), index),
+            Self::DependsOnVar(var) => format!("depends-v{}", var.as_u32()),
+            Self::EffectNotDischarged(effect) => format!("effect-e{}", effect.as_u32()),
+            Self::HandlerIsRuntime(handler) => format!("handler-h{}", handler.as_u32()),
+            Self::BranchOnRuntime(expr) => format!("branch-e{}", expr.as_u32()),
+            Self::NotPersistable(ty) => format!("non-persistable-t{}", ty.as_u32()),
+            Self::UserForcedRuntime => "forced-runtime".to_owned(),
+            Self::CtOnlyWithRuntimeArgs(func) => format!("ct-only-f{}", func.as_u32()),
+        }
+    }
+
+    pub fn describe_runtime(self) -> String {
+        match self {
+            Self::UnclassifiedRuntime => {
+                "runtime classification has not been refined yet".to_owned()
+            }
+            Self::Parameter { func, index } => {
+                format!("parameter #{} of f{} is runtime", index + 1, func.as_u32())
+            }
+            Self::DependsOnVar(var) => format!("depends on v{} which is runtime", var.as_u32()),
+            Self::EffectNotDischarged(effect) => {
+                format!("effect e{} is not thunkable/discharged", effect.as_u32())
+            }
+            Self::HandlerIsRuntime(handler) => format!("handler h{} is runtime", handler.as_u32()),
+            Self::BranchOnRuntime(expr) => {
+                format!("branch condition e{} is runtime", expr.as_u32())
+            }
+            Self::NotPersistable(ty) => format!("type t{} is not persistable", ty.as_u32()),
+            Self::UserForcedRuntime => "explicitly marked @runtime".to_owned(),
+            Self::CtOnlyWithRuntimeArgs(func) => {
+                format!(
+                    "ct-only function f{} was called with runtime args",
+                    func.as_u32()
+                )
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -230,28 +230,7 @@ fn first_runtime_expr_in_stmt(
 }
 
 fn reason_text(reason: Reason) -> String {
-    match reason {
-        Reason::UnclassifiedRuntime => "runtime classification has not been refined yet".to_owned(),
-        Reason::Parameter { func, index } => {
-            format!("parameter #{} of f{} is runtime", index + 1, func.as_u32())
-        }
-        Reason::DependsOnVar(var) => format!("depends on v{} which is runtime", var.as_u32()),
-        Reason::EffectNotDischarged(effect) => {
-            format!("effect e{} is not thunkable/discharged", effect.as_u32())
-        }
-        Reason::HandlerIsRuntime(handler) => format!("handler h{} is runtime", handler.as_u32()),
-        Reason::BranchOnRuntime(expr) => {
-            format!("branch condition e{} is runtime", expr.as_u32())
-        }
-        Reason::NotPersistable(ty) => format!("type t{} is not persistable", ty.as_u32()),
-        Reason::UserForcedRuntime => "explicitly marked @runtime".to_owned(),
-        Reason::CtOnlyWithRuntimeArgs(func) => {
-            format!(
-                "ct-only function f{} was called with runtime args",
-                func.as_u32()
-            )
-        }
-    }
+    reason.describe_runtime()
 }
 
 struct VarSources(HashMap<VarId, VarSource>);
