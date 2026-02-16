@@ -196,15 +196,25 @@ fn hash_literal<H: Hasher>(literal: &Literal, hasher: &mut H) {
 }
 
 fn serialize_error(path: &Path) -> impl FnOnce(bincode::Error) -> io::Error + '_ {
-    move |err| io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!("failed to serialize query snapshot {}: {err}", path.display()),
-    )
+    move |err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "failed to serialize query snapshot {}: {err}",
+                path.display()
+            ),
+        )
+    }
 }
 
 fn deserialize_error(path: &Path) -> impl FnOnce(bincode::Error) -> io::Error + '_ {
-    move |err| io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!("failed to deserialize query snapshot {}: {err}", path.display()),
-    )
+    move |err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "failed to deserialize query snapshot {}: {err}",
+                path.display()
+            ),
+        )
+    }
 }
