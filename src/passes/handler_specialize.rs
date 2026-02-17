@@ -19,9 +19,13 @@
 use crate::analysis::function_graph::{collect_reachable_functions, prune_unreachable_functions};
 use std::collections::{HashMap, HashSet};
 
-use crate::common::ids::{EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, VarId};
+use crate::common::diagnostics::ErrorNode;
+use crate::common::ids::{
+    DiagnosticId, EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, VarId,
+};
+use crate::common::span::Span;
 use crate::ir::core::{
-    CoreProgram, ExprKind, ExprNode, FunctionDecl, HandlerDef, Literal, StmtKind, StmtNode,
+    CoreProgram, ExprKind, ExprNode, FunctionDecl, HandlerDef, StmtKind, StmtNode,
 };
 use crate::passes::constant_table;
 use crate::pipeline::phases::{
@@ -841,7 +845,7 @@ fn assert_func_id_in_bounds(func_id: FuncId, function_count: usize, context: &st
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct HandlerShapeKey {
     effect: EffectLabelId,
-    return_body: Vec<ShapeToken>,
+    return_body: NormalizedStmtGraph,
     clauses: Vec<ClauseShapeKey>,
 }
 
@@ -850,119 +854,21 @@ struct ClauseShapeKey {
     operation: SymbolId,
     param_count: usize,
     has_resume: bool,
-    body: Vec<ShapeToken>,
+    body: NormalizedStmtGraph,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-enum ShapeToken {
-    Tag(ShapeTag),
-    Count(u32),
-    BoundVar(u32),
-    FreeVar(u32),
-    Func(u32),
-    Handler(u32),
-    Effect(u32),
-    Symbol(u32),
-    Type(u32),
-    Bool(bool),
-    Int(i64),
-    FloatBits(u64),
-    Char(char),
-    String(String),
-}
-
-macro_rules! define_shape_tags {
-    (
-        fixed { $($fixed:ident),* $(,)? }
-        unary { $( $uop:path => $uvariant:ident ),* $(,)? }
-        binary { $( $bop:path => $bvariant:ident ),* $(,)? }
-    ) => {
-        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-        enum ShapeTag {
-            $($fixed,)*
-            $($uvariant,)*
-            $($bvariant,)*
-            LiteralUnit,
-        }
-
-        fn unary_shape_tag(op: crate::ir::core::UnaryOp) -> ShapeTag {
-            match op {
-                $($uop => ShapeTag::$uvariant,)*
-            }
-        }
-
-        fn binary_shape_tag(op: crate::ir::core::BinaryOp) -> ShapeTag {
-            match op {
-                $($bop => ShapeTag::$bvariant,)*
-            }
-        }
-    };
-}
-
-define_shape_tags! {
-    fixed {
-        StmtMissing,
-        StmtReturn,
-        StmtLet,
-        StmtVal,
-        StmtCall,
-        StmtIf,
-        StmtMatch,
-        MatchArm,
-        StmtPerform,
-        OptionalResultSome,
-        OptionalResultNone,
-        OptionalStmtSome,
-        OptionalStmtNone,
-        StmtResume,
-        StmtHandle,
-        StmtStage,
-        StageComptime,
-        StageRuntime,
-        StmtHole,
-        StmtError,
-        ExprMissing,
-        ExprVar,
-        ExprLiteral,
-        ExprUnary,
-        ExprBinary,
-        ExprPureCall,
-        ExprMakeStruct,
-        ExprMakeEnum,
-        ExprError,
-    }
-    unary {
-        crate::ir::core::UnaryOp::Neg => UnaryNeg,
-        crate::ir::core::UnaryOp::Not => UnaryNot,
-    }
-    binary {
-        crate::ir::core::BinaryOp::Add => BinaryAdd,
-        crate::ir::core::BinaryOp::Sub => BinarySub,
-        crate::ir::core::BinaryOp::Mul => BinaryMul,
-        crate::ir::core::BinaryOp::Div => BinaryDiv,
-        crate::ir::core::BinaryOp::Mod => BinaryMod,
-        crate::ir::core::BinaryOp::Eq => BinaryEq,
-        crate::ir::core::BinaryOp::Ne => BinaryNe,
-        crate::ir::core::BinaryOp::Lt => BinaryLt,
-        crate::ir::core::BinaryOp::Le => BinaryLe,
-        crate::ir::core::BinaryOp::Gt => BinaryGt,
-        crate::ir::core::BinaryOp::Ge => BinaryGe,
-        crate::ir::core::BinaryOp::And => BinaryAnd,
-        crate::ir::core::BinaryOp::Or => BinaryOr,
-    }
+struct NormalizedStmtGraph {
+    root: StmtId,
+    stmts: Vec<StmtKind>,
+    exprs: Vec<ExprKind>,
 }
 
 impl HandlerShapeKey {
     fn build(program: &CoreProgram, handler: &HandlerDef) -> Self {
         let mut ret_scope = ScopeCanon::default();
         let _ = ret_scope.bind(handler.return_param);
-        let mut return_body = Vec::new();
-        push_stmt_shape(
-            program,
-            handler.return_body,
-            &mut ret_scope,
-            &mut return_body,
-        );
+        let return_body = NormalizedStmtGraph::build(program, handler.return_body, &mut ret_scope);
 
         let clauses = handler
             .clauses
@@ -975,8 +881,7 @@ impl HandlerShapeKey {
                 if let Some(resume) = clause.resume_param {
                     let _ = clause_scope.bind(resume);
                 }
-                let mut body = Vec::new();
-                push_stmt_shape(program, clause.body, &mut clause_scope, &mut body);
+                let body = NormalizedStmtGraph::build(program, clause.body, &mut clause_scope);
                 ClauseShapeKey {
                     operation: clause.operation,
                     param_count: clause.params.len(),
@@ -994,7 +899,226 @@ impl HandlerShapeKey {
     }
 }
 
-#[derive(Default)]
+impl NormalizedStmtGraph {
+    fn build(program: &CoreProgram, root: StmtId, scope: &mut ScopeCanon) -> Self {
+        let mut builder = NormalizedGraphBuilder::new(program);
+        let root = builder.normalize_stmt(root, scope);
+        Self {
+            root,
+            stmts: builder.stmts,
+            exprs: builder.exprs,
+        }
+    }
+}
+
+struct NormalizedGraphBuilder<'a> {
+    program: &'a CoreProgram,
+    stmts: Vec<StmtKind>,
+    exprs: Vec<ExprKind>,
+}
+
+impl<'a> NormalizedGraphBuilder<'a> {
+    fn new(program: &'a CoreProgram) -> Self {
+        Self {
+            program,
+            stmts: Vec::new(),
+            exprs: Vec::new(),
+        }
+    }
+
+    fn normalize_stmt(&mut self, stmt_id: StmtId, scope: &mut ScopeCanon) -> StmtId {
+        let stmt = self.program.stmt(stmt_id).unwrap_or_else(|| {
+            panic!(
+                "compiler bug: missing statement s{} while normalizing handler shape",
+                stmt_id.as_u32()
+            )
+        });
+        let kind = match &stmt.kind {
+            StmtKind::Return(expr) => StmtKind::Return(self.normalize_expr(*expr, scope)),
+            StmtKind::Let {
+                binding,
+                value,
+                next,
+            } => StmtKind::Let {
+                binding: scope.canonical_var(*binding),
+                value: self.normalize_expr(*value, scope),
+                next: self.normalize_stmt(*next, scope),
+            },
+            StmtKind::Val {
+                binding,
+                value,
+                next,
+            } => StmtKind::Val {
+                binding: scope.canonical_var(*binding),
+                value: self.normalize_stmt(*value, scope),
+                next: self.normalize_stmt(*next, scope),
+            },
+            StmtKind::Call {
+                result,
+                callee,
+                args,
+                effects,
+                next,
+            } => StmtKind::Call {
+                result: scope.canonical_var(*result),
+                callee: *callee,
+                args: args
+                    .iter()
+                    .map(|arg| self.normalize_expr(*arg, scope))
+                    .collect(),
+                effects: effects.clone(),
+                next: self.normalize_stmt(*next, scope),
+            },
+            StmtKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => StmtKind::If {
+                cond: self.normalize_expr(*cond, scope),
+                then_branch: self.normalize_stmt(*then_branch, scope),
+                else_branch: self.normalize_stmt(*else_branch, scope),
+            },
+            StmtKind::Match {
+                scrutinee,
+                arms,
+                default,
+            } => {
+                let scrutinee = self.normalize_expr(*scrutinee, scope);
+                let arms = arms
+                    .iter()
+                    .map(|arm| {
+                        let mut arm_scope = scope.clone();
+                        let binders = arm
+                            .binders
+                            .iter()
+                            .map(|binder| arm_scope.canonical_var(*binder))
+                            .collect();
+                        crate::ir::core::MatchArm {
+                            tag: arm.tag,
+                            binders,
+                            body: self.normalize_stmt(arm.body, &mut arm_scope),
+                            span: Span::synthetic(),
+                        }
+                    })
+                    .collect();
+                let default = default
+                    .as_ref()
+                    .map(|default_stmt| self.normalize_stmt(*default_stmt, scope));
+                StmtKind::Match {
+                    scrutinee,
+                    arms,
+                    default,
+                }
+            }
+            StmtKind::Perform {
+                result,
+                effect,
+                operation,
+                args,
+                next,
+            } => StmtKind::Perform {
+                result: result.map(|var| scope.canonical_var(var)),
+                effect: *effect,
+                operation: *operation,
+                args: args
+                    .iter()
+                    .map(|arg| self.normalize_expr(*arg, scope))
+                    .collect(),
+                next: self.normalize_stmt(*next, scope),
+            },
+            StmtKind::Resume {
+                result,
+                resume,
+                arg,
+                next,
+            } => StmtKind::Resume {
+                result: scope.canonical_var(*result),
+                resume: scope.canonical_var(*resume),
+                arg: self.normalize_expr(*arg, scope),
+                next: self.normalize_stmt(*next, scope),
+            },
+            StmtKind::Handle {
+                handler,
+                body,
+                next,
+            } => StmtKind::Handle {
+                handler: *handler,
+                body: self.normalize_stmt(*body, scope),
+                next: next
+                    .as_ref()
+                    .map(|next_stmt| self.normalize_stmt(*next_stmt, scope)),
+            },
+            StmtKind::Stage { stage, body, next } => StmtKind::Stage {
+                stage: *stage,
+                body: self.normalize_stmt(*body, scope),
+                next: next
+                    .as_ref()
+                    .map(|next_stmt| self.normalize_stmt(*next_stmt, scope)),
+            },
+            StmtKind::Hole { ty } => StmtKind::Hole { ty: *ty },
+            StmtKind::Error(_) => StmtKind::Error(normalized_error_node()),
+        };
+
+        let normalized = StmtId::new(self.stmts.len());
+        self.stmts.push(kind);
+        normalized
+    }
+
+    fn normalize_expr(&mut self, expr_id: ExprId, scope: &mut ScopeCanon) -> ExprId {
+        let expr = self.program.expr(expr_id).unwrap_or_else(|| {
+            panic!(
+                "compiler bug: missing expression e{} while normalizing handler shape",
+                expr_id.as_u32()
+            )
+        });
+        let kind = match &expr.kind {
+            ExprKind::Var(var) => ExprKind::Var(scope.canonical_var(*var)),
+            ExprKind::Literal(literal) => ExprKind::Literal(literal.clone()),
+            ExprKind::Unary { op, expr } => ExprKind::Unary {
+                op: *op,
+                expr: self.normalize_expr(*expr, scope),
+            },
+            ExprKind::Binary { op, lhs, rhs } => ExprKind::Binary {
+                op: *op,
+                lhs: self.normalize_expr(*lhs, scope),
+                rhs: self.normalize_expr(*rhs, scope),
+            },
+            ExprKind::PureCall { callee, args } => ExprKind::PureCall {
+                callee: *callee,
+                args: args
+                    .iter()
+                    .map(|arg| self.normalize_expr(*arg, scope))
+                    .collect(),
+            },
+            ExprKind::MakeStruct { ty, fields } => ExprKind::MakeStruct {
+                ty: *ty,
+                fields: fields
+                    .iter()
+                    .map(|field| self.normalize_expr(*field, scope))
+                    .collect(),
+            },
+            ExprKind::MakeEnum {
+                ty,
+                variant,
+                fields,
+            } => ExprKind::MakeEnum {
+                ty: *ty,
+                variant: *variant,
+                fields: fields
+                    .iter()
+                    .map(|field| self.normalize_expr(*field, scope))
+                    .collect(),
+            },
+            ExprKind::Error(_) => ExprKind::Error(normalized_error_node()),
+        };
+
+        let normalized = ExprId::new(self.exprs.len());
+        self.exprs.push(kind);
+        normalized
+    }
+}
+
+#[derive(Clone, Default)]
 struct ScopeCanon {
     map: HashMap<VarId, u32>,
     next: u32,
@@ -1010,258 +1134,17 @@ impl ScopeCanon {
         self.map.insert(var, id);
         id
     }
-}
-
-fn push_stmt_shape(
-    program: &CoreProgram,
-    stmt_id: StmtId,
-    scope: &mut ScopeCanon,
-    out: &mut Vec<ShapeToken>,
-) {
-    let Some(stmt) = program.stmt(stmt_id) else {
-        out.push(ShapeToken::Tag(ShapeTag::StmtMissing));
-        return;
-    };
-
-    match &stmt.kind {
-        StmtKind::Return(expr) => {
-            out.push(ShapeToken::Tag(ShapeTag::StmtReturn));
-            push_expr_shape(program, *expr, scope, out);
-        }
-        StmtKind::Let {
-            binding,
-            value,
-            next,
-        } => {
-            out.push(ShapeToken::Tag(ShapeTag::StmtLet));
-            out.push(ShapeToken::BoundVar(scope.bind(*binding)));
-            push_expr_shape(program, *value, scope, out);
-            push_stmt_shape(program, *next, scope, out);
-        }
-        StmtKind::Val {
-            binding,
-            value,
-            next,
-        } => {
-            out.push(ShapeToken::Tag(ShapeTag::StmtVal));
-            out.push(ShapeToken::BoundVar(scope.bind(*binding)));
-            push_stmt_shape(program, *value, scope, out);
-            push_stmt_shape(program, *next, scope, out);
-        }
-        StmtKind::Call {
-            result,
-            callee,
-            args,
-            effects,
-            next,
-        } => {
-            out.push(ShapeToken::Tag(ShapeTag::StmtCall));
-            out.push(ShapeToken::Func(callee.as_u32()));
-            out.push(ShapeToken::BoundVar(scope.bind(*result)));
-            push_count(args.len(), out);
-            for arg in args {
-                push_expr_shape(program, *arg, scope, out);
-            }
-            push_count(effects.len(), out);
-            for effect in effects.iter() {
-                out.push(ShapeToken::Effect(effect.as_u32()));
-            }
-            push_stmt_shape(program, *next, scope, out);
-        }
-        StmtKind::If {
-            cond,
-            then_branch,
-            else_branch,
-        } => {
-            out.push(ShapeToken::Tag(ShapeTag::StmtIf));
-            push_expr_shape(program, *cond, scope, out);
-            push_stmt_shape(program, *then_branch, scope, out);
-            push_stmt_shape(program, *else_branch, scope, out);
-        }
-        StmtKind::Match {
-            scrutinee,
-            arms,
-            default,
-        } => {
-            out.push(ShapeToken::Tag(ShapeTag::StmtMatch));
-            push_expr_shape(program, *scrutinee, scope, out);
-            push_count(arms.len(), out);
-            for arm in arms {
-                out.push(ShapeToken::Tag(ShapeTag::MatchArm));
-                out.push(ShapeToken::Symbol(arm.tag.as_u32()));
-                let mut arm_scope = ScopeCanon {
-                    map: scope.map.clone(),
-                    next: scope.next,
-                };
-                push_count(arm.binders.len(), out);
-                for binder in &arm.binders {
-                    out.push(ShapeToken::BoundVar(arm_scope.bind(*binder)));
-                }
-                push_stmt_shape(program, arm.body, &mut arm_scope, out);
-            }
-            if let Some(default_stmt) = default {
-                out.push(ShapeToken::Tag(ShapeTag::OptionalStmtSome));
-                push_stmt_shape(program, *default_stmt, scope, out);
-            } else {
-                out.push(ShapeToken::Tag(ShapeTag::OptionalStmtNone));
-            }
-        }
-        StmtKind::Perform {
-            result,
-            effect,
-            operation,
-            args,
-            next,
-        } => {
-            out.push(ShapeToken::Tag(ShapeTag::StmtPerform));
-            out.push(ShapeToken::Effect(effect.as_u32()));
-            out.push(ShapeToken::Symbol(operation.as_u32()));
-            if let Some(result) = result {
-                out.push(ShapeToken::Tag(ShapeTag::OptionalResultSome));
-                out.push(ShapeToken::BoundVar(scope.bind(*result)));
-            } else {
-                out.push(ShapeToken::Tag(ShapeTag::OptionalResultNone));
-            }
-            push_count(args.len(), out);
-            for arg in args {
-                push_expr_shape(program, *arg, scope, out);
-            }
-            push_stmt_shape(program, *next, scope, out);
-        }
-        StmtKind::Resume {
-            result,
-            resume,
-            arg,
-            next,
-        } => {
-            out.push(ShapeToken::Tag(ShapeTag::StmtResume));
-            out.push(ShapeToken::BoundVar(scope.bind(*result)));
-            out.push(ShapeToken::FreeVar(resume.as_u32()));
-            push_expr_shape(program, *arg, scope, out);
-            push_stmt_shape(program, *next, scope, out);
-        }
-        StmtKind::Handle {
-            handler,
-            body,
-            next,
-        } => {
-            out.push(ShapeToken::Tag(ShapeTag::StmtHandle));
-            out.push(ShapeToken::Handler(handler.as_u32()));
-            push_stmt_shape(program, *body, scope, out);
-            if let Some(next_stmt) = next {
-                out.push(ShapeToken::Tag(ShapeTag::OptionalStmtSome));
-                push_stmt_shape(program, *next_stmt, scope, out);
-            } else {
-                out.push(ShapeToken::Tag(ShapeTag::OptionalStmtNone));
-            }
-        }
-        StmtKind::Stage { stage, body, next } => {
-            out.push(ShapeToken::Tag(ShapeTag::StmtStage));
-            out.push(ShapeToken::Tag(stage_shape_tag(*stage)));
-            push_stmt_shape(program, *body, scope, out);
-            if let Some(next_stmt) = next {
-                out.push(ShapeToken::Tag(ShapeTag::OptionalStmtSome));
-                push_stmt_shape(program, *next_stmt, scope, out);
-            } else {
-                out.push(ShapeToken::Tag(ShapeTag::OptionalStmtNone));
-            }
-        }
-        StmtKind::Hole { ty } => {
-            out.push(ShapeToken::Tag(ShapeTag::StmtHole));
-            out.push(ShapeToken::Type(ty.as_u32()));
-        }
-        StmtKind::Error(_) => out.push(ShapeToken::Tag(ShapeTag::StmtError)),
+    fn canonical_var(&mut self, var: VarId) -> VarId {
+        VarId::from_u32(self.bind(var))
     }
 }
 
-fn push_expr_shape(
-    program: &CoreProgram,
-    expr_id: ExprId,
-    scope: &ScopeCanon,
-    out: &mut Vec<ShapeToken>,
-) {
-    let Some(expr) = program.expr(expr_id) else {
-        out.push(ShapeToken::Tag(ShapeTag::ExprMissing));
-        return;
-    };
-
-    match &expr.kind {
-        ExprKind::Var(var) => {
-            out.push(ShapeToken::Tag(ShapeTag::ExprVar));
-            if let Some(bound) = scope.map.get(var).copied() {
-                out.push(ShapeToken::BoundVar(bound));
-            } else {
-                out.push(ShapeToken::FreeVar(var.as_u32()));
-            }
-        }
-        ExprKind::Literal(literal) => {
-            out.push(ShapeToken::Tag(ShapeTag::ExprLiteral));
-            push_literal_shape(literal, out);
-        }
-        ExprKind::Unary { op, expr } => {
-            out.push(ShapeToken::Tag(ShapeTag::ExprUnary));
-            out.push(ShapeToken::Tag(unary_shape_tag(*op)));
-            push_expr_shape(program, *expr, scope, out);
-        }
-        ExprKind::Binary { op, lhs, rhs } => {
-            out.push(ShapeToken::Tag(ShapeTag::ExprBinary));
-            out.push(ShapeToken::Tag(binary_shape_tag(*op)));
-            push_expr_shape(program, *lhs, scope, out);
-            push_expr_shape(program, *rhs, scope, out);
-        }
-        ExprKind::PureCall { callee, args } => {
-            out.push(ShapeToken::Tag(ShapeTag::ExprPureCall));
-            out.push(ShapeToken::Func(callee.as_u32()));
-            push_count(args.len(), out);
-            for arg in args {
-                push_expr_shape(program, *arg, scope, out);
-            }
-        }
-        ExprKind::MakeStruct { ty, fields } => {
-            out.push(ShapeToken::Tag(ShapeTag::ExprMakeStruct));
-            out.push(ShapeToken::Type(ty.as_u32()));
-            push_count(fields.len(), out);
-            for field in fields {
-                push_expr_shape(program, *field, scope, out);
-            }
-        }
-        ExprKind::MakeEnum {
-            ty,
-            variant,
-            fields,
-        } => {
-            out.push(ShapeToken::Tag(ShapeTag::ExprMakeEnum));
-            out.push(ShapeToken::Type(ty.as_u32()));
-            out.push(ShapeToken::Symbol(variant.as_u32()));
-            push_count(fields.len(), out);
-            for field in fields {
-                push_expr_shape(program, *field, scope, out);
-            }
-        }
-        ExprKind::Error(_) => out.push(ShapeToken::Tag(ShapeTag::ExprError)),
+fn normalized_error_node() -> ErrorNode {
+    ErrorNode {
+        span: Span::synthetic(),
+        message: String::new(),
+        diagnostic: DiagnosticId::INVALID,
     }
-}
-
-fn push_literal_shape(literal: &Literal, out: &mut Vec<ShapeToken>) {
-    match literal {
-        Literal::Unit => out.push(ShapeToken::Tag(ShapeTag::LiteralUnit)),
-        Literal::Bool(value) => out.push(ShapeToken::Bool(*value)),
-        Literal::Int(value) => out.push(ShapeToken::Int(*value)),
-        Literal::Float(value) => out.push(ShapeToken::FloatBits(value.to_bits())),
-        Literal::Char(value) => out.push(ShapeToken::Char(*value)),
-        Literal::String(value) => out.push(ShapeToken::String(value.clone())),
-    }
-}
-
-fn stage_shape_tag(stage: crate::ir::core::StageDirective) -> ShapeTag {
-    match stage {
-        crate::ir::core::StageDirective::Comptime => ShapeTag::StageComptime,
-        crate::ir::core::StageDirective::Runtime => ShapeTag::StageRuntime,
-    }
-}
-
-fn push_count(len: usize, out: &mut Vec<ShapeToken>) {
-    out.push(ShapeToken::Count(u32::try_from(len).unwrap_or(u32::MAX)));
 }
 
 struct GraphCloner<'a> {
