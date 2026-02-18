@@ -1075,7 +1075,7 @@ fn emit_ctor_const_pool(out: &mut String, pool: &CtorConstPool, interner: &Inter
 
         writeln!(
             out,
-            "static CieloCtor {} = {{ .ty = \"{}\", .variant = \"{}\", .argc = {}, .fields = {} }};",
+            "static CieloCtor {} = {{ .arc = CIELO_ARC_IMMORTAL_HEADER, .ty = \"{}\", .variant = \"{}\", .argc = {}, .fields = {} }};",
             entry.ctor_symbol,
             ty_name,
             variant_name,
@@ -1177,7 +1177,7 @@ fn ctor_field_value_initializer(
             let fields_ref = fields_symbol.as_deref().unwrap_or("NULL");
             writeln!(
                 declarations,
-                "static CieloCtor {ctor_symbol} = {{ .ty = \"{}\", .variant = \"{}\", .argc = {}, .fields = {} }};",
+                "static CieloCtor {ctor_symbol} = {{ .arc = CIELO_ARC_IMMORTAL_HEADER, .ty = \"{}\", .variant = \"{}\", .argc = {}, .fields = {} }};",
                 ty_name,
                 variant_name,
                 key.fields.len(),

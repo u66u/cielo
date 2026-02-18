@@ -28,7 +28,27 @@ typedef enum {
 
 typedef struct CieloValue CieloValue;
 
+enum {
+  CIELO_ARC_FLAG_IMMORTAL = 1u << 0,
+  CIELO_ARC_FLAG_ORC_PINNED = 1u << 1
+};
+
 typedef struct {
+  uint32_t refcount;
+  uint32_t flags;
+  uint32_t orc_color;
+  uint32_t reserved0;
+} CieloArcHeader;
+
+#define CIELO_ARC_HEADER_INIT(REFCOUNT, FLAGS)                                \
+  {                                                                            \
+    .refcount = (REFCOUNT), .flags = (FLAGS), .orc_color = 0u, .reserved0 = 0u \
+  }
+#define CIELO_ARC_IMMORTAL_HEADER CIELO_ARC_HEADER_INIT(0u, CIELO_ARC_FLAG_IMMORTAL)
+#define CIELO_ARC_OWNED_HEADER CIELO_ARC_HEADER_INIT(1u, 0u)
+
+typedef struct {
+  CieloArcHeader arc;
   const char *ty;
   const char *variant;
   size_t argc;
@@ -95,6 +115,16 @@ static uint32_t g_cielo_next_capability_id = 1;
 #define CIELO_CALL_DIRECT(expr) (expr)
 #define CIELO_CALL_CONTROL(expr) (expr)
 
+typedef struct {
+  uint64_t ctor_allocations;
+  uint64_t ctor_frees;
+  uint64_t retain_calls;
+  uint64_t release_calls;
+  uint64_t release_last_calls;
+} CieloArcStats;
+
+static CieloArcStats g_cielo_arc_stats = {0};
+
 static inline uint32_t cielo_runtime_abi_version(void) {
   return (uint32_t)CIELO_RUNTIME_ABI_VERSION;
 }
@@ -109,6 +139,79 @@ static inline CieloValue cv_float(double x) { return CV_MAKE(CV_FLOAT, f, x); }
 static inline CieloValue cv_char(uint32_t x) { return CV_MAKE(CV_CHAR, c, x); }
 static inline CieloValue cv_string(const char *s) {
   return CV_MAKE(CV_STRING, s, s);
+}
+
+static inline void cielo_arc_stats_reset(void) {
+  memset(&g_cielo_arc_stats, 0, sizeof(g_cielo_arc_stats));
+}
+
+static inline CieloArcStats cielo_arc_stats_snapshot(void) {
+  return g_cielo_arc_stats;
+}
+
+static inline bool cielo_arc_is_managed(CieloValue value) {
+  return value.tag == CV_CTOR && value.as.ctor != NULL;
+}
+
+static inline bool cielo_arc_is_immortal_ctor(const CieloCtor *ctor) {
+  return ctor != NULL && (ctor->arc.flags & CIELO_ARC_FLAG_IMMORTAL) != 0u;
+}
+
+static inline void cielo_arc_retain(CieloValue value) {
+  if (!cielo_arc_is_managed(value))
+    return;
+  CieloCtor *ctor = value.as.ctor;
+  if (cielo_arc_is_immortal_ctor(ctor))
+    return;
+  uint32_t count = ctor->arc.refcount;
+  if (count == 0u || count == UINT32_MAX)
+    return;
+  ctor->arc.refcount = count + 1u;
+  g_cielo_arc_stats.retain_calls++;
+}
+
+static inline bool cielo_arc_dec_is_last(CieloValue value) {
+  if (!cielo_arc_is_managed(value))
+    return false;
+  CieloCtor *ctor = value.as.ctor;
+  if (cielo_arc_is_immortal_ctor(ctor))
+    return false;
+  if (ctor->arc.refcount == 0u)
+    return false;
+  ctor->arc.refcount--;
+  return ctor->arc.refcount == 0u;
+}
+
+static inline void cielo_arc_destroy_and_dispose(CieloValue value);
+
+static inline void cielo_arc_release(CieloValue value) {
+  if (!cielo_arc_is_managed(value))
+    return;
+  g_cielo_arc_stats.release_calls++;
+  if (!cielo_arc_dec_is_last(value))
+    return;
+  g_cielo_arc_stats.release_last_calls++;
+  cielo_arc_destroy_and_dispose(value);
+}
+
+static inline void cielo_arc_destroy_and_dispose(CieloValue value) {
+  if (!cielo_arc_is_managed(value))
+    return;
+  CieloCtor *ctor = value.as.ctor;
+  if (cielo_arc_is_immortal_ctor(ctor))
+    return;
+  CieloValue *fields = ctor->fields;
+  size_t argc = ctor->argc;
+  ctor->fields = NULL;
+  ctor->argc = 0u;
+  for (size_t i = 0; i < argc; i++) {
+    cielo_arc_release(fields[i]);
+  }
+  if (fields != NULL) {
+    free(fields);
+  }
+  g_cielo_arc_stats.ctor_frees++;
+  free(ctor);
 }
 
 static inline bool cielo_ctor_is_variant(CieloValue value,
@@ -376,6 +479,7 @@ static CieloValue cielo_make_ctor(const char *ty, const char *variant,
   if (ctor == NULL)
     return cv_unit();
 
+  ctor->arc = (CieloArcHeader)CIELO_ARC_OWNED_HEADER;
   ctor->ty = ty;
   ctor->variant = variant;
   ctor->argc = argc;
@@ -389,6 +493,9 @@ static CieloValue cielo_make_ctor(const char *ty, const char *variant,
     }
     if (fields != NULL) {
       memcpy(ctor->fields, fields, sizeof(CieloValue) * argc);
+      for (size_t i = 0; i < argc; i++) {
+        cielo_arc_retain(ctor->fields[i]);
+      }
     } else {
       for (size_t i = 0; i < argc; i++) {
         ctor->fields[i] = cv_unit();
@@ -396,6 +503,7 @@ static CieloValue cielo_make_ctor(const char *ty, const char *variant,
     }
   }
 
+  g_cielo_arc_stats.ctor_allocations++;
   CieloValue out = {.tag = CV_CTOR};
   out.as.ctor = ctor;
   return out;

@@ -395,7 +395,7 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
     for (idx, case) in cases.iter().enumerate() {
         let mut interner = Interner::new();
-        let compiled = compiler.compile_source_v0_to_c(
+        let compiled = compiler.compile_source_to_c(
             case.source,
             SourceId::from_u32(idx as u32),
             &mut interner,
@@ -440,7 +440,7 @@ fn runtime_exit_matches_evaluator_oracle_for_seed_expanding_handler_cases() {
                 ^ ((case_index as u64 + 1).wrapping_mul(0xBF58_476D_1CE4_E5B9));
             let generated = build_generated_handler_case(derived_seed, case_index as usize);
             let mut interner = Interner::new();
-            let compiled = compiler.compile_source_v0_to_c(
+            let compiled = compiler.compile_source_to_c(
                 generated.source.as_str(),
                 SourceId::from_u32(SOURCE_ID_BASE + case_index),
                 &mut interner,
@@ -634,6 +634,117 @@ int main(void) {{
     assert_eq!(
         actual, 0,
         "callback should dispatch to captured capability, not nearest same-effect handler"
+    );
+}
+
+#[test]
+fn arc_runtime_release_frees_nested_ctor_graph() {
+    if !c_compiler_available() {
+        eprintln!("skipping ARC runtime graph release test: no C compiler found");
+        return;
+    }
+
+    let runtime_header =
+        format!("{}/src/backend/cielo_runtime.h", env!("CARGO_MANIFEST_DIR")).replace('\\', "\\\\");
+    let c_source = format!(
+        r#"
+#include <stdint.h>
+#include "{runtime_header}"
+
+int main(void) {{
+    cielo_arc_stats_reset();
+    CieloValue left = cielo_make_ctor("Leaf", "L", 0u, NULL);
+    CieloValue right = cielo_make_ctor("Leaf", "R", 0u, NULL);
+    CieloValue fields[2] = {{left, right}};
+    CieloValue pair = cielo_make_ctor("Pair", "Mk", 2u, fields);
+
+    CieloArcStats after_alloc = cielo_arc_stats_snapshot();
+    if (after_alloc.ctor_allocations != 3u || after_alloc.ctor_frees != 0u) {{
+        return 2;
+    }}
+
+    cielo_arc_release(left);
+    cielo_arc_release(right);
+    CieloArcStats after_local_release = cielo_arc_stats_snapshot();
+    if (after_local_release.ctor_frees != 0u) {{
+        return 3;
+    }}
+
+    cielo_arc_release(pair);
+    CieloArcStats after_root_release = cielo_arc_stats_snapshot();
+    return (after_root_release.ctor_allocations == 3u &&
+            after_root_release.ctor_frees == 3u &&
+            after_root_release.release_last_calls == 3u)
+               ? 0
+               : 1;
+}}
+"#
+    );
+
+    let actual = compile_and_run_c_exit_code("arc_release_nested_graph", c_source.as_str());
+    assert_eq!(
+        actual, 0,
+        "ARC runtime should release and destroy a nested constructor graph exactly once"
+    );
+}
+
+#[test]
+fn arc_runtime_dec_is_last_and_immortal_ctor_are_safe() {
+    if !c_compiler_available() {
+        eprintln!("skipping ARC runtime dec_is_last test: no C compiler found");
+        return;
+    }
+
+    let runtime_header =
+        format!("{}/src/backend/cielo_runtime.h", env!("CARGO_MANIFEST_DIR")).replace('\\', "\\\\");
+    let c_source = format!(
+        r#"
+#include <stdint.h>
+#include "{runtime_header}"
+
+int main(void) {{
+    cielo_arc_stats_reset();
+    CieloValue value = cielo_make_ctor("Leaf", "One", 0u, NULL);
+    CieloValue alias = value;
+    cielo_arc_retain(alias);
+
+    if (cielo_arc_dec_is_last(value)) {{
+        return 2;
+    }}
+    if (!cielo_arc_dec_is_last(alias)) {{
+        return 3;
+    }}
+    cielo_arc_destroy_and_dispose(alias);
+
+    CieloArcStats after_owned = cielo_arc_stats_snapshot();
+    if (after_owned.ctor_allocations != 1u || after_owned.ctor_frees != 1u) {{
+        return 4;
+    }}
+
+    static CieloCtor immortal = {{
+        .arc = CIELO_ARC_IMMORTAL_HEADER,
+        .ty = "Immortal",
+        .variant = "Root",
+        .argc = 0u,
+        .fields = NULL
+    }};
+    CieloValue immortal_value = {{.tag = CV_CTOR, .as.ctor = &immortal}};
+    cielo_arc_retain(immortal_value);
+    cielo_arc_release(immortal_value);
+
+    CieloArcStats after_immortal = cielo_arc_stats_snapshot();
+    return (after_immortal.ctor_allocations == 1u &&
+            after_immortal.ctor_frees == 1u)
+               ? 0
+               : 1;
+}}
+"#
+    );
+
+    let actual = compile_and_run_c_exit_code("arc_dec_is_last_immortal", c_source.as_str());
+    assert_eq!(
+        actual, 0,
+        "ARC runtime should support dec_is_last/destroy and leave immortal ctors untouched"
     );
 }
 

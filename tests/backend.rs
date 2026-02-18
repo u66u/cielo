@@ -421,6 +421,12 @@ fn main() -> Int {
         "pooled ctor symbol should be reused across repeated runtime constructor sites"
     );
     assert!(
+        compiled
+            .c_source
+            .contains(".arc = CIELO_ARC_IMMORTAL_HEADER"),
+        "pooled ctor constants should be marked immortal for ARC safety"
+    );
+    assert!(
         !compiled
             .c_source
             .contains("cielo_make_ctor(\"Pair\", \"Mk\", 2"),
