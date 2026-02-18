@@ -4,7 +4,7 @@ use cielo::ir::core::Literal;
 use cielo::ir::linear::{
     CallConvention, LinearExpr, LinearFunction, LinearMatchArm, LinearProgram, LinearStmt,
 };
-use cielo::passes::{c_emit, c_emit::emit_c_program, handler_specialize, linearize};
+use cielo::passes::{c_emit, c_emit::emit_c_program, linearize};
 use cielo::pipeline::phases::{ConstantEmbedStrategy, ConstantKey, CtorFieldKey, ScalarLiteralKey};
 use cielo::{Compiler, CompilerConfig};
 use std::collections::HashSet;
@@ -20,7 +20,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(compiled.linear.functions.len(), 1);
     assert!(compiled.c_source.contains("cv_add("));
@@ -39,7 +39,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     let perform_line = find_perform_call_line(&compiled.c_source, "print")
         .expect("expected runtime perform stub for Console.print");
@@ -69,7 +69,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let main = compiled
         .linear
         .functions
@@ -95,7 +95,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let main = compiled
         .linear
         .functions
@@ -127,7 +127,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let main = compiled
         .linear
         .functions
@@ -155,7 +155,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let main = compiled
         .linear
         .functions
@@ -193,7 +193,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let main = compiled
         .linear
         .functions
@@ -227,7 +227,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
         compiled
@@ -257,8 +257,7 @@ fn main() -> Int {{
     );
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled =
-        compiler.compile_source_v0_to_c(src.as_str(), SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src.as_str(), SourceId::from_u32(0), &mut interner);
 
     assert!(
         !compiled
@@ -285,7 +284,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
         compiled
@@ -326,7 +325,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
         !compiled
@@ -407,8 +406,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiled =
-        compile_source_v0_to_c_without_normalize(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compile_source_to_c_without_normalize(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
         compiled
@@ -508,8 +506,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiled =
-        compile_source_v0_to_c_without_normalize(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compile_source_to_c_without_normalize(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
         compiled
@@ -568,8 +565,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiled =
-        compile_source_v0_to_c_without_normalize(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compile_source_to_c_without_normalize(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
         !compiled
@@ -612,8 +608,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiled =
-        compile_source_v0_to_c_without_normalize(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compile_source_to_c_without_normalize(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
         compiled
@@ -656,11 +651,8 @@ fn main() -> Int {{
 "#
     );
     let mut interner = Interner::new();
-    let compiled = compile_source_v0_to_c_without_normalize(
-        src.as_str(),
-        SourceId::from_u32(0),
-        &mut interner,
-    );
+    let compiled =
+        compile_source_to_c_without_normalize(src.as_str(), SourceId::from_u32(0), &mut interner);
 
     assert!(
         !compiled
@@ -702,8 +694,7 @@ fn c_emitter_limits_ctor_pool_by_compilation_unit_budget() {
     );
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled =
-        compiler.compile_source_v0_to_c(src.as_str(), SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src.as_str(), SourceId::from_u32(0), &mut interner);
 
     let pooled_values = compiled
         .c_source
@@ -747,7 +738,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
         !compiled.c_source.contains("= cielo_handler_push(0);"),
@@ -977,7 +968,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let main = compiled
         .linear
         .functions
@@ -1027,7 +1018,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let main = compiled
         .linear
         .functions
@@ -1078,7 +1069,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let main = compiled
         .linear
         .functions
@@ -1121,7 +1112,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
         compiled
@@ -1164,7 +1155,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let main = compiled
         .linear
         .functions
@@ -1220,7 +1211,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
         compiled
@@ -1252,7 +1243,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
         compiled
@@ -1286,7 +1277,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
         compiled
@@ -1314,7 +1305,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
         compiled
@@ -1364,7 +1355,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let main = compiled
         .linear
         .functions
@@ -1416,7 +1407,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let main = compiled
         .linear
         .functions
@@ -1509,7 +1500,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     let main = compiled
         .linear
@@ -1555,7 +1546,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert!(compiled.c_source.contains("CIELO_CALL_PURE("));
     assert!(compiled.c_source.contains("CIELO_CALL_DIRECT("));
@@ -1583,8 +1574,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiled =
-        compile_source_v0_to_c_without_normalize(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compile_source_to_c_without_normalize(src, SourceId::from_u32(0), &mut interner);
 
     let mut names = linear_function_names(&compiled.linear, &interner);
     names.sort_unstable();
@@ -1620,8 +1610,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiled =
-        compile_source_v0_to_c_without_normalize(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compile_source_to_c_without_normalize(src, SourceId::from_u32(0), &mut interner);
 
     let mut names = linear_function_names(&compiled.linear, &interner);
     names.sort_unstable();
@@ -1653,7 +1642,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     let loop_count = compiled
         .linear
@@ -1672,16 +1661,15 @@ fn main() -> Int {
     );
 }
 
-fn compile_source_v0_to_c_without_normalize(
+fn compile_source_to_c_without_normalize(
     src: &str,
     source_id: SourceId,
     interner: &mut Interner,
 ) -> cielo::CompiledC {
     let compiler = Compiler::new(CompilerConfig::default());
     let core = compiler.parse_and_lower_to_core(src, source_id, interner);
-    let residual = compiler.run_v0_core_pipeline(core);
-    let specialized = handler_specialize::run(residual);
-    let linearized = linearize::run(specialized);
+    let residual = compiler.run_v1_core_pipeline(core);
+    let linearized = linearize::run(residual);
     let emitted = c_emit::run(linearized, interner);
     cielo::CompiledC {
         residual: emitted.linearized.residual,

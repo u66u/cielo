@@ -31,7 +31,7 @@ fn main() -> Int {
 "#;
     let compiler = Compiler::new(CompilerConfig::default());
     let mut interner = Interner::new();
-    let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
+    let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
 
     let before_count = reachable_stmt_count(residual.program());
     let once = normalize::run(residual.clone());

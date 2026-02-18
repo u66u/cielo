@@ -25,7 +25,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
         function_count_named(compiled.residual.program(), &interner, "loop"),
@@ -106,7 +106,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
         function_count_named(compiled.residual.program(), &interner, "loop"),
@@ -142,7 +142,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
         function_count_named(compiled.residual.program(), &interner, "io"),
@@ -199,7 +199,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let stats = compiled.residual.residual().specialization_stats;
 
     assert!(
@@ -242,7 +242,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
         function_count_named(compiled.residual.program(), &interner, "io"),
@@ -293,7 +293,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
         function_count_named(compiled.residual.program(), &interner, "io"),
@@ -344,7 +344,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
         function_count_named(compiled.residual.program(), &interner, "io"),
@@ -392,7 +392,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
         function_count_named(compiled.residual.program(), &interner, "io"),
@@ -440,7 +440,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
         specialized_copy_named(compiled.residual.program(), &interner, "io").is_none(),
@@ -483,7 +483,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
         function_count_named(compiled.residual.program(), &interner, "io"),
@@ -531,7 +531,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
         specialized_copy_named(compiled.residual.program(), &interner, "io").is_none(),
@@ -566,7 +566,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
         function_count_named(compiled.residual.program(), &interner, "io"),
@@ -620,7 +620,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     let specialized_id = specialized_copy_named(compiled.residual.program(), &interner, "io")
         .expect("if-forwarding wrapper should produce one specialized io copy");
@@ -680,7 +680,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
         specialized_copy_named(compiled.residual.program(), &interner, "io").is_none(),
@@ -723,7 +723,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     let specialized_id = specialized_copy_named(compiled.residual.program(), &interner, "io")
         .expect("stage-forwarding wrapper should produce one specialized io copy");
@@ -778,7 +778,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     let specialized_id = specialized_copy_named(compiled.residual.program(), &interner, "io")
         .expect("match-forwarding wrapper should produce one specialized io copy");
@@ -832,7 +832,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     let specialized_id = specialized_copy_named(compiled.residual.program(), &interner, "io")
         .expect("match wrapper without default should still specialize for single-callee arms");
@@ -891,7 +891,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
         specialized_copy_named(compiled.residual.program(), &interner, "io").is_none(),
@@ -933,7 +933,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     let io_ids = function_ids_named(compiled.residual.program(), &interner, "io");
     assert_eq!(
@@ -991,7 +991,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
         specialized_copy_named(compiled.residual.program(), &interner, "io").is_none(),
@@ -1023,7 +1023,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_v0_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     let specialized_id = specialized_copy_named(compiled.residual.program(), &interner, "io")
         .expect("reachable wrapper-only handle should produce a specialized io copy");
@@ -1082,8 +1082,7 @@ fn main() -> Int {{
 
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled =
-        compiler.compile_source_v0_to_c(src.as_str(), SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src.as_str(), SourceId::from_u32(0), &mut interner);
     let program = compiled.residual.program();
 
     let specialized_io_copies = function_ids_named(program, &interner, "io")

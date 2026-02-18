@@ -10,7 +10,7 @@ use cielo::common::symbols::Interner;
 use cielo::frontend::ast::{Item, Program};
 use cielo::ir::core::CoreProgram;
 use cielo::passes::lowering::{LowerConfig, TargetBuiltinSymbols};
-use cielo::passes::{c_emit, handler_specialize, linearize};
+use cielo::passes::{c_emit, linearize};
 use cielo::pipeline::ct_invalidation::{
     CtDepSnapshot, CtInvalidationReason, diff as diff_ct_invalidation,
     load_snapshot as load_ct_snapshot, save_snapshot as save_ct_snapshot,
@@ -131,7 +131,7 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
         dump_functions_from_core(&core.program(), &interner);
     }
 
-    let residual = compiler.run_v0_core_pipeline(core);
+    let residual = compiler.run_v1_core_pipeline(core);
     if should_dump(cli, DumpKind::Sema) {
         dump_sema_summary(&residual);
     }
@@ -162,8 +162,7 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
         return;
     }
 
-    let specialized = handler_specialize::run(residual.clone());
-    let normalized = cielo::passes::normalize::run(specialized);
+    let normalized = compiler.run_v1_normalize(residual.clone());
     let linearized = linearize::run(normalized);
     if should_dump(cli, DumpKind::Linear) {
         println!("=== Linear IR ===\n{:#?}", linearized.linear);
@@ -577,7 +576,7 @@ fn main() -> Int {
     let mut failures = 0usize;
     for (idx, (name, source)) in CASES.iter().enumerate() {
         let mut interner = Interner::new();
-        let residual = compiler.compile_source_v0(source, SourceId::new(idx), &mut interner);
+        let residual = compiler.compile_source(source, SourceId::new(idx), &mut interner);
         let source_name = format!("smoke/{name}.cielo");
         print_case_summary(name, &source_name, source, &residual);
         if residual.diagnostics().has_errors() {

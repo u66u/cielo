@@ -48,9 +48,9 @@ fn main() -> Int {
     let compiler = Compiler::new(CompilerConfig::default());
 
     let mut interner_a = Interner::new();
-    let residual_a = compiler.compile_source_v0(src_a, SourceId::from_u32(0), &mut interner_a);
+    let residual_a = compiler.compile_source(src_a, SourceId::from_u32(0), &mut interner_a);
     let mut interner_b = Interner::new();
-    let residual_b = compiler.compile_source_v0(src_b, SourceId::from_u32(1), &mut interner_b);
+    let residual_b = compiler.compile_source(src_b, SourceId::from_u32(1), &mut interner_b);
 
     assert_eq!(
         stage_signature(&residual_a),
@@ -60,10 +60,10 @@ fn main() -> Int {
 
     let mut emit_interner_a = Interner::new();
     let emitted_a =
-        compiler.compile_source_v0_to_c(src_a, SourceId::from_u32(2), &mut emit_interner_a);
+        compiler.compile_source_to_c(src_a, SourceId::from_u32(2), &mut emit_interner_a);
     let mut emit_interner_b = Interner::new();
     let emitted_b =
-        compiler.compile_source_v0_to_c(src_b, SourceId::from_u32(3), &mut emit_interner_b);
+        compiler.compile_source_to_c(src_b, SourceId::from_u32(3), &mut emit_interner_b);
     assert_eq!(
         emitted_a.c_source, emitted_b.c_source,
         "alpha-renaming locals must not change emitted C"
@@ -90,10 +90,10 @@ fn main() -> Int {
 
     let mut interner_base = Interner::new();
     let residual_base =
-        compiler.compile_source_v0(src_base, SourceId::from_u32(10), &mut interner_base);
+        compiler.compile_source(src_base, SourceId::from_u32(10), &mut interner_base);
     let mut interner_dead = Interner::new();
     let residual_dead =
-        compiler.compile_source_v0(src_with_dead, SourceId::from_u32(11), &mut interner_dead);
+        compiler.compile_source(src_with_dead, SourceId::from_u32(11), &mut interner_dead);
 
     let base_main = main_func_id(residual_base.program(), &interner_base);
     let dead_main = main_func_id(residual_dead.program(), &interner_dead);
@@ -132,9 +132,9 @@ fn main() -> Int {
 
     let mut emit_interner_base = Interner::new();
     let emitted_base =
-        compiler.compile_source_v0_to_c(src_base, SourceId::from_u32(12), &mut emit_interner_base);
+        compiler.compile_source_to_c(src_base, SourceId::from_u32(12), &mut emit_interner_base);
     let mut emit_interner_dead = Interner::new();
-    let emitted_dead = compiler.compile_source_v0_to_c(
+    let emitted_dead = compiler.compile_source_to_c(
         src_with_dead,
         SourceId::from_u32(13),
         &mut emit_interner_dead,
@@ -185,10 +185,10 @@ fn main() -> Int {
 
     let mut interner_direct = Interner::new();
     let residual_direct =
-        compiler.compile_source_v0(src_direct, SourceId::from_u32(20), &mut interner_direct);
+        compiler.compile_source(src_direct, SourceId::from_u32(20), &mut interner_direct);
     let mut interner_branch = Interner::new();
     let residual_branch =
-        compiler.compile_source_v0(src_branch, SourceId::from_u32(21), &mut interner_branch);
+        compiler.compile_source(src_branch, SourceId::from_u32(21), &mut interner_branch);
 
     let direct_main = main_func_id(residual_direct.program(), &interner_direct);
     let branch_main = main_func_id(residual_branch.program(), &interner_branch);

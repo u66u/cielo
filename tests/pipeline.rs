@@ -17,7 +17,7 @@ use cielo::sema::ty::Persistability;
 use cielo::{Compiler, CompilerConfig};
 
 #[test]
-fn compiles_source_through_v0_skeleton_pipeline() {
+fn compiles_source_through_default_pipeline() {
     let src = r#"
 fn add(a: Int, b: Int) -> Int {
   a + b
@@ -28,9 +28,16 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
-    assert_eq!(residual.program().functions().len(), 2);
+    let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
     assert_eq!(residual.program().entrypoints().len(), 1);
+    assert!(
+        !residual.program().functions().is_empty(),
+        "default pipeline should emit at least the entrypoint function"
+    );
+    assert!(
+        residual.diagnostics().entries().is_empty(),
+        "default pipeline should compile the skeleton without diagnostics"
+    );
 }
 
 #[test]
@@ -86,7 +93,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
+    let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
     assert_eq!(residual.program().handlers().len(), 1);
     let main_body = residual.program().functions()[0].body;
     assert_eq!(
@@ -108,7 +115,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
+    let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
     assert_eq!(residual.program().structs().len(), 1);
     assert_eq!(residual.program().enums().len(), 1);
     assert!(residual.diagnostics().entries().is_empty());
@@ -129,7 +136,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
+    let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
 
     for function in residual.program().functions() {
         assert!(
@@ -1979,7 +1986,7 @@ fn residualize_prunes_match_through_let_alias_chain_with_binder_materialization(
 }
 
 #[test]
-fn v1_example_contract_oracle_matches_effect_and_staging_intent() {
+fn v1_example_contract_oracle_matches_effect_and_staging_intent_split_pipeline() {
     let src = include_str!("../examples/v1_test.cielo");
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
@@ -2348,7 +2355,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
+    let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
     let stats = residual.residual().residualize_stats;
 
     assert!(

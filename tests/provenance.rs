@@ -18,7 +18,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
+    let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
 
     let main = residual
         .program()
@@ -53,7 +53,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
+    let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
 
     let main = residual
         .program()

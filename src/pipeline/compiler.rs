@@ -171,6 +171,51 @@ impl Compiler {
         )
     }
 
+    pub fn compile_source(
+        &self,
+        source: &str,
+        source_id: SourceId,
+        interner: &mut Interner,
+    ) -> Residualized {
+        self.compile_source_v1(source, source_id, interner)
+    }
+
+    pub fn compile_source_to_c(
+        &self,
+        source: &str,
+        source_id: SourceId,
+        interner: &mut Interner,
+    ) -> CompiledC {
+        self.compile_source_v1_to_c(source, source_id, interner)
+    }
+
+    pub fn compile_source_v1(
+        &self,
+        source: &str,
+        source_id: SourceId,
+        interner: &mut Interner,
+    ) -> Residualized {
+        let core = self.parse_and_lower_to_core(source, source_id, interner);
+        self.run_v1_core_pipeline(core)
+    }
+
+    pub fn compile_source_v1_to_c(
+        &self,
+        source: &str,
+        source_id: SourceId,
+        interner: &mut Interner,
+    ) -> CompiledC {
+        let residual = self.compile_source_v1(source, source_id, interner);
+        let normalized = normalize::run(residual);
+        let linearized = linearize::run(normalized);
+        let emitted = c_emit::run(linearized, interner);
+        CompiledC {
+            residual: emitted.linearized.residual,
+            linear: emitted.linearized.linear,
+            c_source: emitted.c_source,
+        }
+    }
+
     pub fn compile_source_v0(
         &self,
         source: &str,
@@ -248,6 +293,11 @@ impl Compiler {
 
     pub fn run_v1_normalize(&self, residual: Residualized) -> Residualized {
         self.normalize(residual)
+    }
+
+    pub fn run_v1_core_pipeline(&self, built: CoreBuilt) -> Residualized {
+        let classified = self.run_v1_evaluate_classify(built);
+        self.run_v1_residualize_specialize(classified)
     }
 
     pub fn run_v0_core_pipeline(&self, built: CoreBuilt) -> Residualized {
