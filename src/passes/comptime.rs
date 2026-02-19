@@ -59,6 +59,11 @@ fn assert_evaluate_classify_invariants(classified: &BtaClassified) {
         "compiler bug: sema.effects_of_expr length diverges from program.exprs length"
     );
     assert_eq!(
+        sema.ownership_of_expr.len(),
+        expr_count,
+        "compiler bug: sema.ownership_of_expr length diverges from program.exprs length"
+    );
+    assert_eq!(
         sema.effects_of_stmt.len(),
         stmt_count,
         "compiler bug: sema.effects_of_stmt length diverges from program.stmts length"
@@ -185,6 +190,11 @@ fn assert_residualize_specialize_invariants(residual: &crate::pipeline::phases::
         sema.effects_of_expr.len(),
         expr_count,
         "compiler bug: GraphCloner failed to map effects_of_expr to cloned expressions"
+    );
+    assert_eq!(
+        sema.ownership_of_expr.len(),
+        expr_count,
+        "compiler bug: GraphCloner failed to map ownership_of_expr to cloned expressions"
     );
     assert_eq!(
         sema.effects_of_stmt.len(),

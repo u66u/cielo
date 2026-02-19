@@ -690,6 +690,11 @@ fn assert_remap_integrity(
         "compiler bug: sema.effects_of_expr must stay in sync after specialization remap"
     );
     assert_eq!(
+        sema.ownership_of_expr.len(),
+        expr_count,
+        "compiler bug: sema.ownership_of_expr must stay in sync after specialization remap"
+    );
+    assert_eq!(
         sema.effects_of_stmt.len(),
         stmt_count,
         "compiler bug: sema.effects_of_stmt must stay in sync after specialization remap"
@@ -796,6 +801,10 @@ fn synchronize_semantic_tables(program: &CoreProgram, sema: &mut SemanticTables)
         "compiler bug: sema.effects_of_expr exceeds expr arena before specialization remap"
     );
     assert!(
+        sema.ownership_of_expr.len() <= expr_count,
+        "compiler bug: sema.ownership_of_expr exceeds expr arena before specialization remap"
+    );
+    assert!(
         sema.effects_of_stmt.len() <= stmt_count,
         "compiler bug: sema.effects_of_stmt exceeds stmt arena before specialization remap"
     );
@@ -806,6 +815,12 @@ fn synchronize_semantic_tables(program: &CoreProgram, sema: &mut SemanticTables)
     if sema.effects_of_expr.len() < expr_count {
         sema.effects_of_expr
             .resize(expr_count, SortedEffectRow::empty());
+    }
+    if sema.ownership_of_expr.len() < expr_count {
+        sema.ownership_of_expr.resize(
+            expr_count,
+            crate::sema::ownership::OwnershipClass::BorrowedView,
+        );
     }
     if sema.effects_of_stmt.len() < stmt_count {
         sema.effects_of_stmt
@@ -1403,6 +1418,20 @@ impl<'a> GraphCloner<'a> {
                 .resize(cloned.index() + 1, SortedEffectRow::empty());
         }
         self.sema.effects_of_expr[cloned.index()] = effects;
+
+        let ownership = self
+            .sema
+            .ownership_of_expr
+            .get(source.index())
+            .copied()
+            .unwrap_or(crate::sema::ownership::OwnershipClass::BorrowedView);
+        if self.sema.ownership_of_expr.len() <= cloned.index() {
+            self.sema.ownership_of_expr.resize(
+                cloned.index() + 1,
+                crate::sema::ownership::OwnershipClass::BorrowedView,
+            );
+        }
+        self.sema.ownership_of_expr[cloned.index()] = ownership;
 
         self.expr_map.insert(source, cloned);
         cloned

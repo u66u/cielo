@@ -21,6 +21,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::common::densemap::DenseMap;
 use crate::common::diagnostics::DiagnosticBag;
 use crate::common::ids::{
     EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, TypeId, VarId,
@@ -31,6 +32,7 @@ use crate::ir::core::{
 };
 use crate::pipeline::phases::SemanticTables;
 use crate::sema::effect::SortedEffectRow;
+use crate::sema::ownership::{OwnershipClass, classify_core_type_ref, classify_type_kind};
 use crate::sema::ty::{EnumVariant, PrimitiveType, StructField, TypeKind, TypeStore};
 
 macro_rules! define_primitive_type_ids {
@@ -351,8 +353,102 @@ impl<'a> TypeChecker<'a> {
             .map(|(idx, _)| self.store.persistability(TypeId::new(idx)))
             .collect();
 
+        sema.ownership_of_type = self.store.kinds().iter().map(classify_type_kind).collect();
+        sema.ownership_of_expr = sema
+            .type_of_expr
+            .iter()
+            .map(|slot| {
+                slot.and_then(|ty| sema.ownership_of_type.get(ty.index()).copied())
+                    .unwrap_or(OwnershipClass::BorrowedView)
+            })
+            .collect();
+        sema.ownership_of_var = self.classify_var_ownership(&sema);
+
         infer_stmt_effects(self.program, &mut sema.effects_of_stmt);
         sema
+    }
+
+    fn classify_var_ownership(&self, sema: &SemanticTables) -> DenseMap<VarId, OwnershipClass> {
+        let mut out = DenseMap::default();
+
+        for function in self.program.functions() {
+            for (idx, param) in function.params.iter().copied().enumerate() {
+                let ownership = function
+                    .param_types
+                    .get(idx)
+                    .map(classify_core_type_ref)
+                    .unwrap_or(OwnershipClass::BorrowedView);
+                assign_var_ownership(&mut out, param, ownership);
+            }
+        }
+
+        for handler in self.program.handlers() {
+            for clause in &handler.clauses {
+                for param in clause.params.iter().copied() {
+                    assign_var_ownership(&mut out, param, OwnershipClass::BorrowedView);
+                }
+                if let Some(resume) = clause.resume_param {
+                    assign_var_ownership(&mut out, resume, OwnershipClass::BorrowedView);
+                }
+            }
+        }
+
+        for stmt in self.program.stmts() {
+            match &stmt.kind {
+                StmtKind::Let { binding, value, .. } => {
+                    let ownership = sema
+                        .ownership_of_expr
+                        .get(value.index())
+                        .copied()
+                        .unwrap_or(OwnershipClass::BorrowedView);
+                    assign_var_ownership(&mut out, *binding, ownership);
+                }
+                StmtKind::Val { binding, .. } => {
+                    assign_var_ownership(&mut out, *binding, OwnershipClass::BorrowedView);
+                }
+                StmtKind::Call { result, callee, .. } => {
+                    let ownership = self
+                        .program
+                        .function(*callee)
+                        .map(|function| classify_core_type_ref(&function.return_type))
+                        .unwrap_or(OwnershipClass::BorrowedView);
+                    assign_var_ownership(&mut out, *result, ownership);
+                }
+                StmtKind::Perform {
+                    result: Some(result),
+                    effect,
+                    operation,
+                    ..
+                } => {
+                    let ownership = self
+                        .program
+                        .effect(*effect)
+                        .and_then(|decl| decl.operations.iter().find(|op| op.name == *operation))
+                        .map(|op| classify_core_type_ref(&op.return_type))
+                        .unwrap_or(OwnershipClass::BorrowedView);
+                    assign_var_ownership(&mut out, *result, ownership);
+                }
+                StmtKind::Perform { result: None, .. } => {}
+                StmtKind::Resume { result, .. } => {
+                    assign_var_ownership(&mut out, *result, OwnershipClass::BorrowedView);
+                }
+                StmtKind::Match { arms, .. } => {
+                    for arm in arms {
+                        for binder in arm.binders.iter().copied() {
+                            assign_var_ownership(&mut out, binder, OwnershipClass::BorrowedView);
+                        }
+                    }
+                }
+                StmtKind::Return(_)
+                | StmtKind::If { .. }
+                | StmtKind::Handle { .. }
+                | StmtKind::Stage { .. }
+                | StmtKind::Hole { .. }
+                | StmtKind::Error(_) => {}
+            }
+        }
+
+        out
     }
 
     fn infer_function(&mut self, func_id: FuncId) {
@@ -1477,6 +1573,18 @@ fn resolve_concrete_type_ref(
         CoreTypeRef::Named(name) => adt_types.get(name).copied(),
         CoreTypeRef::Unknown => None,
     }
+}
+
+fn assign_var_ownership(
+    out: &mut DenseMap<VarId, OwnershipClass>,
+    var: VarId,
+    ownership: OwnershipClass,
+) {
+    if let Some(existing) = out.get(&var).copied() {
+        out.insert(var, existing.merge(ownership));
+        return;
+    }
+    out.insert(var, ownership);
 }
 
 fn infer_stmt_effects(program: &CoreProgram, out: &mut [SortedEffectRow]) {

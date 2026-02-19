@@ -6,6 +6,7 @@ use crate::common::ids::{EffectLabelId, ExprId, FuncId, HandlerId, SymbolId, Typ
 use crate::frontend::ast::Program as AstProgram;
 use crate::ir::core::{CoreProgram, Literal};
 use crate::sema::effect::{EffectProperties, SortedEffectRow};
+use crate::sema::ownership::OwnershipClass;
 use crate::sema::ty::Persistability;
 use serde::{Deserialize, Serialize};
 
@@ -114,6 +115,9 @@ pub struct SemanticTables {
     pub type_of_expr: Vec<Option<TypeId>>,
     pub effects_of_expr: Vec<SortedEffectRow>,
     pub effects_of_stmt: Vec<SortedEffectRow>,
+    pub ownership_of_expr: Vec<OwnershipClass>,
+    pub ownership_of_var: DenseMap<VarId, OwnershipClass>,
+    pub ownership_of_type: Vec<OwnershipClass>,
     pub persistability_of_type: Vec<Persistability>,
     pub effect_properties: HashMap<EffectLabelId, EffectProperties>,
 }
@@ -124,6 +128,9 @@ impl SemanticTables {
             type_of_expr: vec![None; expr_count],
             effects_of_expr: vec![SortedEffectRow::empty(); expr_count],
             effects_of_stmt: vec![SortedEffectRow::empty(); stmt_count],
+            ownership_of_expr: vec![OwnershipClass::BorrowedView; expr_count],
+            ownership_of_var: DenseMap::default(),
+            ownership_of_type: Vec::new(),
             persistability_of_type: Vec::new(),
             effect_properties: HashMap::new(),
         }
