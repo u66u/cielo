@@ -66,6 +66,11 @@ fn main() -> Int {
         "sema.effects_of_expr must stay aligned with expression count at Stage-A boundary"
     );
     assert_eq!(
+        staged.sema().ownership_of_expr.len(),
+        expr_count,
+        "sema.ownership_of_expr must stay aligned with expression count at Stage-A boundary"
+    );
+    assert_eq!(
         staged.sema().effects_of_stmt.len(),
         stmt_count,
         "sema.effects_of_stmt must stay aligned with statement count at Stage-A boundary"
@@ -226,6 +231,11 @@ fn main() -> Int {
         residual.sema().effects_of_expr.len(),
         expr_count,
         "sema.effects_of_expr must stay aligned with residual expressions"
+    );
+    assert_eq!(
+        residual.sema().ownership_of_expr.len(),
+        expr_count,
+        "sema.ownership_of_expr must stay aligned with residual expressions"
     );
     assert_eq!(
         residual.sema().effects_of_stmt.len(),

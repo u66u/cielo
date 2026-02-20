@@ -3,9 +3,10 @@ use cielo::common::ids::{EffectLabelId, SourceId};
 use cielo::common::span::Span;
 use cielo::common::symbols::Interner;
 use cielo::frontend::parser::parse_source;
-use cielo::ir::core::{BinaryOp, CoreProgram, ExprKind, ExprNode, Literal};
+use cielo::ir::core::{BinaryOp, CoreProgram, ExprKind, ExprNode, Literal, StmtKind};
 use cielo::passes::lowering::{LowerConfig, lower_program};
 use cielo::sema::effect::{CapabilityLevel, EffectFlags, is_thunkable};
+use cielo::sema::ownership::OwnershipClass;
 use cielo::sema::typecheck::typecheck_core;
 
 #[test]
@@ -31,6 +32,171 @@ fn infers_simple_binary_types() {
     let mut diagnostics = DiagnosticBag::default();
     let sema = typecheck_core(&program, &mut diagnostics);
     assert!(sema.type_of_expr.iter().all(Option::is_some));
+}
+
+#[test]
+fn classifies_expr_and_var_ownership_for_managed_and_trivial_values() {
+    let src = r#"
+enum Boxed { Wrap(Int) }
+fn main() -> Int {
+  let n = 1;
+  let boxed = Wrap(n);
+  n
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let sema = typecheck_core(&lowered.program, &mut diagnostics);
+
+    let int_literal_expr = lowered
+        .program
+        .exprs()
+        .iter()
+        .enumerate()
+        .find_map(|(idx, expr)| {
+            matches!(expr.kind, ExprKind::Literal(Literal::Int(_))).then_some(idx)
+        })
+        .expect("int literal");
+    let ctor_expr = lowered
+        .program
+        .exprs()
+        .iter()
+        .enumerate()
+        .find_map(|(idx, expr)| matches!(expr.kind, ExprKind::MakeEnum { .. }).then_some(idx))
+        .expect("enum constructor expr");
+
+    assert_eq!(
+        sema.ownership_of_expr[int_literal_expr],
+        OwnershipClass::Trivial
+    );
+    assert_eq!(sema.ownership_of_expr[ctor_expr], OwnershipClass::RcManaged);
+
+    let mut literal_binding = None;
+    let mut ctor_binding = None;
+    for stmt in lowered.program.stmts() {
+        if let StmtKind::Let { binding, value, .. } = &stmt.kind {
+            let kind = lowered
+                .program
+                .expr(*value)
+                .map(|expr| &expr.kind)
+                .expect("let value expr");
+            if matches!(kind, ExprKind::Literal(Literal::Int(_))) {
+                literal_binding = Some(*binding);
+            }
+            if matches!(
+                kind,
+                ExprKind::MakeEnum { .. } | ExprKind::MakeStruct { .. }
+            ) {
+                ctor_binding = Some(*binding);
+            }
+        }
+    }
+
+    let literal_binding = literal_binding.expect("literal binding var");
+    let ctor_binding = ctor_binding.expect("ctor binding var");
+    assert_eq!(
+        sema.ownership_of_var.get(&literal_binding).copied(),
+        Some(OwnershipClass::Trivial)
+    );
+    assert_eq!(
+        sema.ownership_of_var.get(&ctor_binding).copied(),
+        Some(OwnershipClass::RcManaged)
+    );
+}
+
+#[test]
+fn ownership_table_covers_relevant_var_binders() {
+    let src = r#"
+effect LocalState { fn tick() -> Int }
+enum Option { Some(Int), None }
+fn helper(a: Int) -> Int { a }
+fn main() -> Int {
+  let local = handle {
+    let t = do LocalState.tick();
+    t
+  } with LocalState {
+    | tick(resume) => {
+      let resumed = resume(3);
+      resumed
+    }
+  };
+  let opt = Some(local);
+  let out = match opt {
+    Some(x) => x,
+    None => 0,
+  };
+  let y = helper(out);
+  y
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(1), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let sema = typecheck_core(&lowered.program, &mut diagnostics);
+
+    assert_eq!(sema.ownership_of_expr.len(), lowered.program.exprs().len());
+
+    let mut required = std::collections::HashSet::new();
+    for function in lowered.program.functions() {
+        for param in function.params.iter().copied() {
+            required.insert(param);
+        }
+    }
+    for handler in lowered.program.handlers() {
+        for clause in &handler.clauses {
+            for param in clause.params.iter().copied() {
+                required.insert(param);
+            }
+            if let Some(resume) = clause.resume_param {
+                required.insert(resume);
+            }
+        }
+    }
+    for stmt in lowered.program.stmts() {
+        match &stmt.kind {
+            StmtKind::Let { binding, .. } | StmtKind::Val { binding, .. } => {
+                required.insert(*binding);
+            }
+            StmtKind::Call { result, .. } | StmtKind::Resume { result, .. } => {
+                required.insert(*result);
+            }
+            StmtKind::Perform {
+                result: Some(result),
+                ..
+            } => {
+                required.insert(*result);
+            }
+            StmtKind::Perform { result: None, .. }
+            | StmtKind::Return(_)
+            | StmtKind::If { .. }
+            | StmtKind::Match { .. }
+            | StmtKind::Handle { .. }
+            | StmtKind::Stage { .. }
+            | StmtKind::Hole { .. }
+            | StmtKind::Error(_) => {}
+        }
+        if let StmtKind::Match { arms, .. } = &stmt.kind {
+            for arm in arms {
+                for binder in arm.binders.iter().copied() {
+                    required.insert(binder);
+                }
+            }
+        }
+    }
+
+    let missing = required
+        .iter()
+        .copied()
+        .filter(|var| sema.ownership_of_var.get(var).is_none())
+        .collect::<Vec<_>>();
+    assert!(
+        missing.is_empty(),
+        "ownership table must classify every relevant var binder, missing {:?}",
+        missing
+    );
 }
 
 #[test]
