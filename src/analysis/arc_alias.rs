@@ -82,37 +82,20 @@ fn classify_stmt_alias(program: &CoreProgram, stmt_id: StmtId, tables: &mut ArcA
                 mark_shared(source, tables);
                 tables.copy_alias_edges.push((*binding, source));
             }
-            mark_expr_call_escapes(program, *value, tables);
         }
-        StmtKind::Call { args, .. } | StmtKind::Perform { args, .. } => {
-            for arg in args {
-                mark_expr_vars_shared(program, *arg, tables);
-                mark_expr_call_escapes(program, *arg, tables);
-            }
-        }
+        StmtKind::Call { .. } | StmtKind::Perform { .. } => {}
         StmtKind::Resume { arg, resume, .. } => {
             mark_shared(*resume, tables);
             mark_expr_vars_shared(program, *arg, tables);
-            mark_expr_call_escapes(program, *arg, tables);
         }
-        StmtKind::Match {
-            scrutinee, arms, ..
-        } => {
-            if let Some(expr) = program.expr(*scrutinee)
-                && let ExprKind::Var(source) = expr.kind
-            {
-                for arm in arms {
-                    for binder in arm.binders.iter().copied() {
-                        mark_shared(source, tables);
-                        mark_shared(binder, tables);
-                        tables.copy_alias_edges.push((source, binder));
-                    }
+        StmtKind::Match { arms, .. } => {
+            for arm in arms {
+                for binder in arm.binders.iter().copied() {
+                    mark_shared(binder, tables);
                 }
             }
-            mark_expr_call_escapes(program, *scrutinee, tables);
         }
-        StmtKind::Return(expr) => mark_expr_call_escapes(program, *expr, tables),
-        StmtKind::If { cond, .. } => mark_expr_call_escapes(program, *cond, tables),
+        StmtKind::Return(_) | StmtKind::If { .. } => {}
         StmtKind::Val { .. }
         | StmtKind::Handle { .. }
         | StmtKind::Stage { .. }
@@ -142,36 +125,6 @@ fn mark_expr_vars_shared(program: &CoreProgram, expr_id: ExprId, tables: &mut Ar
             | ExprKind::MakeStruct { fields: args, .. }
             | ExprKind::MakeEnum { fields: args, .. } => stack.extend(args.iter().copied()),
             ExprKind::Literal(_) | ExprKind::Error(_) => {}
-        }
-    }
-}
-
-fn mark_expr_call_escapes(program: &CoreProgram, expr_id: ExprId, tables: &mut ArcAliasTables) {
-    let mut stack = vec![expr_id];
-    let mut seen = HashSet::new();
-    while let Some(current) = stack.pop() {
-        if !seen.insert(current) {
-            continue;
-        }
-        let Some(expr) = program.expr(current) else {
-            continue;
-        };
-        match &expr.kind {
-            ExprKind::PureCall { args, .. } => {
-                for arg in args {
-                    mark_expr_vars_shared(program, *arg, tables);
-                    stack.push(*arg);
-                }
-            }
-            ExprKind::Unary { expr, .. } => stack.push(*expr),
-            ExprKind::Binary { lhs, rhs, .. } => {
-                stack.push(*lhs);
-                stack.push(*rhs);
-            }
-            ExprKind::MakeStruct { fields, .. } | ExprKind::MakeEnum { fields, .. } => {
-                stack.extend(fields.iter().copied());
-            }
-            ExprKind::Var(_) | ExprKind::Literal(_) | ExprKind::Error(_) => {}
         }
     }
 }

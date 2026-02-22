@@ -103,8 +103,7 @@ fn main() -> Int {
 "#,
     );
     let cfg = ArcCfg::build(&program);
-    let alias = ArcAliasTables::analyze(&program, &cfg);
-    let last_use = ArcLastUseTables::analyze(&cfg, &alias);
+    let last_use = ArcLastUseTables::analyze(&cfg);
 
     let mut x_var = None;
     let mut y_let_stmt = None;
@@ -131,7 +130,7 @@ fn main() -> Int {
 }
 
 #[test]
-fn arc_last_use_skips_shared_alias_vars() {
+fn arc_last_use_marks_shared_alias_terminal_use() {
     let program = lower_to_core(
         r#"
 fn main() -> Int {
@@ -144,7 +143,7 @@ fn main() -> Int {
     );
     let cfg = ArcCfg::build(&program);
     let alias = ArcAliasTables::analyze(&program, &cfg);
-    let last_use = ArcLastUseTables::analyze(&cfg, &alias);
+    let last_use = ArcLastUseTables::analyze(&cfg);
 
     let mut x_var = None;
     for stmt in program.stmts() {
@@ -160,7 +159,7 @@ fn main() -> Int {
     assert!(
         cfg.reachable()
             .iter()
-            .all(|stmt_id| !last_use.last_uses(*stmt_id).contains(&x)),
-        "shared alias vars should never be considered last-use safe in v1 analysis"
+            .any(|stmt_id| last_use.last_uses(*stmt_id).contains(&x)),
+        "shared alias vars should still get terminal-use release candidates when they go dead"
     );
 }

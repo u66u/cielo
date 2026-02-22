@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 
-use crate::analysis::arc_alias::{ArcAliasClass, ArcAliasTables};
 use crate::analysis::arc_cfg::ArcCfg;
 use crate::common::ids::{StmtId, VarId};
 use smallvec::SmallVec;
@@ -13,7 +12,7 @@ pub struct ArcLastUseTables {
 }
 
 impl ArcLastUseTables {
-    pub fn analyze(cfg: &ArcCfg, alias: &ArcAliasTables) -> Self {
+    pub fn analyze(cfg: &ArcCfg) -> Self {
         let stmt_capacity = cfg.stmt_capacity();
         let mut tables = ArcLastUseTables {
             live_in: vec![HashSet::new(); stmt_capacity],
@@ -61,9 +60,13 @@ impl ArcLastUseTables {
             let live_out = &tables.live_out[stmt_id.index()];
             let mut candidates = SmallVec::<[VarId; 4]>::new();
             for used in &summary.uses {
-                let alias_class = alias.class_of_var(*used).unwrap_or(ArcAliasClass::Unique);
-                if alias_class == ArcAliasClass::Unique && !live_out.contains(used) {
+                if !live_out.contains(used) {
                     push_unique_var(&mut candidates, *used);
+                }
+            }
+            for def in &summary.defs {
+                if !live_out.contains(def) {
+                    push_unique_var(&mut candidates, *def);
                 }
             }
             if !candidates.is_empty() {
