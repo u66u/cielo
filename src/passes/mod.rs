@@ -1,3 +1,5 @@
+pub mod arc_insert;
+pub mod arc_opt;
 pub mod bta;
 pub mod c_emit;
 pub mod comptime;
