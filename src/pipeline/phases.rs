@@ -221,6 +221,17 @@ pub struct SpecializationStats {
     pub skipped_limits: u32,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct ArcStats {
+    pub planned_retain_ops: u32,
+    pub planned_release_ops: u32,
+    pub eliminated_move_pairs: u32,
+    pub removed_retain_ops: u32,
+    pub removed_release_ops: u32,
+    pub final_retain_ops: u32,
+    pub final_release_ops: u32,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct CtPropagationTables {
     pub ct_cache: DenseMap<ExprId, Literal>,
@@ -348,6 +359,7 @@ pub struct ResidualTables {
     pub constant_table: ConstantTable,
     pub residualize_stats: ResidualizeStats,
     pub specialization_stats: SpecializationStats,
+    pub arc_stats: ArcStats,
 }
 
 impl ResidualTables {

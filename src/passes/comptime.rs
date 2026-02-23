@@ -321,6 +321,30 @@ fn assert_residualize_specialize_invariants(residual: &crate::pipeline::phases::
         residual_tables.constant_table.total_size_bytes <= total_constant_bytes,
         "compiler bug: residual constant_table size accounting is inconsistent"
     );
+
+    let arc_stats = residual_tables.arc_stats;
+    assert!(
+        arc_stats.final_retain_ops <= arc_stats.planned_retain_ops,
+        "compiler bug: arc final retain count exceeds planned retain count"
+    );
+    assert!(
+        arc_stats.final_release_ops <= arc_stats.planned_release_ops,
+        "compiler bug: arc final release count exceeds planned release count"
+    );
+    assert_eq!(
+        arc_stats
+            .planned_retain_ops
+            .saturating_sub(arc_stats.removed_retain_ops),
+        arc_stats.final_retain_ops,
+        "compiler bug: arc retain accounting mismatch"
+    );
+    assert_eq!(
+        arc_stats
+            .planned_release_ops
+            .saturating_sub(arc_stats.removed_release_ops),
+        arc_stats.final_release_ops,
+        "compiler bug: arc release accounting mismatch"
+    );
 }
 
 fn assert_stage_reason_in_bounds(stage: Stage, function_count: usize, context: &str) {

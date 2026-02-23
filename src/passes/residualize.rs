@@ -24,10 +24,12 @@ use std::collections::{HashMap, HashSet};
 use crate::common::ids::{ExprId, FuncId, HandlerId, StmtId, VarId};
 use crate::common::span::Span;
 use crate::ir::core::{CoreProgram, ExprKind, Literal, MatchArm, StmtKind, StmtNode};
+use crate::passes::arc_insert;
+use crate::passes::arc_opt;
 use crate::passes::constant_table;
 use crate::pipeline::phases::{
-    BranchDecision, BtaClassified, BtaTables, CtPropagationTables, Knownness, ResidualTables,
-    ResidualizeStats, Residualized, Stage,
+    ArcStats, BranchDecision, BtaClassified, BtaTables, CtPropagationTables, Knownness,
+    ResidualTables, ResidualizeStats, Residualized, Stage,
 };
 use crate::sema::effect::SortedEffectRow;
 
@@ -39,12 +41,23 @@ pub fn run(mut bta: BtaClassified) -> Residualized {
     let function_effect_summary = collect_function_effect_summary(bta.program());
     rewrite_call_effect_rows(bta.program_mut(), &function_effect_summary);
     erase_function_effect_annotations(bta.program_mut());
+    let planned_arc = arc_insert::plan(bta.program(), bta.sema());
+    let optimized_arc = arc_opt::optimize(planned_arc.clone());
     let constant_table = constant_table::build_for_core(bta.program());
     bta.into_residualized(ResidualTables {
         function_effect_summary,
         constant_table,
         residualize_stats,
         specialization_stats: Default::default(),
+        arc_stats: ArcStats {
+            planned_retain_ops: planned_arc.stats.retain_ops,
+            planned_release_ops: planned_arc.stats.release_ops,
+            eliminated_move_pairs: optimized_arc.stats.eliminated_move_pairs,
+            removed_retain_ops: optimized_arc.stats.removed_retain_ops,
+            removed_release_ops: optimized_arc.stats.removed_release_ops,
+            final_retain_ops: optimized_arc.plan.stats.retain_ops,
+            final_release_ops: optimized_arc.plan.stats.release_ops,
+        },
     })
 }
 

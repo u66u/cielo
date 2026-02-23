@@ -27,10 +27,12 @@ use crate::common::span::Span;
 use crate::ir::core::{
     CoreProgram, ExprKind, ExprNode, FunctionDecl, HandlerDef, StmtKind, StmtNode,
 };
+use crate::passes::arc_insert;
+use crate::passes::arc_opt;
 use crate::passes::constant_table;
 use crate::pipeline::phases::{
-    BtaTables, CtPropagationTables, Reason, Residualized, SemanticTables, SpecializationStats,
-    Stage,
+    ArcStats, BtaTables, CtPropagationTables, Reason, Residualized, SemanticTables,
+    SpecializationStats, Stage,
 };
 use crate::sema::effect::SortedEffectRow;
 
@@ -50,6 +52,17 @@ pub fn run(residual: Residualized) -> Residualized {
     bta.remap_func_ids(&func_remap);
     residual_tables.remap_func_ids(&func_remap);
     residual_tables.constant_table = constant_table::build_for_core(&program);
+    let planned_arc = arc_insert::plan(&program, &sema);
+    let optimized_arc = arc_opt::optimize(planned_arc.clone());
+    residual_tables.arc_stats = ArcStats {
+        planned_retain_ops: planned_arc.stats.retain_ops,
+        planned_release_ops: planned_arc.stats.release_ops,
+        eliminated_move_pairs: optimized_arc.stats.eliminated_move_pairs,
+        removed_retain_ops: optimized_arc.stats.removed_retain_ops,
+        removed_release_ops: optimized_arc.stats.removed_release_ops,
+        final_retain_ops: optimized_arc.plan.stats.retain_ops,
+        final_release_ops: optimized_arc.plan.stats.release_ops,
+    };
     synchronize_semantic_tables(&program, &mut sema);
     assert_remap_integrity(&program, &sema, &mono, &ct, &bta, &residual_tables);
     Residualized::new(program, diagnostics, sema, mono, ct, bta, residual_tables)
