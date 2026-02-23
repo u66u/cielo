@@ -83,11 +83,9 @@ fn main() -> Int {
         "entrypoint must remain reachable in v1"
     );
     assert!(
-        residual
-            .mono()
-            .source_to_mono
+        residual.mono().source_to_mono.iter().all(|(_, monos)| monos
             .iter()
-            .all(|(_, monos)| monos.iter().all(|mono| mono.index() < residual.program().functions().len())),
+            .all(|mono| mono.index() < residual.program().functions().len())),
         "monomorphization summary must remain in-bounds after v1 pruning"
     );
 }
