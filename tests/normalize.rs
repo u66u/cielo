@@ -1,7 +1,10 @@
 use std::collections::HashSet;
 
+#[path = "helpers/mod.rs"]
+mod helpers;
+
 use cielo::common::diagnostics::DiagnosticBag;
-use cielo::common::ids::{EffectLabelId, ExprId, FuncId, SourceId, StmtId, SymbolId, VarId};
+use cielo::common::ids::{EffectLabelId, ExprId, SourceId, SymbolId, VarId};
 use cielo::common::span::Span;
 use cielo::common::symbols::Interner;
 use cielo::ir::core::{
@@ -15,6 +18,7 @@ use cielo::pipeline::phases::{
 };
 use cielo::sema::effect::SortedEffectRow;
 use cielo::{Compiler, CompilerConfig};
+use helpers::ir::{contains_call_to, contains_if_stmt, reachable_stmt_count};
 
 #[test]
 fn normalize_shrink_is_monotone_and_idempotent() {
@@ -870,61 +874,6 @@ fn residualized(program: CoreProgram) -> Residualized {
         BtaTables::default(),
         ResidualTables::default(),
     )
-}
-
-fn reachable_stmt_count(program: &CoreProgram) -> usize {
-    let mut seen_stmts = HashSet::new();
-    let mut stack = program
-        .functions()
-        .iter()
-        .map(|function| function.body)
-        .collect::<Vec<_>>();
-    while let Some(stmt_id) = stack.pop() {
-        if !seen_stmts.insert(stmt_id) {
-            continue;
-        }
-        let Some(stmt) = program.stmt(stmt_id) else {
-            continue;
-        };
-        stack.extend(stmt.child_stmts());
-    }
-    seen_stmts.len()
-}
-
-fn contains_if_stmt(program: &CoreProgram, root: StmtId) -> bool {
-    let mut seen_stmts = HashSet::new();
-    let mut stack = vec![root];
-    while let Some(stmt_id) = stack.pop() {
-        if !seen_stmts.insert(stmt_id) {
-            continue;
-        }
-        let Some(stmt) = program.stmt(stmt_id) else {
-            continue;
-        };
-        if matches!(stmt.kind, StmtKind::If { .. }) {
-            return true;
-        }
-        stack.extend(stmt.child_stmts());
-    }
-    false
-}
-
-fn contains_call_to(program: &CoreProgram, root: StmtId, target: FuncId) -> bool {
-    let mut seen_stmts = HashSet::new();
-    let mut stack = vec![root];
-    while let Some(stmt_id) = stack.pop() {
-        if !seen_stmts.insert(stmt_id) {
-            continue;
-        }
-        let Some(stmt) = program.stmt(stmt_id) else {
-            continue;
-        };
-        if matches!(stmt.kind, StmtKind::Call { callee, .. } if callee == target) {
-            return true;
-        }
-        stack.extend(stmt.child_stmts());
-    }
-    false
 }
 
 fn expr_contains_var(program: &CoreProgram, root: ExprId, target: VarId) -> bool {

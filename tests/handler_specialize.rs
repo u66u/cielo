@@ -1,11 +1,14 @@
 use std::collections::HashSet;
 use std::fmt::Write;
 
+#[path = "helpers/mod.rs"]
+mod helpers;
+
 use cielo::common::ids::{ExprId, FuncId, HandlerId, SourceId, StmtId};
 use cielo::common::symbols::Interner;
 use cielo::ir::core::{CoreProgram, StmtKind};
-use cielo::pipeline::phases::{Reason, Stage};
 use cielo::{Compiler, CompilerConfig};
+use helpers::bta::{reason_has_valid_func_ids, stage_has_valid_func_ids};
 
 #[test]
 fn specializes_handle_wrapped_recursive_calls_and_retargets_recursion() {
@@ -1314,22 +1317,6 @@ fn assert_phase_func_ids_in_bounds(compiled: &cielo::CompiledC) {
             }),
         "handler clause discharge reasons must not retain stale function ids after specialization pruning"
     );
-}
-
-fn stage_has_valid_func_ids(stage: Stage, func_count: usize) -> bool {
-    match stage {
-        Stage::Ct => true,
-        Stage::Rt(reason) => reason_has_valid_func_ids(reason, func_count),
-    }
-}
-
-fn reason_has_valid_func_ids(reason: Reason, func_count: usize) -> bool {
-    match reason {
-        Reason::Parameter { func, .. } | Reason::CtOnlyWithRuntimeArgs(func) => {
-            func.index() < func_count
-        }
-        _ => true,
-    }
 }
 
 #[test]

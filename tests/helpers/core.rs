@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use cielo::common::diagnostics::DiagnosticBag;
 use cielo::common::ids::SourceId;
 use cielo::common::symbols::Interner;

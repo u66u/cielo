@@ -1,10 +1,14 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+#[path = "helpers/mod.rs"]
+mod helpers;
+
 use cielo::common::ids::{ExprId, FuncId, SourceId, StmtId, VarId};
 use cielo::common::symbols::Interner;
 use cielo::ir::core::{CoreProgram, ExprKind};
 use cielo::pipeline::phases::{BranchDecision, Knownness, Reason, Residualized, Stage};
 use cielo::{Compiler, CompilerConfig};
+use helpers::ir::{first_return_expr, reachable_stmt_count_from_root};
 
 #[derive(Debug, PartialEq, Eq)]
 struct StageSignature {
@@ -309,37 +313,6 @@ fn main_func_id(program: &CoreProgram, interner: &Interner) -> FuncId {
             (interner.resolve(function.name) == Some("main")).then_some(FuncId::new(idx))
         })
         .expect("main function should exist")
-}
-
-fn first_return_expr(program: &CoreProgram, root: StmtId) -> Option<ExprId> {
-    let mut stack = vec![root];
-    let mut seen = std::collections::HashSet::new();
-    while let Some(stmt_id) = stack.pop() {
-        if !seen.insert(stmt_id) {
-            continue;
-        }
-        let stmt = program.stmt(stmt_id)?;
-        match stmt.kind {
-            cielo::ir::core::StmtKind::Return(expr_id) => return Some(expr_id),
-            _ => stack.extend(stmt.child_stmts()),
-        }
-    }
-    None
-}
-
-fn reachable_stmt_count_from_root(program: &CoreProgram, root: StmtId) -> usize {
-    let mut seen = HashSet::new();
-    let mut stack = vec![root];
-    while let Some(stmt_id) = stack.pop() {
-        if !seen.insert(stmt_id) {
-            continue;
-        }
-        let Some(stmt) = program.stmt(stmt_id) else {
-            continue;
-        };
-        stack.extend(stmt.child_stmts());
-    }
-    seen.len()
 }
 
 fn resolved_main_return_int_literal(program: &CoreProgram, root: StmtId) -> Option<i64> {

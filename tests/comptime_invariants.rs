@@ -1,11 +1,15 @@
 use std::collections::HashSet;
 
+#[path = "helpers/mod.rs"]
+mod helpers;
+
 use cielo::common::ids::{FuncId, HandlerId, SourceId};
 use cielo::common::symbols::Interner;
 use cielo::ir::core::Literal;
 use cielo::ir::core::{ExprKind, StmtKind};
-use cielo::pipeline::phases::{Reason, Stage};
 use cielo::{Compiler, CompilerConfig};
+use helpers::bta::{reason_has_valid_func_ids, stage_has_valid_func_ids};
+use helpers::ir::reachable_stmt_count;
 
 #[test]
 fn stage_a_evaluate_classify_invariants_hold() {
@@ -437,32 +441,6 @@ fn main() -> Int {
     );
 }
 
-fn stage_has_valid_func_ids(stage: Stage, func_count: usize) -> bool {
-    match stage {
-        Stage::Ct => true,
-        Stage::Rt(reason) => reason_has_valid_func_ids(reason, func_count),
-    }
-}
-
-fn reachable_stmt_count(program: &cielo::ir::core::CoreProgram) -> usize {
-    let mut seen_stmts = HashSet::new();
-    let mut stack = program
-        .functions()
-        .iter()
-        .map(|function| function.body)
-        .collect::<Vec<_>>();
-    while let Some(stmt_id) = stack.pop() {
-        if !seen_stmts.insert(stmt_id) {
-            continue;
-        }
-        let Some(stmt) = program.stmt(stmt_id) else {
-            continue;
-        };
-        stack.extend(stmt.child_stmts());
-    }
-    seen_stmts.len()
-}
-
 fn collect_direct_recursive_funcs(program: &cielo::ir::core::CoreProgram) -> HashSet<FuncId> {
     let mut recursive = HashSet::new();
     for (idx, function) in program.functions().iter().enumerate() {
@@ -599,14 +577,5 @@ fn expr_calls_target(
             .copied()
             .any(|field| expr_calls_target(program, field, target, seen)),
         ExprKind::Var(_) | ExprKind::Literal(_) | ExprKind::Error(_) => false,
-    }
-}
-
-fn reason_has_valid_func_ids(reason: Reason, func_count: usize) -> bool {
-    match reason {
-        Reason::Parameter { func, .. } | Reason::CtOnlyWithRuntimeArgs(func) => {
-            func.index() < func_count
-        }
-        _ => true,
     }
 }

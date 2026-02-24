@@ -1,11 +1,12 @@
-use std::collections::HashSet;
+#[path = "helpers/mod.rs"]
+mod helpers;
 
-use cielo::common::ids::{ExprId, SourceId, StmtId};
+use cielo::common::ids::SourceId;
 use cielo::common::symbols::Interner;
-use cielo::ir::core::{CoreProgram, StmtKind};
 use cielo::pipeline::phases::Reason;
 use cielo::pipeline::provenance::{runtime_provenance_lines, staging_root_causes};
 use cielo::{Compiler, CompilerConfig};
+use helpers::ir::first_return_expr_linear;
 
 #[test]
 fn runtime_provenance_tracks_forced_runtime_dependency_chain() {
@@ -25,7 +26,8 @@ fn main() -> Int {
         .functions()
         .first()
         .expect("main function");
-    let ret_expr = first_return_expr(residual.program(), main.body).expect("main return expr");
+    let ret_expr =
+        first_return_expr_linear(residual.program(), main.body).expect("main return expr");
     let lines = runtime_provenance_lines(residual.program(), residual.bta(), ret_expr, 6);
 
     assert!(
@@ -61,7 +63,8 @@ fn main() -> Int {
         .iter()
         .find(|function| interner.resolve(function.name) == Some("main"))
         .expect("main function");
-    let ret_expr = first_return_expr(residual.program(), main.body).expect("main return expr");
+    let ret_expr =
+        first_return_expr_linear(residual.program(), main.body).expect("main return expr");
     let lines = runtime_provenance_lines(residual.program(), residual.bta(), ret_expr, 6);
 
     assert!(
@@ -70,54 +73,6 @@ fn main() -> Int {
             .any(|line| line.contains("not thunkable/discharged")),
         "expected effect blocker root cause in provenance chain: {lines:?}"
     );
-}
-
-fn first_return_expr(program: &CoreProgram, root: StmtId) -> Option<ExprId> {
-    let mut stack = vec![root];
-    let mut seen = HashSet::new();
-
-    while let Some(stmt_id) = stack.pop() {
-        if !seen.insert(stmt_id) {
-            continue;
-        }
-        let stmt = program.stmt(stmt_id)?;
-        match &stmt.kind {
-            StmtKind::Return(expr) => return Some(*expr),
-            StmtKind::Let { next, .. }
-            | StmtKind::Call { next, .. }
-            | StmtKind::Resume { next, .. }
-            | StmtKind::Perform { next, .. } => stack.push(*next),
-            StmtKind::Val { value, next, .. } => {
-                stack.push(*next);
-                stack.push(*value);
-            }
-            StmtKind::If {
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                stack.push(*else_branch);
-                stack.push(*then_branch);
-            }
-            StmtKind::Match { arms, default, .. } => {
-                if let Some(default_stmt) = default {
-                    stack.push(*default_stmt);
-                }
-                for arm in arms {
-                    stack.push(arm.body);
-                }
-            }
-            StmtKind::Handle { body, next, .. } | StmtKind::Stage { body, next, .. } => {
-                if let Some(next_stmt) = next {
-                    stack.push(*next_stmt);
-                }
-                stack.push(*body);
-            }
-            StmtKind::Hole { .. } | StmtKind::Error(_) => {}
-        }
-    }
-
-    None
 }
 
 #[test]
