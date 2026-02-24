@@ -1,25 +1,8 @@
-use cielo::common::diagnostics::DiagnosticBag;
-use cielo::common::ids::{SourceId, StmtId, VarId};
-use cielo::common::symbols::Interner;
+use cielo::common::ids::{StmtId, VarId};
 use cielo::ir::core::{CoreProgram, ExprKind, StmtKind};
 use cielo::passes::arc_insert::{ArcOpKind, plan};
-use cielo::sema::typecheck::typecheck_core;
-use cielo::{Compiler, CompilerConfig};
 
-fn lower_and_typecheck(source: &str) -> (CoreProgram, cielo::pipeline::phases::SemanticTables) {
-    let compiler = Compiler::new(CompilerConfig::default());
-    let mut interner = Interner::new();
-    let core = compiler.parse_and_lower_to_core(source, SourceId::from_u32(0), &mut interner);
-    let program = core.program().clone();
-    let mut diagnostics = DiagnosticBag::default();
-    let sema = typecheck_core(&program, &mut diagnostics);
-    assert!(
-        !diagnostics.has_errors(),
-        "fixture must typecheck cleanly, got diagnostics: {:?}",
-        diagnostics.entries()
-    );
-    (program, sema)
-}
+use crate::helpers::core::lower_and_typecheck;
 
 #[test]
 fn arc_insert_plans_retain_for_managed_alias_copy() {

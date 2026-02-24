@@ -1,6 +1,4 @@
-use cielo::common::ids::SourceId;
-use cielo::common::symbols::Interner;
-use cielo::{Compiler, CompilerConfig};
+use crate::helpers::core::compile_source_v1;
 
 #[test]
 fn v1_pipeline_tracks_arc_accounting_consistently() {
@@ -13,9 +11,7 @@ fn main() -> Int {
 }
 "#;
 
-    let compiler = Compiler::new(CompilerConfig::default());
-    let mut interner = Interner::new();
-    let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
+    let residual = compile_source_v1(src);
     let stats = residual.residual().arc_stats;
 
     assert!(

@@ -1,17 +1,10 @@
 use cielo::analysis::arc_alias::{ArcAliasClass, ArcAliasRelation, ArcAliasTables};
 use cielo::analysis::arc_cfg::ArcCfg;
 use cielo::analysis::arc_last_use::ArcLastUseTables;
-use cielo::common::ids::{SourceId, StmtId};
-use cielo::common::symbols::Interner;
-use cielo::ir::core::{CoreProgram, ExprKind, Literal, StmtKind};
-use cielo::{Compiler, CompilerConfig};
+use cielo::common::ids::StmtId;
+use cielo::ir::core::{ExprKind, Literal, StmtKind};
 
-fn lower_to_core(source: &str) -> CoreProgram {
-    let compiler = Compiler::new(CompilerConfig::default());
-    let mut interner = Interner::new();
-    let core = compiler.parse_and_lower_to_core(source, SourceId::from_u32(0), &mut interner);
-    core.program().clone()
-}
+use crate::helpers::core::lower_to_core;
 
 #[test]
 fn arc_cfg_records_branch_successors_and_cond_uses() {
