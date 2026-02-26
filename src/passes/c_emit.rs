@@ -24,6 +24,8 @@ use crate::common::ids::{EffectLabelId, LinearExprId, LinearStmtId, SymbolId, Va
 use crate::common::symbols::Interner;
 use crate::ir::core::Literal;
 use crate::ir::linear::{CallConvention, LinearExpr, LinearFunction, LinearProgram, LinearStmt};
+use crate::passes::arc_emit::ArcEmitPlan;
+use crate::passes::arc_verify;
 use crate::passes::constant_table;
 use crate::passes::linearize::Linearized;
 use crate::pipeline::phases::{
@@ -42,10 +44,14 @@ pub struct EmittedC {
 }
 
 pub fn run(linearized: Linearized, interner: &Interner) -> EmittedC {
+    let arc_plan = ArcEmitPlan::build(&linearized.linear, linearized.residual.sema());
+    let _verify_stats =
+        arc_verify::assert_valid(&linearized.linear, linearized.residual.sema(), &arc_plan);
     let c_source = emit_c_program_with_constant_table(
         &linearized.linear,
         interner,
         &linearized.residual.residual().constant_table,
+        &arc_plan,
     );
     EmittedC {
         linearized,
@@ -55,13 +61,15 @@ pub fn run(linearized: Linearized, interner: &Interner) -> EmittedC {
 
 pub fn emit_c_program(program: &LinearProgram, interner: &Interner) -> String {
     let table = constant_table::build_for_linear(program);
-    emit_c_program_with_constant_table(program, interner, &table)
+    let arc_plan = ArcEmitPlan::disabled();
+    emit_c_program_with_constant_table(program, interner, &table, &arc_plan)
 }
 
 fn emit_c_program_with_constant_table(
     program: &LinearProgram,
     interner: &Interner,
     table: &ConstantTable,
+    arc_plan: &ArcEmitPlan,
 ) -> String {
     let mut out = String::new();
     emit_runtime_prelude(&mut out, program, interner);
@@ -119,6 +127,7 @@ fn emit_c_program_with_constant_table(
             &string_pool,
             &scalar_pool,
             &ctor_pool,
+            arc_plan,
         );
         out.push('\n');
     }
@@ -164,6 +173,7 @@ fn emit_function(
     string_pool: &StringConstPool,
     scalar_pool: &ScalarConstPool,
     ctor_pool: &CtorConstPool,
+    arc_plan: &ArcEmitPlan,
 ) {
     emit_fn_signature(out, c_name, &function.params);
     out.push_str(" {\n");
@@ -189,6 +199,7 @@ fn emit_function(
         string_pool,
         scalar_pool,
         ctor_pool,
+        arc_plan,
         next_temp: 0,
         active_capabilities: Vec::new(),
     };
@@ -221,8 +232,23 @@ fn emit_stmt(
         return;
     };
 
+    emit_arc_ops(stmt_id, ArcEmitPlacement::PreRetain, out, indent, cx);
+
     match &stmt.kind {
-        LinearStmt::Return(expr) => emit_leaf(mode, emit_expr(*expr, cx), out, indent),
+        LinearStmt::Return(expr) => {
+            let value_expr = emit_expr(*expr, cx);
+            let has_post_release = !cx.arc_plan.post_release_vars(stmt_id).is_empty();
+            if has_post_release {
+                let leaf_temp = cx.fresh_temp("arc_leaf");
+                emit_indent(out, indent);
+                writeln!(out, "CieloValue {leaf_temp} = {value_expr};")
+                    .expect("in-memory write should not fail");
+                emit_arc_ops(stmt_id, ArcEmitPlacement::PostRelease, out, indent, cx);
+                emit_leaf(mode, leaf_temp, out, indent);
+            } else {
+                emit_leaf(mode, value_expr, out, indent);
+            }
+        }
         LinearStmt::Let {
             binding,
             value,
@@ -231,6 +257,7 @@ fn emit_stmt(
             emit_indent(out, indent);
             writeln!(out, "v{} = {};", binding.as_u32(), emit_expr(*value, cx))
                 .expect("in-memory write should not fail");
+            emit_arc_ops(stmt_id, ArcEmitPlacement::PostRelease, out, indent, cx);
             emit_stmt(*next, mode, out, indent, cx);
         }
         LinearStmt::Val {
@@ -239,6 +266,7 @@ fn emit_stmt(
             next,
         } => {
             emit_stmt(*value, EmitMode::AssignVar(*binding), out, indent, cx);
+            emit_arc_ops(stmt_id, ArcEmitPlacement::PostRelease, out, indent, cx);
             emit_stmt(*next, mode, out, indent, cx);
         }
         LinearStmt::PureCall {
@@ -248,6 +276,7 @@ fn emit_stmt(
             next,
         } => {
             emit_lowered_call(
+                stmt_id,
                 *result,
                 *callee,
                 args,
@@ -266,6 +295,7 @@ fn emit_stmt(
             next,
         } => {
             emit_lowered_call(
+                stmt_id,
                 *result,
                 *callee,
                 args,
@@ -284,6 +314,7 @@ fn emit_stmt(
             next,
         } => {
             emit_lowered_call(
+                stmt_id,
                 *result,
                 *callee,
                 args,
@@ -303,9 +334,11 @@ fn emit_stmt(
             emit_indent(out, indent);
             writeln!(out, "if (cv_truthy({})) {{", emit_expr(*cond, cx))
                 .expect("in-memory write should not fail");
+            emit_arc_ops(stmt_id, ArcEmitPlacement::PostRelease, out, indent + 1, cx);
             emit_stmt(*then_branch, mode.clone(), out, indent + 1, cx);
             emit_indent(out, indent);
             out.push_str("} else {\n");
+            emit_arc_ops(stmt_id, ArcEmitPlacement::PostRelease, out, indent + 1, cx);
             emit_stmt(*else_branch, mode, out, indent + 1, cx);
             emit_indent(out, indent);
             out.push_str("}\n");
@@ -345,6 +378,7 @@ fn emit_stmt(
                     )
                     .expect("in-memory write should not fail");
                 }
+                emit_arc_ops(stmt_id, ArcEmitPlacement::PostRelease, out, indent + 1, cx);
                 emit_stmt(arm.body, mode.clone(), out, indent + 1, cx);
                 emit_indent(out, indent);
                 out.push_str("}\n");
@@ -352,16 +386,19 @@ fn emit_stmt(
             if let Some(default_stmt) = default {
                 emit_indent(out, indent);
                 out.push_str("else {\n");
+                emit_arc_ops(stmt_id, ArcEmitPlacement::PostRelease, out, indent + 1, cx);
                 emit_stmt(*default_stmt, mode.clone(), out, indent + 1, cx);
                 emit_indent(out, indent);
                 out.push_str("}\n");
             } else if !arms.is_empty() {
                 emit_indent(out, indent);
                 out.push_str("else {\n");
+                emit_arc_ops(stmt_id, ArcEmitPlacement::PostRelease, out, indent + 1, cx);
                 emit_leaf(mode, "cv_unit()".to_owned(), out, indent + 1);
                 emit_indent(out, indent);
                 out.push_str("}\n");
             } else {
+                emit_arc_ops(stmt_id, ArcEmitPlacement::PostRelease, out, indent, cx);
                 emit_leaf(mode, "cv_unit()".to_owned(), out, indent);
             }
         }
@@ -415,6 +452,7 @@ fn emit_stmt(
                 out.push('}');
             }
             out.push_str(");\n");
+            emit_arc_ops(stmt_id, ArcEmitPlacement::PostRelease, out, indent, cx);
             emit_stmt(*next, mode, out, indent, cx);
         }
         LinearStmt::Handle { effect, body, next } => {
@@ -450,6 +488,7 @@ fn emit_stmt(
             emit_indent(out, indent);
             writeln!(out, "cielo_handler_pop({handle_capability});")
                 .expect("in-memory write should not fail");
+            emit_arc_ops(stmt_id, ArcEmitPlacement::PostRelease, out, indent, cx);
             if let Some(next_stmt) = next {
                 emit_stmt(*next_stmt, mode, out, indent, cx);
             } else {
@@ -461,18 +500,60 @@ fn emit_stmt(
             writeln!(out, "/* stage {:?} */", stage).expect("in-memory write should not fail");
             if let Some(next_stmt) = next {
                 emit_stmt(*body, EmitMode::Discard, out, indent, cx);
+                emit_arc_ops(stmt_id, ArcEmitPlacement::PostRelease, out, indent, cx);
                 emit_stmt(*next_stmt, mode, out, indent, cx);
             } else {
                 emit_stmt(*body, mode, out, indent, cx);
+                emit_arc_ops(stmt_id, ArcEmitPlacement::PostRelease, out, indent, cx);
             }
         }
-        LinearStmt::Hole => emit_leaf(mode, "cv_unit()".to_owned(), out, indent),
+        LinearStmt::Hole => {
+            emit_arc_ops(stmt_id, ArcEmitPlacement::PostRelease, out, indent, cx);
+            emit_leaf(mode, "cv_unit()".to_owned(), out, indent);
+        }
         LinearStmt::Error => {
             emit_indent(out, indent);
             out.push_str("/* error node reached in linear backend */\n");
+            emit_arc_ops(stmt_id, ArcEmitPlacement::PostRelease, out, indent, cx);
             emit_leaf(mode, "cv_unit()".to_owned(), out, indent);
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum ArcEmitPlacement {
+    PreRetain,
+    PostRelease,
+}
+
+fn emit_arc_ops(
+    stmt_id: LinearStmtId,
+    placement: ArcEmitPlacement,
+    out: &mut String,
+    indent: usize,
+    cx: &EmitCx<'_>,
+) -> bool {
+    let vars = match placement {
+        ArcEmitPlacement::PreRetain => cx.arc_plan.pre_retain_vars(stmt_id),
+        ArcEmitPlacement::PostRelease => cx.arc_plan.post_release_vars(stmt_id),
+    };
+    if vars.is_empty() {
+        return false;
+    }
+    for var in vars {
+        emit_indent(out, indent);
+        match placement {
+            ArcEmitPlacement::PreRetain => {
+                writeln!(out, "cielo_arc_retain(v{});", var.as_u32())
+                    .expect("in-memory write should not fail");
+            }
+            ArcEmitPlacement::PostRelease => {
+                writeln!(out, "cielo_arc_release(v{});", var.as_u32())
+                    .expect("in-memory write should not fail");
+            }
+        }
+    }
+    true
 }
 
 fn emit_leaf(mode: EmitMode, value_expr: String, out: &mut String, indent: usize) {
@@ -496,6 +577,7 @@ fn emit_leaf(mode: EmitMode, value_expr: String, out: &mut String, indent: usize
 
 #[allow(clippy::too_many_arguments)]
 fn emit_lowered_call(
+    stmt_id: LinearStmtId,
     result: VarId,
     callee: SymbolId,
     args: &[LinearExprId],
@@ -520,6 +602,7 @@ fn emit_lowered_call(
     emit_indent(out, indent);
     writeln!(out, "v{} = {}({});", result.as_u32(), wrapper, call_expr)
         .expect("in-memory write should not fail");
+    emit_arc_ops(stmt_id, ArcEmitPlacement::PostRelease, out, indent, cx);
     emit_stmt(next, mode, out, indent, cx);
 }
 
@@ -838,6 +921,7 @@ struct EmitCx<'a> {
     string_pool: &'a StringConstPool,
     scalar_pool: &'a ScalarConstPool,
     ctor_pool: &'a CtorConstPool,
+    arc_plan: &'a ArcEmitPlan,
     next_temp: u32,
     active_capabilities: Vec<(u32, String)>,
 }
