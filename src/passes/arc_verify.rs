@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 
+use crate::common::diagnostics::DiagnosticBag;
 use crate::common::ids::{LinearStmtId, VarId};
+use crate::common::span::Span;
 use crate::ir::linear::LinearProgram;
 use crate::passes::arc_emit::ArcEmitPlan;
 use crate::pipeline::phases::SemanticTables;
@@ -11,12 +13,14 @@ pub struct ArcVerifyStats {
     pub checked_stmts: u32,
     pub checked_retain_ops: u32,
     pub checked_release_ops: u32,
+    pub errors: u32,
 }
 
-pub fn assert_valid(
+pub fn verify(
     program: &LinearProgram,
     sema: &SemanticTables,
     plan: &ArcEmitPlan,
+    diagnostics: &mut DiagnosticBag,
 ) -> ArcVerifyStats {
     let mut stats = ArcVerifyStats::default();
     for idx in 0..program.stmts().len() {
@@ -28,29 +32,70 @@ pub fn assert_valid(
         let mut release_set = HashSet::new();
 
         for var in retains {
-            assert!(
-                retain_set.insert(*var),
-                "compiler bug: duplicate ARC retain op planned for stmt s{} var v{}",
-                stmt_id.as_u32(),
-                var.as_u32()
-            );
-            assert_managed_var(sema, *var, stmt_id, "retain");
+            if !retain_set.insert(*var) {
+                diagnostics.error(
+                    "ARC_VERIFY_DUP_RETAIN",
+                    format!(
+                        "duplicate ARC retain op planned for linear stmt s{} var v{}",
+                        stmt_id.as_u32(),
+                        var.as_u32()
+                    ),
+                    Span::synthetic(),
+                );
+                stats.errors = stats.errors.saturating_add(1);
+                continue;
+            }
+            if !is_managed_var(sema, *var) {
+                diagnostics.error(
+                    "ARC_VERIFY_NON_MANAGED_OP",
+                    format!(
+                        "ARC retain planned for non-managed var v{} at linear stmt s{}",
+                        var.as_u32(),
+                        stmt_id.as_u32()
+                    ),
+                    Span::synthetic(),
+                );
+                stats.errors = stats.errors.saturating_add(1);
+            }
         }
         for var in releases {
-            assert!(
-                release_set.insert(*var),
-                "compiler bug: duplicate ARC release op planned for stmt s{} var v{}",
-                stmt_id.as_u32(),
-                var.as_u32()
-            );
-            assert_managed_var(sema, *var, stmt_id, "release");
+            if !release_set.insert(*var) {
+                diagnostics.error(
+                    "ARC_VERIFY_DUP_RELEASE",
+                    format!(
+                        "duplicate ARC release op planned for linear stmt s{} var v{}",
+                        stmt_id.as_u32(),
+                        var.as_u32()
+                    ),
+                    Span::synthetic(),
+                );
+                stats.errors = stats.errors.saturating_add(1);
+                continue;
+            }
+            if !is_managed_var(sema, *var) {
+                diagnostics.error(
+                    "ARC_VERIFY_NON_MANAGED_OP",
+                    format!(
+                        "ARC release planned for non-managed var v{} at linear stmt s{}",
+                        var.as_u32(),
+                        stmt_id.as_u32()
+                    ),
+                    Span::synthetic(),
+                );
+                stats.errors = stats.errors.saturating_add(1);
+            }
         }
         for var in retain_set.intersection(&release_set) {
-            panic!(
-                "compiler bug: ARC retain+release both planned on stmt s{} var v{} after optimization",
-                stmt_id.as_u32(),
-                var.as_u32()
+            diagnostics.error(
+                "ARC_VERIFY_CONFLICTING_OPS",
+                format!(
+                    "ARC retain+release both planned for linear stmt s{} var v{} after optimization",
+                    stmt_id.as_u32(),
+                    var.as_u32()
+                ),
+                Span::synthetic(),
             );
+            stats.errors = stats.errors.saturating_add(1);
         }
 
         stats.checked_retain_ops = stats
@@ -63,17 +108,10 @@ pub fn assert_valid(
     stats
 }
 
-fn assert_managed_var(sema: &SemanticTables, var: VarId, stmt_id: LinearStmtId, op: &str) {
-    let ownership = sema
-        .ownership_of_var
+fn is_managed_var(sema: &SemanticTables, var: VarId) -> bool {
+    sema.ownership_of_var
         .get(&var)
         .copied()
-        .unwrap_or(OwnershipClass::BorrowedView);
-    assert!(
-        ownership == OwnershipClass::RcManaged,
-        "compiler bug: ARC {} op planned for non-managed var v{} at stmt s{}",
-        op,
-        var.as_u32(),
-        stmt_id.as_u32()
-    );
+        .unwrap_or(OwnershipClass::BorrowedView)
+        == OwnershipClass::RcManaged
 }

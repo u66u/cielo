@@ -43,10 +43,11 @@ pub struct EmittedC {
     pub c_source: String,
 }
 
-pub fn run(linearized: Linearized, interner: &Interner) -> EmittedC {
-    let arc_plan = ArcEmitPlan::build(&linearized.linear, linearized.residual.sema());
-    let _verify_stats =
-        arc_verify::assert_valid(&linearized.linear, linearized.residual.sema(), &arc_plan);
+pub fn run(mut linearized: Linearized, interner: &Interner) -> EmittedC {
+    let sema = linearized.residual.sema().clone();
+    let arc_plan = ArcEmitPlan::build(&linearized.linear, &sema);
+    let (_, diagnostics) = linearized.residual.program_and_diagnostics_mut();
+    let _verify_stats = arc_verify::verify(&linearized.linear, &sema, &arc_plan, diagnostics);
     let c_source = emit_c_program_with_constant_table(
         &linearized.linear,
         interner,
