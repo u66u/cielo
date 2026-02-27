@@ -345,6 +345,26 @@ fn assert_residualize_specialize_invariants(residual: &crate::pipeline::phases::
         arc_stats.final_release_ops,
         "compiler bug: arc release accounting mismatch"
     );
+
+    let orc_foundation = &residual_tables.orc_foundation;
+    assert_eq!(
+        orc_foundation.candidate_root_count as usize,
+        orc_foundation.candidate_roots.len(),
+        "compiler bug: ORC foundation root count mismatch"
+    );
+    assert_eq!(
+        orc_foundation.candidate_link_count as usize,
+        orc_foundation.candidate_links.len(),
+        "compiler bug: ORC foundation link count mismatch"
+    );
+    for pair in orc_foundation.candidate_links.windows(2) {
+        let lhs = pair[0];
+        let rhs = pair[1];
+        assert!(
+            (lhs.0.index(), lhs.1.index()) < (rhs.0.index(), rhs.1.index()),
+            "compiler bug: ORC foundation links are not sorted/deduplicated"
+        );
+    }
 }
 
 fn assert_stage_reason_in_bounds(stage: Stage, function_count: usize, context: &str) {

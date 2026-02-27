@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::analysis::orc_foundation::OrcFoundationTables;
 use crate::common::densemap::DenseMap;
 use crate::common::diagnostics::DiagnosticBag;
 use crate::common::ids::{EffectLabelId, ExprId, FuncId, HandlerId, SymbolId, TypeId, VarId};
@@ -360,6 +361,7 @@ pub struct ResidualTables {
     pub residualize_stats: ResidualizeStats,
     pub specialization_stats: SpecializationStats,
     pub arc_stats: ArcStats,
+    pub orc_foundation: OrcFoundationTables,
 }
 
 impl ResidualTables {

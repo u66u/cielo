@@ -17,6 +17,7 @@
 // - O(stmt_count + cloned_nodes + reachable_call_graph)
 
 use crate::analysis::function_graph::{collect_reachable_functions, prune_unreachable_functions};
+use crate::analysis::orc_foundation;
 use std::collections::{HashMap, HashSet};
 
 use crate::common::diagnostics::ErrorNode;
@@ -63,6 +64,7 @@ pub fn run(residual: Residualized) -> Residualized {
         final_retain_ops: optimized_arc.plan.stats.retain_ops,
         final_release_ops: optimized_arc.plan.stats.release_ops,
     };
+    residual_tables.orc_foundation = orc_foundation::analyze(&program, &sema);
     synchronize_semantic_tables(&program, &mut sema);
     assert_remap_integrity(&program, &sema, &mono, &ct, &bta, &residual_tables);
     Residualized::new(program, diagnostics, sema, mono, ct, bta, residual_tables)
