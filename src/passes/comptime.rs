@@ -365,6 +365,23 @@ fn assert_residualize_specialize_invariants(residual: &crate::pipeline::phases::
             "compiler bug: ORC foundation links are not sorted/deduplicated"
         );
     }
+
+    let hazards = &residual_tables.borrow_hazards;
+    assert_eq!(
+        hazards.alias_fanout_count as usize,
+        hazards.alias_fanout_sites.len(),
+        "compiler bug: borrow hazard alias_fanout count mismatch"
+    );
+    assert_eq!(
+        hazards.projection_count as usize,
+        hazards.projection_sites.len(),
+        "compiler bug: borrow hazard projection count mismatch"
+    );
+    assert_eq!(
+        hazards.call_escape_count as usize,
+        hazards.call_escape_sites.len(),
+        "compiler bug: borrow hazard call_escape count mismatch"
+    );
 }
 
 fn assert_stage_reason_in_bounds(stage: Stage, function_count: usize, context: &str) {

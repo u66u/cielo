@@ -21,6 +21,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::analysis::borrow_hazard;
 use crate::analysis::orc_foundation;
 use crate::common::ids::{ExprId, FuncId, HandlerId, StmtId, VarId};
 use crate::common::span::Span;
@@ -46,6 +47,7 @@ pub fn run(mut bta: BtaClassified) -> Residualized {
     let optimized_arc = arc_opt::optimize(planned_arc.clone());
     let constant_table = constant_table::build_for_core(bta.program());
     let orc_foundation = orc_foundation::analyze(bta.program(), bta.sema());
+    let borrow_hazards = borrow_hazard::analyze(bta.program(), bta.sema());
     bta.into_residualized(ResidualTables {
         function_effect_summary,
         constant_table,
@@ -61,6 +63,7 @@ pub fn run(mut bta: BtaClassified) -> Residualized {
             final_release_ops: optimized_arc.plan.stats.release_ops,
         },
         orc_foundation,
+        borrow_hazards,
     })
 }
 

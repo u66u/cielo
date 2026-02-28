@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::analysis::borrow_hazard::BorrowHazardReport;
 use crate::analysis::orc_foundation::OrcFoundationTables;
 use crate::common::densemap::DenseMap;
 use crate::common::diagnostics::DiagnosticBag;
@@ -362,6 +363,7 @@ pub struct ResidualTables {
     pub specialization_stats: SpecializationStats,
     pub arc_stats: ArcStats,
     pub orc_foundation: OrcFoundationTables,
+    pub borrow_hazards: BorrowHazardReport,
 }
 
 impl ResidualTables {
