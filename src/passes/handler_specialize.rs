@@ -65,6 +65,7 @@ pub fn run(residual: Residualized) -> Residualized {
         final_retain_ops: optimized_arc.plan.stats.retain_ops,
         final_release_ops: optimized_arc.plan.stats.release_ops,
     };
+    residual_tables.arc_plan = arc_insert::to_residual_plan(&optimized_arc.plan);
     residual_tables.orc_foundation = orc_foundation::analyze(&program, &sema);
     residual_tables.borrow_hazards = borrow_hazard::analyze(&program, &sema);
     synchronize_semantic_tables(&program, &mut sema);

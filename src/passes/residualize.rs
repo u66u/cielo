@@ -45,6 +45,7 @@ pub fn run(mut bta: BtaClassified) -> Residualized {
     erase_function_effect_annotations(bta.program_mut());
     let planned_arc = arc_insert::plan(bta.program(), bta.sema());
     let optimized_arc = arc_opt::optimize(planned_arc.clone());
+    let arc_plan = arc_insert::to_residual_plan(&optimized_arc.plan);
     let constant_table = constant_table::build_for_core(bta.program());
     let orc_foundation = orc_foundation::analyze(bta.program(), bta.sema());
     let borrow_hazards = borrow_hazard::analyze(bta.program(), bta.sema());
@@ -62,6 +63,7 @@ pub fn run(mut bta: BtaClassified) -> Residualized {
             final_retain_ops: optimized_arc.plan.stats.retain_ops,
             final_release_ops: optimized_arc.plan.stats.release_ops,
         },
+        arc_plan,
         orc_foundation,
         borrow_hazards,
     })

@@ -2,7 +2,7 @@ use crate::analysis::arc_cfg::ArcCfg;
 use crate::analysis::arc_last_use::ArcLastUseTables;
 use crate::common::ids::{StmtId, VarId};
 use crate::ir::core::{CoreProgram, ExprKind, StmtKind};
-use crate::pipeline::phases::SemanticTables;
+use crate::pipeline::phases::{ArcResidualOp, ArcResidualOpKind, ArcResidualPlan, SemanticTables};
 use crate::sema::ownership::OwnershipClass;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -105,5 +105,21 @@ fn arc_kind_order(kind: ArcOpKind) -> u8 {
     match kind {
         ArcOpKind::Retain { .. } => 0,
         ArcOpKind::Release { .. } => 1,
+    }
+}
+
+pub fn to_residual_plan(plan: &ArcInsertionPlan) -> ArcResidualPlan {
+    ArcResidualPlan {
+        ops: plan
+            .ops
+            .iter()
+            .map(|op| ArcResidualOp {
+                stmt: op.stmt,
+                kind: match op.kind {
+                    ArcOpKind::Retain { var } => ArcResidualOpKind::Retain { var },
+                    ArcOpKind::Release { var } => ArcResidualOpKind::Release { var },
+                },
+            })
+            .collect(),
     }
 }

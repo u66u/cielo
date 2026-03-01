@@ -28,7 +28,10 @@ impl LinearProgram {
 
     pub fn push_stmt(&mut self, kind: LinearStmt) -> LinearStmtId {
         let id = LinearStmtId::new(self.stmts.len());
-        self.stmts.push(LinearStmtNode { kind });
+        self.stmts.push(LinearStmtNode {
+            kind,
+            arc_ops: LinearArcOps::default(),
+        });
         id
     }
 
@@ -40,12 +43,20 @@ impl LinearProgram {
         self.stmts.get(id.index())
     }
 
+    pub fn stmt_mut(&mut self, id: LinearStmtId) -> Option<&mut LinearStmtNode> {
+        self.stmts.get_mut(id.index())
+    }
+
     pub fn exprs(&self) -> &[LinearExprNode] {
         &self.exprs
     }
 
     pub fn stmts(&self) -> &[LinearStmtNode] {
         &self.stmts
+    }
+
+    pub fn stmts_mut(&mut self) -> &mut [LinearStmtNode] {
+        &mut self.stmts
     }
 }
 
@@ -57,6 +68,13 @@ pub struct LinearExprNode {
 #[derive(Clone, Debug)]
 pub struct LinearStmtNode {
     pub kind: LinearStmt,
+    pub arc_ops: LinearArcOps,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct LinearArcOps {
+    pub pre_retain: SmallVec<[VarId; 2]>,
+    pub post_release: SmallVec<[VarId; 2]>,
 }
 
 impl LinearStmtNode {

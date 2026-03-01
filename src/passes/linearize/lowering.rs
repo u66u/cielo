@@ -9,7 +9,7 @@ use crate::ir::core::{CoreProgram, ExprKind, HandlerClause, HandlerDef, StmtKind
 use crate::ir::linear::{
     CallConvention, LinearExpr, LinearFunction, LinearMatchArm, LinearProgram, LinearStmt,
 };
-use crate::pipeline::phases::SemanticTables;
+use crate::pipeline::phases::{ArcResidualOpKind, ArcResidualPlan, SemanticTables};
 use crate::sema::effect::is_thunkable;
 
 use super::analysis::{
@@ -22,6 +22,7 @@ use super::types::{ClauseConvention, ResumeContext, ResumeQualifier};
 pub(super) fn lower_program(
     program: &CoreProgram,
     sema: &SemanticTables,
+    arc_plan: &ArcResidualPlan,
     diagnostics: &mut DiagnosticBag,
 ) -> LinearProgram {
     let fn_names: HashMap<FuncId, SymbolId> = program
@@ -73,7 +74,41 @@ pub(super) fn lower_program(
         .iter()
         .filter_map(|source| dense_id_by_source.get(source).copied())
         .collect();
+    attach_arc_ops(arc_plan, &stmt_map, &mut linear);
     linear
+}
+
+fn attach_arc_ops(
+    arc_plan: &ArcResidualPlan,
+    stmt_map: &[Option<LinearStmtId>],
+    linear: &mut LinearProgram,
+) {
+    for op in &arc_plan.ops {
+        let Some(stmt_id) = stmt_map.get(op.stmt.index()).copied().flatten() else {
+            continue;
+        };
+        let Some(stmt) = linear.stmt_mut(stmt_id) else {
+            continue;
+        };
+        match op.kind {
+            ArcResidualOpKind::Retain { var } => {
+                if !stmt.arc_ops.pre_retain.contains(&var) {
+                    stmt.arc_ops.pre_retain.push(var);
+                }
+            }
+            ArcResidualOpKind::Release { var } => {
+                if !stmt.arc_ops.post_release.contains(&var) {
+                    stmt.arc_ops.post_release.push(var);
+                }
+            }
+        }
+    }
+    for stmt in linear.stmts_mut() {
+        stmt.arc_ops.pre_retain.sort_by_key(|var| var.index());
+        stmt.arc_ops.pre_retain.dedup();
+        stmt.arc_ops.post_release.sort_by_key(|var| var.index());
+        stmt.arc_ops.post_release.dedup();
+    }
 }
 
 fn lower_stmt(
