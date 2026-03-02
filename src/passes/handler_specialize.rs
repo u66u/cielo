@@ -42,7 +42,7 @@ const MAX_SPECIALIZATIONS_PER_CALLEE: usize = 8;
 const MAX_TOTAL_SPECIALIZATIONS: usize = 256;
 
 pub fn run(residual: Residualized) -> Residualized {
-    let (mut program, diagnostics, mut sema, mut mono, ct, mut bta, mut residual_tables) =
+    let (mut program, mut diagnostics, mut sema, mut mono, ct, mut bta, mut residual_tables) =
         residual.into_parts();
     synchronize_semantic_tables(&program, &mut sema);
 
@@ -68,6 +68,7 @@ pub fn run(residual: Residualized) -> Residualized {
     residual_tables.arc_plan = arc_insert::to_residual_plan(&optimized_arc.plan);
     residual_tables.orc_foundation = orc_foundation::analyze(&program, &sema);
     residual_tables.borrow_hazards = borrow_hazard::analyze(&program, &sema);
+    borrow_hazard::emit_diagnostics(&program, &residual_tables.borrow_hazards, &mut diagnostics);
     synchronize_semantic_tables(&program, &mut sema);
     assert_remap_integrity(&program, &sema, &mono, &ct, &bta, &residual_tables);
     Residualized::new(program, diagnostics, sema, mono, ct, bta, residual_tables)

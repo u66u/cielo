@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use crate::analysis::arc_cfg::ArcCfg;
+use crate::common::diagnostics::DiagnosticBag;
 use crate::common::ids::{ExprId, StmtId, VarId};
+use crate::common::span::Span;
 use crate::ir::core::{CoreProgram, ExprKind, StmtKind};
 use crate::pipeline::phases::SemanticTables;
 use crate::sema::ownership::OwnershipClass;
@@ -94,6 +96,71 @@ pub fn analyze(program: &CoreProgram, sema: &SemanticTables) -> BorrowHazardRepo
     report.projection_count = report.projection_sites.len() as u32;
     report.call_escape_count = report.call_escape_sites.len() as u32;
     report
+}
+
+pub fn emit_diagnostics(
+    program: &CoreProgram,
+    report: &BorrowHazardReport,
+    diagnostics: &mut DiagnosticBag,
+) {
+    let alias_count = emit_hazard_sites(
+        program,
+        &report.alias_fanout_sites,
+        diagnostics,
+        "BORROW_HAZARD_ALIAS_FANOUT",
+        "managed alias fanout may conflict with future borrow/cursor exclusivity",
+    );
+    let projection_count = emit_hazard_sites(
+        program,
+        &report.projection_sites,
+        diagnostics,
+        "BORROW_HAZARD_PROJECTION",
+        "managed match projection introduces borrow/cursor mutation hazard potential",
+    );
+    let call_escape_count = emit_hazard_sites(
+        program,
+        &report.call_escape_sites,
+        diagnostics,
+        "BORROW_HAZARD_CALL_ESCAPE",
+        "managed value escapes through call boundary with potential borrow hazard",
+    );
+
+    let total = alias_count
+        .saturating_add(projection_count)
+        .saturating_add(call_escape_count);
+    if total > 0 {
+        diagnostics.note(
+            "BORROW_HAZARD_SUMMARY",
+            format!(
+                "borrow hazard groundwork flagged {} site(s): alias_fanout={}, projection={}, call_escape={}",
+                total, alias_count, projection_count, call_escape_count
+            ),
+            Span::synthetic(),
+        );
+    }
+}
+
+fn emit_hazard_sites(
+    program: &CoreProgram,
+    sites: &[StmtId],
+    diagnostics: &mut DiagnosticBag,
+    code: &'static str,
+    message: &str,
+) -> u32 {
+    let mut emitted = 0u32;
+    for stmt_id in sites {
+        let span = program
+            .stmt(*stmt_id)
+            .map(|stmt| stmt.span)
+            .unwrap_or_else(Span::synthetic);
+        diagnostics.warning(
+            code,
+            format!("{message} (stmt s{})", stmt_id.as_u32()),
+            span,
+        );
+        emitted = emitted.saturating_add(1);
+    }
+    emitted
 }
 
 fn collect_managed_vars(
