@@ -1,6 +1,8 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 
+use crate::analysis::arc_cfg::ArcCfg;
 use crate::common::ids::{StmtId, VarId};
+use crate::ir::core::CoreProgram;
 
 use super::arc_insert::{ArcInsertionPlan, ArcOpKind, ArcPlannedOp};
 
@@ -18,6 +20,14 @@ pub struct ArcOptResult {
 }
 
 pub fn optimize(plan: ArcInsertionPlan) -> ArcOptResult {
+    optimize_internal(plan, None)
+}
+
+pub fn optimize_with_cfg(program: &CoreProgram, plan: ArcInsertionPlan) -> ArcOptResult {
+    optimize_internal(plan, Some(program))
+}
+
+fn optimize_internal(plan: ArcInsertionPlan, program: Option<&CoreProgram>) -> ArcOptResult {
     let mut retain_sites = HashSet::new();
     let mut release_sites = HashSet::new();
     for op in &plan.ops {
@@ -63,8 +73,94 @@ pub fn optimize(plan: ArcInsertionPlan) -> ArcOptResult {
         },
         stats,
     };
+    if let Some(program) = program {
+        eliminate_cfg_redundant_releases(program, &mut result.plan, &mut result.stats);
+    }
     recompute_plan_stats(&mut result.plan);
     result
+}
+
+fn eliminate_cfg_redundant_releases(
+    program: &CoreProgram,
+    plan: &mut ArcInsertionPlan,
+    stats: &mut ArcOptStats,
+) {
+    if plan.ops.is_empty() {
+        return;
+    }
+
+    let cfg = ArcCfg::build(program);
+    if cfg.reachable().is_empty() {
+        return;
+    }
+
+    let mut retain_by_stmt = HashMap::<StmtId, Vec<VarId>>::new();
+    let mut release_by_stmt = HashMap::<StmtId, Vec<VarId>>::new();
+    for op in &plan.ops {
+        match op.kind {
+            ArcOpKind::Retain { var } => push_unique_site_var(&mut retain_by_stmt, op.stmt, var),
+            ArcOpKind::Release { var } => push_unique_site_var(&mut release_by_stmt, op.stmt, var),
+        }
+    }
+
+    let mut in_released = vec![None::<HashSet<VarId>>; cfg.stmt_capacity()];
+    let mut worklist = VecDeque::new();
+    for root in cfg.roots().iter().copied() {
+        if root.index() >= in_released.len() {
+            continue;
+        }
+        if merge_must_set(&mut in_released[root.index()], HashSet::new()) {
+            worklist.push_back(root);
+        }
+    }
+
+    while let Some(stmt_id) = worklist.pop_front() {
+        if stmt_id.index() >= in_released.len() {
+            continue;
+        }
+        let Some(summary) = cfg.summary(stmt_id) else {
+            continue;
+        };
+
+        let mut out = in_released[stmt_id.index()].clone().unwrap_or_default();
+        for def in &summary.defs {
+            out.remove(def);
+        }
+        if let Some(retains) = retain_by_stmt.get(&stmt_id) {
+            for var in retains {
+                out.remove(var);
+            }
+        }
+        if let Some(releases) = release_by_stmt.get(&stmt_id) {
+            for var in releases {
+                out.insert(*var);
+            }
+        }
+
+        for succ in &summary.successors {
+            if succ.index() >= in_released.len() {
+                continue;
+            }
+            if merge_must_set(&mut in_released[succ.index()], out.clone()) {
+                worklist.push_back(*succ);
+            }
+        }
+    }
+
+    let mut kept = Vec::with_capacity(plan.ops.len());
+    for op in plan.ops.iter().copied() {
+        if let ArcOpKind::Release { var } = op.kind
+            && op.stmt.index() < in_released.len()
+            && in_released[op.stmt.index()]
+                .as_ref()
+                .is_some_and(|released| released.contains(&var))
+        {
+            stats.removed_release_ops = stats.removed_release_ops.saturating_add(1);
+            continue;
+        }
+        kept.push(op);
+    }
+    plan.ops = kept;
 }
 
 fn recompute_plan_stats(plan: &mut ArcInsertionPlan) {
@@ -78,6 +174,33 @@ fn recompute_plan_stats(plan: &mut ArcInsertionPlan) {
                 plan.stats.release_ops = plan.stats.release_ops.saturating_add(1);
             }
         }
+    }
+}
+
+fn merge_must_set(target: &mut Option<HashSet<VarId>>, incoming: HashSet<VarId>) -> bool {
+    match target {
+        None => {
+            *target = Some(incoming);
+            true
+        }
+        Some(current) => {
+            let merged = current
+                .intersection(&incoming)
+                .copied()
+                .collect::<HashSet<_>>();
+            if *current == merged {
+                return false;
+            }
+            *current = merged;
+            true
+        }
+    }
+}
+
+fn push_unique_site_var(out: &mut HashMap<StmtId, Vec<VarId>>, stmt: StmtId, var: VarId) {
+    let vars = out.entry(stmt).or_default();
+    if !vars.contains(&var) {
+        vars.push(var);
     }
 }
 

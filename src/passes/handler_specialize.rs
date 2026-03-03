@@ -55,7 +55,7 @@ pub fn run(residual: Residualized) -> Residualized {
     residual_tables.remap_func_ids(&func_remap);
     residual_tables.constant_table = constant_table::build_for_core(&program);
     let planned_arc = arc_insert::plan(&program, &sema);
-    let optimized_arc = arc_opt::optimize(planned_arc.clone());
+    let optimized_arc = arc_opt::optimize_with_cfg(&program, planned_arc.clone());
     residual_tables.arc_stats = ArcStats {
         planned_retain_ops: planned_arc.stats.retain_ops,
         planned_release_ops: planned_arc.stats.release_ops,

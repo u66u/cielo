@@ -44,7 +44,7 @@ pub fn run(mut bta: BtaClassified) -> Residualized {
     rewrite_call_effect_rows(bta.program_mut(), &function_effect_summary);
     erase_function_effect_annotations(bta.program_mut());
     let planned_arc = arc_insert::plan(bta.program(), bta.sema());
-    let optimized_arc = arc_opt::optimize(planned_arc.clone());
+    let optimized_arc = arc_opt::optimize_with_cfg(bta.program(), planned_arc.clone());
     let arc_plan = arc_insert::to_residual_plan(&optimized_arc.plan);
     let constant_table = constant_table::build_for_core(bta.program());
     let orc_foundation = orc_foundation::analyze(bta.program(), bta.sema());
