@@ -428,6 +428,21 @@ fn assert_residualize_specialize_invariants(residual: &crate::pipeline::phases::
         hazards.call_escape_sites.len(),
         "compiler bug: borrow hazard call_escape count mismatch"
     );
+    assert_eq!(
+        hazards.hotspots.len(),
+        hazards.alias_fanout_sites.len()
+            + hazards.projection_sites.len()
+            + hazards.call_escape_sites.len(),
+        "compiler bug: borrow hazard hotspot inventory mismatch"
+    );
+    for pair in hazards.hotspots.windows(2) {
+        let lhs = pair[0];
+        let rhs = pair[1];
+        assert!(
+            (lhs.stmt.index(), lhs.kind) < (rhs.stmt.index(), rhs.kind),
+            "compiler bug: borrow hazard hotspots are not sorted/deduplicated"
+        );
+    }
 }
 
 fn assert_stage_reason_in_bounds(stage: Stage, function_count: usize, context: &str) {

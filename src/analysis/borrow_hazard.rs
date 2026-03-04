@@ -8,6 +8,57 @@ use crate::ir::core::{CoreProgram, ExprKind, StmtKind};
 use crate::pipeline::phases::SemanticTables;
 use crate::sema::ownership::OwnershipClass;
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum BorrowHazardKind {
+    AliasFanout,
+    Projection,
+    CallEscape,
+}
+
+impl BorrowHazardKind {
+    fn diagnostic_code(self) -> &'static str {
+        match self {
+            Self::AliasFanout => "BORROW_HAZARD_ALIAS_FANOUT",
+            Self::Projection => "BORROW_HAZARD_PROJECTION",
+            Self::CallEscape => "BORROW_HAZARD_CALL_ESCAPE",
+        }
+    }
+
+    fn diagnostic_message(self) -> &'static str {
+        match self {
+            Self::AliasFanout => {
+                "managed alias fanout may conflict with future borrow/cursor exclusivity"
+            }
+            Self::Projection => {
+                "managed match projection introduces borrow/cursor mutation hazard potential"
+            }
+            Self::CallEscape => {
+                "managed value escapes through call boundary with potential borrow hazard"
+            }
+        }
+    }
+
+    fn repro_tag(self) -> &'static str {
+        match self {
+            Self::AliasFanout => "alias-fanout",
+            Self::Projection => "projection",
+            Self::CallEscape => "call-escape",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct BorrowHazardHotspot {
+    pub kind: BorrowHazardKind,
+    pub stmt: StmtId,
+}
+
+impl BorrowHazardHotspot {
+    pub fn repro_key(self) -> String {
+        format!("{}-s{}", self.kind.repro_tag(), self.stmt.as_u32())
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct BorrowHazardReport {
     pub alias_fanout_count: u32,
@@ -16,6 +67,7 @@ pub struct BorrowHazardReport {
     pub alias_fanout_sites: Vec<StmtId>,
     pub projection_sites: Vec<StmtId>,
     pub call_escape_sites: Vec<StmtId>,
+    pub hotspots: Vec<BorrowHazardHotspot>,
 }
 
 pub fn analyze(program: &CoreProgram, sema: &SemanticTables) -> BorrowHazardReport {
@@ -95,6 +147,7 @@ pub fn analyze(program: &CoreProgram, sema: &SemanticTables) -> BorrowHazardRepo
     report.alias_fanout_count = report.alias_fanout_sites.len() as u32;
     report.projection_count = report.projection_sites.len() as u32;
     report.call_escape_count = report.call_escape_sites.len() as u32;
+    report.hotspots = collect_hotspots(&report);
     report
 }
 
@@ -103,64 +156,74 @@ pub fn emit_diagnostics(
     report: &BorrowHazardReport,
     diagnostics: &mut DiagnosticBag,
 ) {
-    let alias_count = emit_hazard_sites(
-        program,
-        &report.alias_fanout_sites,
-        diagnostics,
-        "BORROW_HAZARD_ALIAS_FANOUT",
-        "managed alias fanout may conflict with future borrow/cursor exclusivity",
-    );
-    let projection_count = emit_hazard_sites(
-        program,
-        &report.projection_sites,
-        diagnostics,
-        "BORROW_HAZARD_PROJECTION",
-        "managed match projection introduces borrow/cursor mutation hazard potential",
-    );
-    let call_escape_count = emit_hazard_sites(
-        program,
-        &report.call_escape_sites,
-        diagnostics,
-        "BORROW_HAZARD_CALL_ESCAPE",
-        "managed value escapes through call boundary with potential borrow hazard",
-    );
+    let mut alias_count = 0u32;
+    let mut projection_count = 0u32;
+    let mut call_escape_count = 0u32;
+    for hotspot in &report.hotspots {
+        match hotspot.kind {
+            BorrowHazardKind::AliasFanout => alias_count = alias_count.saturating_add(1),
+            BorrowHazardKind::Projection => projection_count = projection_count.saturating_add(1),
+            BorrowHazardKind::CallEscape => call_escape_count = call_escape_count.saturating_add(1),
+        }
+        let span = program
+            .stmt(hotspot.stmt)
+            .map(|stmt| stmt.span)
+            .unwrap_or_else(Span::synthetic);
+        diagnostics.warning(
+            hotspot.kind.diagnostic_code(),
+            format!(
+                "{} (stmt s{}, repro={})",
+                hotspot.kind.diagnostic_message(),
+                hotspot.stmt.as_u32(),
+                hotspot.repro_key()
+            ),
+            span,
+        );
+    }
 
-    let total = alias_count
-        .saturating_add(projection_count)
-        .saturating_add(call_escape_count);
+    let total = report.hotspots.len() as u32;
     if total > 0 {
+        let repro_keys = report
+            .hotspots
+            .iter()
+            .take(8)
+            .map(|hotspot| hotspot.repro_key())
+            .collect::<Vec<_>>()
+            .join(", ");
         diagnostics.note(
             "BORROW_HAZARD_SUMMARY",
             format!(
-                "borrow hazard groundwork flagged {} site(s): alias_fanout={}, projection={}, call_escape={}",
-                total, alias_count, projection_count, call_escape_count
+                "borrow hazard groundwork flagged {} site(s): alias_fanout={}, projection={}, call_escape={}, repro_keys=[{}]",
+                total, alias_count, projection_count, call_escape_count, repro_keys
             ),
             Span::synthetic(),
         );
     }
 }
 
-fn emit_hazard_sites(
-    program: &CoreProgram,
-    sites: &[StmtId],
-    diagnostics: &mut DiagnosticBag,
-    code: &'static str,
-    message: &str,
-) -> u32 {
-    let mut emitted = 0u32;
-    for stmt_id in sites {
-        let span = program
-            .stmt(*stmt_id)
-            .map(|stmt| stmt.span)
-            .unwrap_or_else(Span::synthetic);
-        diagnostics.warning(
-            code,
-            format!("{message} (stmt s{})", stmt_id.as_u32()),
-            span,
-        );
-        emitted = emitted.saturating_add(1);
+fn collect_hotspots(report: &BorrowHazardReport) -> Vec<BorrowHazardHotspot> {
+    let mut hotspots = Vec::new();
+    for stmt in &report.alias_fanout_sites {
+        hotspots.push(BorrowHazardHotspot {
+            kind: BorrowHazardKind::AliasFanout,
+            stmt: *stmt,
+        });
     }
-    emitted
+    for stmt in &report.projection_sites {
+        hotspots.push(BorrowHazardHotspot {
+            kind: BorrowHazardKind::Projection,
+            stmt: *stmt,
+        });
+    }
+    for stmt in &report.call_escape_sites {
+        hotspots.push(BorrowHazardHotspot {
+            kind: BorrowHazardKind::CallEscape,
+            stmt: *stmt,
+        });
+    }
+    hotspots.sort_by_key(|site| (site.stmt.index(), site.kind));
+    hotspots.dedup();
+    hotspots
 }
 
 fn collect_managed_vars(
