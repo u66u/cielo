@@ -84,12 +84,34 @@ const V1_RUNTIME_THRESHOLDS: &[V1RuntimeThreshold] = &[
     },
 ];
 
+const V1_ARC_CHURN_THRESHOLDS: &[V1RuntimeThreshold] = &[
+    V1RuntimeThreshold {
+        case: "arc_ctor_churn",
+        per_run_ms_max: 3.500,
+        relative_to_pure_max: Some(1.500),
+    },
+    V1RuntimeThreshold {
+        case: "arc_alias_churn",
+        per_run_ms_max: 3.500,
+        relative_to_pure_max: Some(1.500),
+    },
+    V1RuntimeThreshold {
+        case: "arc_branch_churn",
+        per_run_ms_max: 4.000,
+        relative_to_pure_max: Some(1.700),
+    },
+];
+
 pub fn v1_pipeline_thresholds() -> &'static [V1PipelineThreshold] {
     V1_PIPELINE_THRESHOLDS
 }
 
 pub fn v1_runtime_thresholds() -> &'static [V1RuntimeThreshold] {
     V1_RUNTIME_THRESHOLDS
+}
+
+pub fn v1_arc_churn_thresholds() -> &'static [V1RuntimeThreshold] {
+    V1_ARC_CHURN_THRESHOLDS
 }
 
 pub fn v1_pipeline_per_iter_ms_limit(case: &str) -> Option<f64> {
@@ -100,17 +122,19 @@ pub fn v1_pipeline_per_iter_ms_limit(case: &str) -> Option<f64> {
 }
 
 pub fn v1_runtime_per_run_ms_limit(case: &str) -> Option<f64> {
-    V1_RUNTIME_THRESHOLDS
-        .iter()
-        .find(|threshold| threshold.case == case)
-        .map(|threshold| threshold.per_run_ms_max)
+    runtime_per_run_ms_limit(V1_RUNTIME_THRESHOLDS, case)
 }
 
 pub fn v1_runtime_relative_to_pure_limit(case: &str) -> Option<f64> {
-    V1_RUNTIME_THRESHOLDS
-        .iter()
-        .find(|threshold| threshold.case == case)
-        .and_then(|threshold| threshold.relative_to_pure_max)
+    runtime_relative_to_pure_limit(V1_RUNTIME_THRESHOLDS, case)
+}
+
+pub fn v1_arc_churn_per_run_ms_limit(case: &str) -> Option<f64> {
+    runtime_per_run_ms_limit(V1_ARC_CHURN_THRESHOLDS, case)
+}
+
+pub fn v1_arc_churn_relative_to_pure_limit(case: &str) -> Option<f64> {
+    runtime_relative_to_pure_limit(V1_ARC_CHURN_THRESHOLDS, case)
 }
 
 pub fn check_v1_pipeline_per_iter_ms(
@@ -135,7 +159,50 @@ pub fn check_v1_runtime_per_run_ms(
     case: &str,
     measured_per_run_ms: f64,
 ) -> Result<(), RuntimeThresholdViolation> {
-    let Some(limit) = v1_runtime_per_run_ms_limit(case) else {
+    check_runtime_per_run_ms(V1_RUNTIME_THRESHOLDS, case, measured_per_run_ms)
+}
+
+pub fn check_v1_runtime_relative_to_pure(
+    case: &str,
+    measured_relative_to_pure: f64,
+) -> Result<(), RuntimeRelativeViolation> {
+    check_runtime_relative_to_pure(V1_RUNTIME_THRESHOLDS, case, measured_relative_to_pure)
+}
+
+pub fn check_v1_arc_churn_per_run_ms(
+    case: &str,
+    measured_per_run_ms: f64,
+) -> Result<(), RuntimeThresholdViolation> {
+    check_runtime_per_run_ms(V1_ARC_CHURN_THRESHOLDS, case, measured_per_run_ms)
+}
+
+pub fn check_v1_arc_churn_relative_to_pure(
+    case: &str,
+    measured_relative_to_pure: f64,
+) -> Result<(), RuntimeRelativeViolation> {
+    check_runtime_relative_to_pure(V1_ARC_CHURN_THRESHOLDS, case, measured_relative_to_pure)
+}
+
+fn runtime_per_run_ms_limit(table: &[V1RuntimeThreshold], case: &str) -> Option<f64> {
+    table
+        .iter()
+        .find(|threshold| threshold.case == case)
+        .map(|threshold| threshold.per_run_ms_max)
+}
+
+fn runtime_relative_to_pure_limit(table: &[V1RuntimeThreshold], case: &str) -> Option<f64> {
+    table
+        .iter()
+        .find(|threshold| threshold.case == case)
+        .and_then(|threshold| threshold.relative_to_pure_max)
+}
+
+fn check_runtime_per_run_ms(
+    table: &[V1RuntimeThreshold],
+    case: &str,
+    measured_per_run_ms: f64,
+) -> Result<(), RuntimeThresholdViolation> {
+    let Some(limit) = runtime_per_run_ms_limit(table, case) else {
         return Ok(());
     };
     if measured_per_run_ms <= limit {
@@ -149,11 +216,12 @@ pub fn check_v1_runtime_per_run_ms(
     }
 }
 
-pub fn check_v1_runtime_relative_to_pure(
+fn check_runtime_relative_to_pure(
+    table: &[V1RuntimeThreshold],
     case: &str,
     measured_relative_to_pure: f64,
 ) -> Result<(), RuntimeRelativeViolation> {
-    let Some(limit) = v1_runtime_relative_to_pure_limit(case) else {
+    let Some(limit) = runtime_relative_to_pure_limit(table, case) else {
         return Ok(());
     };
     if measured_relative_to_pure <= limit {

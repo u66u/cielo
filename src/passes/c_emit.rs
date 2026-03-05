@@ -545,10 +545,26 @@ fn emit_arc_ops(
         emit_indent(out, indent);
         match placement {
             ArcEmitPlacement::PreRetain => {
+                writeln!(
+                    out,
+                    "/* arc pre-retain s{} v{} */",
+                    stmt_id.as_u32(),
+                    var.as_u32()
+                )
+                .expect("in-memory write should not fail");
+                emit_indent(out, indent);
                 writeln!(out, "cielo_arc_retain(v{});", var.as_u32())
                     .expect("in-memory write should not fail");
             }
             ArcEmitPlacement::PostRelease => {
+                writeln!(
+                    out,
+                    "/* arc post-release s{} v{} */",
+                    stmt_id.as_u32(),
+                    var.as_u32()
+                )
+                .expect("in-memory write should not fail");
+                emit_indent(out, indent);
                 writeln!(out, "cielo_arc_release(v{});", var.as_u32())
                     .expect("in-memory write should not fail");
             }
