@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::common::diagnostics::DiagnosticBag;
 use crate::common::ids::{LinearStmtId, VarId};
 use crate::common::span::Span;
-use crate::ir::linear::{LinearProgram, LinearStmt};
+use crate::ir::linear::{LinearExpr, LinearProgram, LinearStmt};
 use crate::passes::arc_emit::ArcEmitPlan;
 use crate::pipeline::phases::SemanticTables;
 use crate::sema::ownership::OwnershipClass;
@@ -148,6 +148,8 @@ fn verify_state_transitions(
     }
 
     let mut underflow_reported = HashSet::new();
+    let mut return_underflow_reported = HashSet::new();
+    let mut leak_reported = HashSet::new();
     while let Some(stmt_id) = worklist.pop_front() {
         let Some(mut state) = in_states[stmt_id.index()].clone() else {
             continue;
@@ -178,7 +180,44 @@ fn verify_state_transitions(
         let Some(stmt) = program.stmt(stmt_id) else {
             continue;
         };
-        for succ in stmt.child_stmts() {
+        if let LinearStmt::Return(expr_id) = &stmt.kind
+            && let Some(expr) = program.expr(*expr_id)
+            && let LinearExpr::Var(var) = expr.kind
+            && is_managed_var(sema, var)
+        {
+            let next = apply_delta(&mut state, var, -1);
+            if next < 0 && return_underflow_reported.insert((stmt_id, var)) {
+                diagnostics.error(
+                    "ARC_VERIFY_RETURN_UNOWNED",
+                    format!(
+                        "managed return uses var v{} without ownership credit at linear stmt s{}",
+                        var.as_u32(),
+                        stmt_id.as_u32()
+                    ),
+                    Span::synthetic(),
+                );
+                stats.errors = stats.errors.saturating_add(1);
+            }
+        }
+
+        let successors = stmt.child_stmts();
+        if successors.is_empty() {
+            for (var, credit) in &state {
+                if *credit > 0 && leak_reported.insert((stmt_id, *var)) {
+                    diagnostics.error(
+                        "ARC_VERIFY_POSSIBLE_LEAK",
+                        format!(
+                            "possible managed leak: var v{} retains ownership credit at terminal linear stmt s{}",
+                            var.as_u32(),
+                            stmt_id.as_u32()
+                        ),
+                        Span::synthetic(),
+                    );
+                    stats.errors = stats.errors.saturating_add(1);
+                }
+            }
+        }
+        for succ in successors {
             stats.state_edges_checked = stats.state_edges_checked.saturating_add(1);
             if merge_in_state(&mut in_states[succ.index()], &state) {
                 worklist.push_back(succ);
