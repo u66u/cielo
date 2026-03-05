@@ -50,7 +50,6 @@ fn main() -> Int {
 "#;
 
     let compiler = Compiler::new(CompilerConfig::default());
-
     let mut interner_a = Interner::new();
     let residual_a = compiler.compile_source(src_a, SourceId::from_u32(0), &mut interner_a);
     let mut interner_b = Interner::new();
@@ -91,7 +90,6 @@ fn main() -> Int {
 "#;
 
     let compiler = Compiler::new(CompilerConfig::default());
-
     let mut interner_base = Interner::new();
     let residual_base =
         compiler.compile_source(src_base, SourceId::from_u32(10), &mut interner_base);
@@ -138,11 +136,8 @@ fn main() -> Int {
     let emitted_base =
         compiler.compile_source_to_c(src_base, SourceId::from_u32(12), &mut emit_interner_base);
     let mut emit_interner_dead = Interner::new();
-    let emitted_dead = compiler.compile_source_to_c(
-        src_with_dead,
-        SourceId::from_u32(13),
-        &mut emit_interner_dead,
-    );
+    let emitted_dead =
+        compiler.compile_source_to_c(src_with_dead, SourceId::from_u32(13), &mut emit_interner_dead);
     let emitted_base_main = main_func_id(emitted_base.residual.program(), &emit_interner_base);
     let emitted_dead_main = main_func_id(emitted_dead.residual.program(), &emit_interner_dead);
     let emitted_base_main_body = emitted_base
@@ -186,7 +181,6 @@ fn main() -> Int {
 "#;
 
     let compiler = Compiler::new(CompilerConfig::default());
-
     let mut interner_direct = Interner::new();
     let residual_direct =
         compiler.compile_source(src_direct, SourceId::from_u32(20), &mut interner_direct);

@@ -4,7 +4,7 @@ use cielo::common::diagnostics::DiagnosticBag;
 use cielo::common::ids::SourceId;
 use cielo::common::symbols::Interner;
 use cielo::ir::core::CoreProgram;
-use cielo::pipeline::phases::{Residualized, SemanticTables};
+use cielo::pipeline::phases::SemanticTables;
 use cielo::sema::typecheck::typecheck_core;
 use cielo::{Compiler, CompilerConfig};
 
@@ -28,10 +28,4 @@ pub fn lower_and_typecheck(source: &str) -> (CoreProgram, SemanticTables) {
         diagnostics.entries()
     );
     (program, sema)
-}
-
-pub fn compile_source_v1(source: &str) -> Residualized {
-    let compiler = Compiler::new(CompilerConfig::default());
-    let mut interner = Interner::new();
-    compiler.compile_source(source, SourceId::from_u32(0), &mut interner)
 }

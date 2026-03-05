@@ -200,9 +200,9 @@ fn main() -> Int {
   a + b
 }
 "#;
-    let mut interner = Interner::new();
+    let mut _interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
     let stats = compiled.residual.residual().specialization_stats;
 
     assert!(

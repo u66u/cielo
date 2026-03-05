@@ -13,6 +13,17 @@ fn fresh_path(prefix: &str, ext: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("{prefix}_{stamp}.{ext}"))
 }
 
+fn compile_source_run(compiler: &Compiler, source: &str, source_id: u32) -> cielo::pipeline::phases::Residualized {
+    let mut interner = Interner::new();
+    compiler.compile_source(source, SourceId::from_u32(source_id), &mut interner)
+}
+
+fn run_stage_a(compiler: &Compiler, source: &str, source_id: u32) -> cielo::pipeline::phases::BtaClassified {
+    let mut interner = Interner::new();
+    let core = compiler.parse_and_lower_to_core(source, SourceId::from_u32(source_id), &mut interner);
+    compiler.run_v1_evaluate_classify(core)
+}
+
 #[test]
 fn ct_query_cache_reuses_results_with_stable_key_and_deps() {
     let cache_path = fresh_path("cielo_ct_query_cache", "bin");
@@ -28,8 +39,7 @@ fn main() -> Int {
 }
 "#;
 
-    let mut interner_1 = Interner::new();
-    let run_1 = compiler.compile_source(src, SourceId::from_u32(0), &mut interner_1);
+    let run_1 = compile_source_run(&compiler, src, 0);
     assert!(
         run_1.ct().eval_stats.eval_attempts > 0,
         "initial run should evaluate CT expressions"
@@ -43,8 +53,7 @@ fn main() -> Int {
         "baseline cache should include folded addition result"
     );
 
-    let mut interner_2 = Interner::new();
-    let run_2 = compiler.compile_source(src, SourceId::from_u32(1), &mut interner_2);
+    let run_2 = compile_source_run(&compiler, src, 1);
     assert_eq!(
         run_2.ct().eval_stats.eval_attempts,
         0,
@@ -88,8 +97,7 @@ fn main() -> Int {{
 "#
     );
 
-    let mut interner_1 = Interner::new();
-    let run_1 = compiler.compile_source(src.as_str(), SourceId::from_u32(0), &mut interner_1);
+    let run_1 = compile_source_run(&compiler, src.as_str(), 0);
     assert!(
         run_1.ct().eval_stats.eval_attempts > 0,
         "first run should evaluate ct expressions"
@@ -99,8 +107,7 @@ fn main() -> Int {{
         "comptime file reads should produce tracked dependencies"
     );
 
-    let mut interner_2 = Interner::new();
-    let run_2 = compiler.compile_source(src.as_str(), SourceId::from_u32(1), &mut interner_2);
+    let run_2 = compile_source_run(&compiler, src.as_str(), 1);
     assert_eq!(
         run_2.ct().eval_stats.eval_attempts,
         0,
@@ -108,8 +115,7 @@ fn main() -> Int {{
     );
 
     fs::write(dep_path.as_path(), "beta").expect("rewrite dep");
-    let mut interner_3 = Interner::new();
-    let run_3 = compiler.compile_source(src.as_str(), SourceId::from_u32(2), &mut interner_3);
+    let run_3 = compile_source_run(&compiler, src.as_str(), 2);
     assert!(
         run_3.ct().eval_stats.eval_attempts > 0,
         "dependency hash changes must invalidate persistent ct query cache"
@@ -139,8 +145,7 @@ fn main() -> Int {
     cfg_64.ct_query_cache_path = Some(cache_path.clone());
     let compiler_64 = Compiler::new(cfg_64);
 
-    let mut interner_1 = Interner::new();
-    let cold_64 = compiler_64.compile_source(src_a, SourceId::from_u32(0), &mut interner_1);
+    let cold_64 = compile_source_run(&compiler_64, src_a, 0);
     assert!(
         cold_64.ct().eval_stats.eval_attempts > 0,
         "matrix[miss-cold] should compute ct cache on first run"
@@ -154,8 +159,7 @@ fn main() -> Int {
         "64-bit target should preserve wide folded literal value"
     );
 
-    let mut interner_2 = Interner::new();
-    let hit_64 = compiler_64.compile_source(src_a, SourceId::from_u32(1), &mut interner_2);
+    let hit_64 = compile_source_run(&compiler_64, src_a, 1);
     assert_eq!(
         hit_64.ct().eval_stats.eval_attempts,
         0,
@@ -167,8 +171,7 @@ fn main() -> Int {
     cfg_32.ct_query_cache_path = Some(cache_path.clone());
     let compiler_32 = Compiler::new(cfg_32);
 
-    let mut interner_3 = Interner::new();
-    let miss_target = compiler_32.compile_source(src_a, SourceId::from_u32(2), &mut interner_3);
+    let miss_target = compile_source_run(&compiler_32, src_a, 2);
     assert!(
         miss_target.ct().eval_stats.eval_attempts > 0,
         "matrix[invalidate-target] should invalidate cache when target key changes"
@@ -182,17 +185,14 @@ fn main() -> Int {
         "32-bit key invalidation should recompute and normalize folded literal"
     );
 
-    let mut interner_4 = Interner::new();
-    let hit_32 = compiler_32.compile_source(src_a, SourceId::from_u32(3), &mut interner_4);
+    let hit_32 = compile_source_run(&compiler_32, src_a, 3);
     assert_eq!(
         hit_32.ct().eval_stats.eval_attempts,
         0,
         "matrix[hit-after-target] should hit cache after recomputing under new key"
     );
 
-    let mut interner_5 = Interner::new();
-    let miss_fingerprint =
-        compiler_32.compile_source(src_b, SourceId::from_u32(4), &mut interner_5);
+    let miss_fingerprint = compile_source_run(&compiler_32, src_b, 4);
     assert!(
         miss_fingerprint.ct().eval_stats.eval_attempts > 0,
         "matrix[invalidate-fingerprint] should invalidate cache when program fingerprint changes"
@@ -206,8 +206,7 @@ fn main() -> Int {
         "program fingerprint invalidation should recompute folded values for new source"
     );
 
-    let mut interner_6 = Interner::new();
-    let hit_fingerprint = compiler_32.compile_source(src_b, SourceId::from_u32(5), &mut interner_6);
+    let hit_fingerprint = compile_source_run(&compiler_32, src_b, 5);
     assert_eq!(
         hit_fingerprint.ct().eval_stats.eval_attempts,
         0,
@@ -237,10 +236,7 @@ fn main() -> Int {
     cfg_64.ct_query_cache_path = Some(cache_path.clone());
     let compiler_64 = Compiler::new(cfg_64);
 
-    let mut interner_1 = Interner::new();
-    let cold_core =
-        compiler_64.parse_and_lower_to_core(src_a, SourceId::from_u32(10), &mut interner_1);
-    let cold_64 = compiler_64.run_v1_evaluate_classify(cold_core);
+    let cold_64 = run_stage_a(&compiler_64, src_a, 10);
     assert!(
         cold_64.ct().eval_stats.eval_attempts > 0,
         "fused matrix[miss-cold] should compute ct cache on first Stage-A run"
@@ -254,10 +250,7 @@ fn main() -> Int {
         "fused Stage-A 64-bit target should preserve wide folded literal value"
     );
 
-    let mut interner_2 = Interner::new();
-    let hit_core =
-        compiler_64.parse_and_lower_to_core(src_a, SourceId::from_u32(11), &mut interner_2);
-    let hit_64 = compiler_64.run_v1_evaluate_classify(hit_core);
+    let hit_64 = run_stage_a(&compiler_64, src_a, 11);
     assert_eq!(
         hit_64.ct().eval_stats.eval_attempts,
         0,
@@ -282,10 +275,7 @@ fn main() -> Int {
     cfg_32.ct_query_cache_path = Some(cache_path.clone());
     let compiler_32 = Compiler::new(cfg_32);
 
-    let mut interner_3 = Interner::new();
-    let miss_target_core =
-        compiler_32.parse_and_lower_to_core(src_a, SourceId::from_u32(12), &mut interner_3);
-    let miss_target = compiler_32.run_v1_evaluate_classify(miss_target_core);
+    let miss_target = run_stage_a(&compiler_32, src_a, 12);
     assert!(
         miss_target.ct().eval_stats.eval_attempts > 0,
         "fused matrix[invalidate-target] should invalidate cache when target key changes"
@@ -299,10 +289,7 @@ fn main() -> Int {
         "fused Stage-A target invalidation should recompute and normalize folded literal"
     );
 
-    let mut interner_4 = Interner::new();
-    let miss_fp_core =
-        compiler_32.parse_and_lower_to_core(src_b, SourceId::from_u32(13), &mut interner_4);
-    let miss_fingerprint = compiler_32.run_v1_evaluate_classify(miss_fp_core);
+    let miss_fingerprint = run_stage_a(&compiler_32, src_b, 13);
     assert!(
         miss_fingerprint.ct().eval_stats.eval_attempts > 0,
         "fused matrix[invalidate-fingerprint] should invalidate cache when source changes"
@@ -316,10 +303,7 @@ fn main() -> Int {
         "fused Stage-A fingerprint invalidation should recompute folded values for new source"
     );
 
-    let mut interner_5 = Interner::new();
-    let hit_fp_core =
-        compiler_32.parse_and_lower_to_core(src_b, SourceId::from_u32(14), &mut interner_5);
-    let hit_fingerprint = compiler_32.run_v1_evaluate_classify(hit_fp_core);
+    let hit_fingerprint = run_stage_a(&compiler_32, src_b, 14);
     assert_eq!(
         hit_fingerprint.ct().eval_stats.eval_attempts,
         0,
@@ -358,8 +342,7 @@ fn test_query_cache_hit_and_invalidation_matrix() {
     config.ct_query_cache_path = Some(cache_path.clone());
     let compiler_cold = Compiler::new(config.clone());
 
-    let mut interner1 = Interner::new();
-    let res_cold = compiler_cold.compile_source(source_v1, SourceId::new(1), &mut interner1);
+    let res_cold = compile_source_run(&compiler_cold, source_v1, 1);
 
     let cold_attempts = res_cold.ct().eval_stats.eval_attempts;
     assert!(
@@ -369,8 +352,7 @@ fn test_query_cache_hit_and_invalidation_matrix() {
 
     // WARM RUN (PERFECT HIT)
     let compiler_warm = Compiler::new(config.clone());
-    let mut interner2 = Interner::new();
-    let res_warm = compiler_warm.compile_source(source_v1, SourceId::new(2), &mut interner2);
+    let res_warm = compile_source_run(&compiler_warm, source_v1, 2);
 
     let warm_attempts = res_warm.ct().eval_stats.eval_attempts;
     assert_eq!(
@@ -387,8 +369,7 @@ fn test_query_cache_hit_and_invalidation_matrix() {
 
     // INVALIDATION: AST FINGERPRINT CHANGED
     let compiler_miss = Compiler::new(config.clone());
-    let mut interner3 = Interner::new();
-    let res_miss = compiler_miss.compile_source(source_v2, SourceId::new(3), &mut interner3);
+    let res_miss = compile_source_run(&compiler_miss, source_v2, 3);
 
     assert!(
         res_miss.ct().eval_stats.eval_attempts > 0,
@@ -396,16 +377,14 @@ fn test_query_cache_hit_and_invalidation_matrix() {
     );
 
     // re-warm the cache with source_v1
-    let _ = compiler_warm.compile_source(source_v1, SourceId::new(4), &mut interner2);
+    let _ = compile_source_run(&compiler_warm, source_v1, 4);
 
     // change target word size from default (64) to 32
     let mut config_target_miss = config.clone();
     config_target_miss.target.word_size_bits = 32;
     let compiler_target_miss = Compiler::new(config_target_miss);
 
-    let mut interner4 = Interner::new();
-    let res_target_miss =
-        compiler_target_miss.compile_source(source_v1, SourceId::new(5), &mut interner4);
+    let res_target_miss = compile_source_run(&compiler_target_miss, source_v1, 5);
 
     assert!(
         res_target_miss.ct().eval_stats.eval_attempts > 0,

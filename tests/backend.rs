@@ -1,3 +1,6 @@
+#[path = "helpers/mod.rs"]
+mod helpers;
+
 use cielo::common::ids::{EffectLabelId, LinearFuncId, SourceId, VarId};
 use cielo::common::symbols::Interner;
 use cielo::ir::core::Literal;
@@ -18,9 +21,9 @@ fn main() -> Int {
   x
 }
 "#;
-    let mut interner = Interner::new();
+    let mut _interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
 
     assert_eq!(compiled.linear.functions.len(), 1);
     assert!(compiled.c_source.contains("cv_add("));
@@ -225,9 +228,9 @@ fn main() -> Int {
   0
 }
 "#;
-    let mut interner = Interner::new();
+    let mut _interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
 
     assert_eq!(
         compiled
@@ -255,9 +258,9 @@ fn main() -> Int {{
 }}
 "#
     );
-    let mut interner = Interner::new();
+    let mut _interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_to_c(src.as_str(), SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src.as_str(), SourceId::from_u32(0), &mut _interner);
 
     assert!(
         !compiled
@@ -282,9 +285,9 @@ fn main() -> Int {
   }
 }
 "#;
-    let mut interner = Interner::new();
+    let mut _interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
 
     assert!(
         compiled
@@ -323,9 +326,9 @@ fn main() -> Int {
   }
 }
 "#;
-    let mut interner = Interner::new();
+    let mut _interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
 
     assert!(
         !compiled
@@ -698,9 +701,9 @@ fn c_emitter_limits_ctor_pool_by_compilation_unit_budget() {
     let src = format!(
         "enum Blob {{ Mk({fields}) }}\neffect Sink {{ fn use(v: Blob) -> () }}\nfn main() -> Int {{\n  @runtime {{\n{body}  }}\n}}\n"
     );
-    let mut interner = Interner::new();
+    let mut _interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_to_c(src.as_str(), SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src.as_str(), SourceId::from_u32(0), &mut _interner);
 
     let pooled_values = compiled
         .c_source
@@ -742,9 +745,9 @@ fn main() -> Int {
   x
 }
 "#;
-    let mut interner = Interner::new();
+    let mut _interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
 
     assert!(
         !compiled.c_source.contains("= cielo_handler_push(0);"),
@@ -1116,9 +1119,9 @@ fn main() -> Int {
   x
 }
 "#;
-    let mut interner = Interner::new();
+    let mut _interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
 
     assert!(
         compiled
@@ -1215,9 +1218,9 @@ fn main() -> Int {
   x
 }
 "#;
-    let mut interner = Interner::new();
+    let mut _interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
 
     assert!(
         compiled
@@ -1247,9 +1250,9 @@ fn main() -> Int {
   x
 }
 "#;
-    let mut interner = Interner::new();
+    let mut _interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
 
     assert!(
         compiled
@@ -1281,9 +1284,9 @@ fn main() -> Int {
   x
 }
 "#;
-    let mut interner = Interner::new();
+    let mut _interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
 
     assert!(
         compiled
@@ -1309,9 +1312,9 @@ fn main() -> Int {
   x
 }
 "#;
-    let mut interner = Interner::new();
+    let mut _interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
 
     assert!(
         compiled
@@ -1550,9 +1553,9 @@ fn main() -> Int {
   b
 }
 "#;
-    let mut interner = Interner::new();
+    let mut _interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
 
     assert!(compiled.c_source.contains("CIELO_CALL_PURE("));
     assert!(compiled.c_source.contains("CIELO_CALL_DIRECT("));
