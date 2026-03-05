@@ -260,7 +260,8 @@ fn main() -> Int {{
     );
     let mut _interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_to_c(src.as_str(), SourceId::from_u32(0), &mut _interner);
+    let compiled =
+        compiler.compile_source_to_c(src.as_str(), SourceId::from_u32(0), &mut _interner);
 
     assert!(
         !compiled
@@ -703,7 +704,8 @@ fn c_emitter_limits_ctor_pool_by_compilation_unit_budget() {
     );
     let mut _interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
-    let compiled = compiler.compile_source_to_c(src.as_str(), SourceId::from_u32(0), &mut _interner);
+    let compiled =
+        compiler.compile_source_to_c(src.as_str(), SourceId::from_u32(0), &mut _interner);
 
     let pooled_values = compiled
         .c_source

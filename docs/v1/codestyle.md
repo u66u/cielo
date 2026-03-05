@@ -1,3 +1,9 @@
+## DRY + cohesion/continuity of code
+
+No short/useless helper functions that are used once somewhere and can be inlined, unless they bring extra clarity to code.
+No almost identical functions that aren't used frequently and can be merged into a single one maybe with an optional parameter.
+Err on the side of using/extending already present code as opposed adding new functions, unless they bring additional clarity/prevent dependency confusion
+
 ## Separate structs with corresponding fields for each pass
 
 Each phase produces a distinct struct. Phase transitions consume the previous struct.
@@ -500,5 +506,4 @@ folder, not in files inside src/.
 - **Normalizer idempotence:** Apply shrink twice. Assert identical IR.
 - **Normalizer size:** Assert shrink never increases node count. Assert speculative inline
   only increases by bounded amount.
-- **Target-aware arithmetic:** Same program compiled for 32-bit and 64-bit targets. Assert
-  different CT results for overflow cases.
+- **Target-aware arithmetic:** Same program compiled for 32-bit and 64-bit targets. Assert different CT results for overflow cases.
