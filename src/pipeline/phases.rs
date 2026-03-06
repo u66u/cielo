@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::analysis::borrow_hazard::BorrowHazardReport;
-use crate::analysis::orc_foundation::OrcFoundationTables;
+use crate::analysis::orc::OrcFoundationTables;
 use crate::common::densemap::DenseMap;
 use crate::common::diagnostics::DiagnosticBag;
 use crate::common::ids::{

@@ -18,10 +18,11 @@
 
 use crate::analysis::borrow_hazard;
 use crate::analysis::function_graph::{collect_reachable_functions, prune_unreachable_functions};
-use crate::analysis::orc_foundation;
+use crate::analysis::orc;
 use std::collections::{HashMap, HashSet};
 
 use crate::common::diagnostics::ErrorNode;
+use crate::common::gc::GcConfig;
 use crate::common::ids::{
     DiagnosticId, EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, VarId,
 };
@@ -42,6 +43,10 @@ const MAX_SPECIALIZATIONS_PER_CALLEE: usize = 8;
 const MAX_TOTAL_SPECIALIZATIONS: usize = 256;
 
 pub fn run(residual: Residualized) -> Residualized {
+    run_with_gc_config(residual, &GcConfig::default())
+}
+
+pub fn run_with_gc_config(residual: Residualized, gc: &GcConfig) -> Residualized {
     let (mut program, mut diagnostics, mut sema, mut mono, ct, mut bta, mut residual_tables) =
         residual.into_parts();
     synchronize_semantic_tables(&program, &mut sema);
@@ -54,8 +59,13 @@ pub fn run(residual: Residualized) -> Residualized {
     bta.remap_func_ids(&func_remap);
     residual_tables.remap_func_ids(&func_remap);
     residual_tables.constant_table = constant_table::build_for_core(&program);
-    let planned_arc = arc_insert::plan(&program, &sema);
-    let optimized_arc = arc_opt::optimize_with_cfg(&program, planned_arc.clone());
+    let planned_arc = if gc.arc_insertion_enabled() {
+        arc_insert::plan(&program, &sema)
+    } else {
+        Default::default()
+    };
+    let optimized_arc =
+        arc_opt::optimize_with_level(&program, planned_arc.clone(), gc.effective_arc_opt_level());
     residual_tables.arc_stats = ArcStats {
         planned_retain_ops: planned_arc.stats.retain_ops,
         planned_release_ops: planned_arc.stats.release_ops,
@@ -66,9 +76,15 @@ pub fn run(residual: Residualized) -> Residualized {
         final_release_ops: optimized_arc.plan.stats.release_ops,
     };
     residual_tables.arc_plan = arc_insert::to_residual_plan(&optimized_arc.plan);
-    residual_tables.orc_foundation = orc_foundation::analyze(&program, &sema);
+    residual_tables.orc_foundation = orc::analyze(&program, &sema);
     residual_tables.borrow_hazards = borrow_hazard::analyze(&program, &sema);
-    borrow_hazard::emit_diagnostics(&program, &residual_tables.borrow_hazards, &mut diagnostics);
+    if gc.borrow_hazard_diagnostics_enabled() {
+        borrow_hazard::emit_diagnostics(
+            &program,
+            &residual_tables.borrow_hazards,
+            &mut diagnostics,
+        );
+    }
     synchronize_semantic_tables(&program, &mut sema);
     assert_remap_integrity(&program, &sema, &mono, &ct, &bta, &residual_tables);
     Residualized::new(program, diagnostics, sema, mono, ct, bta, residual_tables)

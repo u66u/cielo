@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::analysis::arc_cfg::ArcCfg;
+use crate::common::gc::ArcOptLevel;
 use crate::common::ids::{StmtId, VarId};
 use crate::ir::core::CoreProgram;
 
@@ -20,14 +21,45 @@ pub struct ArcOptResult {
 }
 
 pub fn optimize(plan: ArcInsertionPlan) -> ArcOptResult {
-    optimize_internal(plan, None)
+    optimize_internal(None, plan, ArcOptLevel::SAME_STMT_PAIR_ELIM)
 }
 
 pub fn optimize_with_cfg(program: &CoreProgram, plan: ArcInsertionPlan) -> ArcOptResult {
-    optimize_internal(plan, Some(program))
+    optimize_internal(
+        Some(program),
+        plan,
+        ArcOptLevel::SAME_STMT_PAIR_ELIM | ArcOptLevel::CFG_REDUNDANT_RELEASE_ELIM,
+    )
 }
 
-fn optimize_internal(plan: ArcInsertionPlan, program: Option<&CoreProgram>) -> ArcOptResult {
+pub fn optimize_with_level(
+    program: &CoreProgram,
+    plan: ArcInsertionPlan,
+    level: ArcOptLevel,
+) -> ArcOptResult {
+    optimize_internal(Some(program), plan, level)
+}
+
+fn optimize_internal(
+    program: Option<&CoreProgram>,
+    mut plan: ArcInsertionPlan,
+    level: ArcOptLevel,
+) -> ArcOptResult {
+    let mut stats = ArcOptStats::default();
+    if level.contains(ArcOptLevel::SAME_STMT_PAIR_ELIM) {
+        eliminate_same_stmt_pairs(&mut plan, &mut stats);
+    }
+    if level.contains(ArcOptLevel::CFG_REDUNDANT_RELEASE_ELIM)
+        && let Some(program) = program
+    {
+        eliminate_cfg_redundant_releases(program, &mut plan, &mut stats);
+    }
+    let mut result = ArcOptResult { plan, stats };
+    recompute_plan_stats(&mut result.plan);
+    result
+}
+
+fn eliminate_same_stmt_pairs(plan: &mut ArcInsertionPlan, stats: &mut ArcOptStats) {
     let mut retain_sites = HashSet::new();
     let mut release_sites = HashSet::new();
     for op in &plan.ops {
@@ -45,12 +77,11 @@ fn optimize_internal(plan: ArcInsertionPlan, program: Option<&CoreProgram>) -> A
         .intersection(&release_sites)
         .copied()
         .collect::<HashSet<_>>();
+    stats.eliminated_move_pairs = stats
+        .eliminated_move_pairs
+        .saturating_add(cancelled.len() as u32);
     let mut optimized_ops = Vec::with_capacity(plan.ops.len());
-    let mut stats = ArcOptStats {
-        eliminated_move_pairs: cancelled.len() as u32,
-        ..ArcOptStats::default()
-    };
-    for op in plan.ops {
+    for op in plan.ops.iter().copied() {
         let site = ArcOpSite::from_planned(op);
         if cancelled.contains(&site) {
             match op.kind {
@@ -65,19 +96,7 @@ fn optimize_internal(plan: ArcInsertionPlan, program: Option<&CoreProgram>) -> A
         }
         optimized_ops.push(op);
     }
-
-    let mut result = ArcOptResult {
-        plan: ArcInsertionPlan {
-            ops: optimized_ops,
-            stats: Default::default(),
-        },
-        stats,
-    };
-    if let Some(program) = program {
-        eliminate_cfg_redundant_releases(program, &mut result.plan, &mut result.stats);
-    }
-    recompute_plan_stats(&mut result.plan);
-    result
+    plan.ops = optimized_ops;
 }
 
 fn eliminate_cfg_redundant_releases(

@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::common::diagnostics::DiagnosticBag;
+use crate::common::gc::{GcConfig, GcPreset};
 use crate::common::ids::SourceId;
 use crate::common::symbols::Interner;
 use crate::frontend::parser::parse_source;
@@ -52,6 +53,7 @@ impl Default for TargetSpec {
 pub struct CompilerConfig {
     pub target: TargetSpec,
     pub ct_query_cache_path: Option<PathBuf>,
+    pub gc: GcConfig,
 }
 
 impl Default for CompilerConfig {
@@ -59,7 +61,15 @@ impl Default for CompilerConfig {
         Self {
             target: TargetSpec::default(),
             ct_query_cache_path: None,
+            gc: GcConfig::default(),
         }
+    }
+}
+
+impl CompilerConfig {
+    pub fn with_gc_preset(mut self, preset: GcPreset) -> Self {
+        self.gc = GcConfig::from_preset(preset);
+        self
     }
 }
 
@@ -208,7 +218,7 @@ impl Compiler {
         let residual = self.compile_source_v1(source, source_id, interner);
         let normalized = normalize::run(residual);
         let linearized = linearize::run(normalized);
-        let emitted = c_emit::run(linearized, interner);
+        let emitted = c_emit::run_with_gc_config(linearized, interner, &self.config.gc);
         CompiledC {
             residual: emitted.linearized.residual,
             linear: emitted.linearized.linear,
@@ -260,10 +270,10 @@ impl Compiler {
         interner: &mut Interner,
     ) -> CompiledC {
         let residual = self.compile_source_v0(source, source_id, interner);
-        let specialized = handler_specialize::run(residual);
+        let specialized = handler_specialize::run_with_gc_config(residual, &self.config.gc);
         let normalized = normalize::run(specialized);
         let linearized = linearize::run(normalized);
-        let emitted = c_emit::run(linearized, interner);
+        let emitted = c_emit::run_with_gc_config(linearized, interner, &self.config.gc);
         CompiledC {
             residual: emitted.linearized.residual,
             linear: emitted.linearized.linear,
@@ -356,7 +366,7 @@ impl Compiler {
     }
 
     fn residualize(&self, bta: BtaClassified) -> Residualized {
-        residualize::run(bta)
+        residualize::run_with_gc_config(bta, &self.config.gc)
     }
 
     fn evaluate_classify(&self, mono: Monomorphized) -> BtaClassified {
@@ -368,7 +378,7 @@ impl Compiler {
     }
 
     fn residualize_specialize(&self, bta: BtaClassified) -> Residualized {
-        comptime::residualize_specialize(bta)
+        comptime::residualize_specialize_with_gc_config(bta, &self.config.gc)
     }
 
     fn normalize(&self, residual: Residualized) -> Residualized {

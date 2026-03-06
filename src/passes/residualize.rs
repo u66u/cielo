@@ -22,7 +22,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::analysis::borrow_hazard;
-use crate::analysis::orc_foundation;
+use crate::analysis::orc;
+use crate::common::gc::GcConfig;
 use crate::common::ids::{ExprId, FuncId, HandlerId, StmtId, VarId};
 use crate::common::span::Span;
 use crate::ir::core::{CoreProgram, ExprKind, Literal, MatchArm, StmtKind, StmtNode};
@@ -35,7 +36,11 @@ use crate::pipeline::phases::{
 };
 use crate::sema::effect::SortedEffectRow;
 
-pub fn run(mut bta: BtaClassified) -> Residualized {
+pub fn run(bta: BtaClassified) -> Residualized {
+    run_with_gc_config(bta, &GcConfig::default())
+}
+
+pub fn run_with_gc_config(mut bta: BtaClassified, gc: &GcConfig) -> Residualized {
     let ct_tables = bta.ct().clone();
     let bta_tables = bta.bta().clone();
     let residualize_stats = apply_ct_residualization(bta.program_mut(), &ct_tables, &bta_tables);
@@ -43,11 +48,19 @@ pub fn run(mut bta: BtaClassified) -> Residualized {
     let function_effect_summary = collect_function_effect_summary(bta.program());
     rewrite_call_effect_rows(bta.program_mut(), &function_effect_summary);
     erase_function_effect_annotations(bta.program_mut());
-    let planned_arc = arc_insert::plan(bta.program(), bta.sema());
-    let optimized_arc = arc_opt::optimize_with_cfg(bta.program(), planned_arc.clone());
+    let planned_arc = if gc.arc_insertion_enabled() {
+        arc_insert::plan(bta.program(), bta.sema())
+    } else {
+        Default::default()
+    };
+    let optimized_arc = arc_opt::optimize_with_level(
+        bta.program(),
+        planned_arc.clone(),
+        gc.effective_arc_opt_level(),
+    );
     let arc_plan = arc_insert::to_residual_plan(&optimized_arc.plan);
     let constant_table = constant_table::build_for_core(bta.program());
-    let orc_foundation = orc_foundation::analyze(bta.program(), bta.sema());
+    let orc_foundation = orc::analyze(bta.program(), bta.sema());
     let borrow_hazards = borrow_hazard::analyze(bta.program(), bta.sema());
     bta.into_residualized(ResidualTables {
         function_effect_summary,

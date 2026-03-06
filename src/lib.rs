@@ -6,6 +6,7 @@ pub mod passes;
 pub mod pipeline;
 pub mod sema;
 
+pub use common::gc::{ArcOptLevel, GcConfig, GcFeatureFlags, GcMode, GcPreset};
 pub use pipeline::compiler::{CompiledC, Compiler, CompilerConfig, Endianness, TargetSpec};
 
 // in v2 should create a separate cfg

@@ -168,7 +168,7 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
         println!("=== Linear IR ===\n{:#?}", linearized.linear);
     }
 
-    let emitted = c_emit::run(linearized, &interner);
+    let emitted = c_emit::run_with_gc_config(linearized, &interner, &compiler.config().gc);
     if should_dump(cli, DumpKind::C) || cli.emit_c || cli.run_c {
         println!("=== Emitted C ===\n{}", emitted.c_source);
     }

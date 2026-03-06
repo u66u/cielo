@@ -1,7 +1,6 @@
-use cielo::analysis::bench_thresholds::{
-    check_v1_runtime_per_run_ms, check_v1_runtime_relative_to_pure, v1_runtime_per_run_ms_limit,
-    v1_runtime_relative_to_pure_limit, v1_runtime_thresholds,
-};
+#[path = "../benches/v1_runtime.rs"]
+#[allow(dead_code)]
+mod v1_runtime;
 
 #[test]
 fn runtime_thresholds_cover_all_runtime_benchmark_cases() {
@@ -15,7 +14,7 @@ fn runtime_thresholds_cover_all_runtime_benchmark_cases() {
     ];
     for case in cases {
         assert!(
-            v1_runtime_per_run_ms_limit(case).is_some(),
+            v1_runtime::v1_runtime_per_run_ms_limit(case).is_some(),
             "missing runtime threshold for benchmark case `{case}`"
         );
     }
@@ -33,7 +32,7 @@ fn runtime_baselines_fit_thresholds() {
     ];
     for (case, per_run_ms) in baseline_per_run_ms {
         assert!(
-            check_v1_runtime_per_run_ms(case, per_run_ms).is_ok(),
+            v1_runtime::check_v1_runtime_per_run_ms(case, per_run_ms).is_ok(),
             "runtime baseline for `{case}` should satisfy configured threshold"
         );
     }
@@ -51,7 +50,7 @@ fn runtime_relative_baselines_fit_thresholds() {
     ];
     for (case, relative) in baseline_relative {
         assert!(
-            check_v1_runtime_relative_to_pure(case, relative).is_ok(),
+            v1_runtime::check_v1_runtime_relative_to_pure(case, relative).is_ok(),
             "runtime relative baseline for `{case}` should satisfy configured threshold"
         );
     }
@@ -59,20 +58,21 @@ fn runtime_relative_baselines_fit_thresholds() {
 
 #[test]
 fn runtime_threshold_checker_rejects_regressions() {
-    let abs_violation = check_v1_runtime_per_run_ms("direct_handled_loop", 10.0)
+    let abs_violation = v1_runtime::check_v1_runtime_per_run_ms("direct_handled_loop", 10.0)
         .expect_err("absolute runtime regression should be rejected");
     assert_eq!(abs_violation.case, "direct_handled_loop");
     assert!(abs_violation.measured_per_run_ms > abs_violation.per_run_ms_max);
 
-    let rel_violation = check_v1_runtime_relative_to_pure("unhandled_perform_loop", 2.0)
-        .expect_err("relative runtime regression should be rejected");
+    let rel_violation =
+        v1_runtime::check_v1_runtime_relative_to_pure("unhandled_perform_loop", 2.0)
+            .expect_err("relative runtime regression should be rejected");
     assert_eq!(rel_violation.case, "unhandled_perform_loop");
     assert!(rel_violation.measured_relative_to_pure > rel_violation.relative_to_pure_max);
 }
 
 #[test]
 fn runtime_threshold_table_is_non_empty() {
-    let thresholds = v1_runtime_thresholds();
+    let thresholds = v1_runtime::v1_runtime_thresholds();
     assert!(
         !thresholds.is_empty(),
         "runtime threshold table should stay explicit and non-empty"
@@ -82,7 +82,7 @@ fn runtime_threshold_table_is_non_empty() {
         "runtime thresholds should always be positive"
     );
     assert!(
-        v1_runtime_relative_to_pure_limit("pure_runtime_loop").is_none(),
+        v1_runtime::v1_runtime_relative_to_pure_limit("pure_runtime_loop").is_none(),
         "pure case should remain the reference and not have relative threshold limits"
     );
 }

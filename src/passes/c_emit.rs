@@ -20,6 +20,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write;
 
+use crate::common::gc::GcConfig;
 use crate::common::ids::{EffectLabelId, LinearExprId, LinearStmtId, SymbolId, VarId};
 use crate::common::symbols::Interner;
 use crate::ir::core::Literal;
@@ -43,16 +44,31 @@ pub struct EmittedC {
     pub c_source: String,
 }
 
-pub fn run(mut linearized: Linearized, interner: &Interner) -> EmittedC {
+pub fn run(linearized: Linearized, interner: &Interner) -> EmittedC {
+    run_with_gc_config(linearized, interner, &GcConfig::default())
+}
+
+pub fn run_with_gc_config(
+    mut linearized: Linearized,
+    interner: &Interner,
+    gc: &GcConfig,
+) -> EmittedC {
     let sema = linearized.residual.sema().clone();
-    let arc_plan = ArcEmitPlan::build(&linearized.linear);
-    let (_, diagnostics) = linearized.residual.program_and_diagnostics_mut();
-    let _verify_stats = arc_verify::verify(&linearized.linear, &sema, &arc_plan, diagnostics);
+    let arc_plan = if gc.arc_emission_enabled() {
+        ArcEmitPlan::build(&linearized.linear)
+    } else {
+        ArcEmitPlan::disabled()
+    };
+    if gc.arc_verify_enabled() {
+        let (_, diagnostics) = linearized.residual.program_and_diagnostics_mut();
+        let _verify_stats = arc_verify::verify(&linearized.linear, &sema, &arc_plan, diagnostics);
+    }
     let c_source = emit_c_program_with_constant_table(
         &linearized.linear,
         interner,
         &linearized.residual.residual().constant_table,
         &arc_plan,
+        gc.arc_emit_trace_enabled(),
     );
     EmittedC {
         linearized,
@@ -63,7 +79,7 @@ pub fn run(mut linearized: Linearized, interner: &Interner) -> EmittedC {
 pub fn emit_c_program(program: &LinearProgram, interner: &Interner) -> String {
     let table = constant_table::build_for_linear(program);
     let arc_plan = ArcEmitPlan::disabled();
-    emit_c_program_with_constant_table(program, interner, &table, &arc_plan)
+    emit_c_program_with_constant_table(program, interner, &table, &arc_plan, false)
 }
 
 fn emit_c_program_with_constant_table(
@@ -71,6 +87,7 @@ fn emit_c_program_with_constant_table(
     interner: &Interner,
     table: &ConstantTable,
     arc_plan: &ArcEmitPlan,
+    arc_emit_trace: bool,
 ) -> String {
     let mut out = String::new();
     emit_runtime_prelude(&mut out, program, interner);
@@ -129,6 +146,7 @@ fn emit_c_program_with_constant_table(
             &scalar_pool,
             &ctor_pool,
             arc_plan,
+            arc_emit_trace,
         );
         out.push('\n');
     }
@@ -175,6 +193,7 @@ fn emit_function(
     scalar_pool: &ScalarConstPool,
     ctor_pool: &CtorConstPool,
     arc_plan: &ArcEmitPlan,
+    arc_emit_trace: bool,
 ) {
     emit_fn_signature(out, c_name, &function.params);
     out.push_str(" {\n");
@@ -201,6 +220,7 @@ fn emit_function(
         scalar_pool,
         ctor_pool,
         arc_plan,
+        arc_emit_trace,
         next_temp: 0,
         active_capabilities: Vec::new(),
     };
@@ -545,26 +565,30 @@ fn emit_arc_ops(
         emit_indent(out, indent);
         match placement {
             ArcEmitPlacement::PreRetain => {
-                writeln!(
-                    out,
-                    "/* arc pre-retain s{} v{} */",
-                    stmt_id.as_u32(),
-                    var.as_u32()
-                )
-                .expect("in-memory write should not fail");
-                emit_indent(out, indent);
+                if cx.arc_emit_trace {
+                    writeln!(
+                        out,
+                        "/* arc pre-retain s{} v{} */",
+                        stmt_id.as_u32(),
+                        var.as_u32()
+                    )
+                    .expect("in-memory write should not fail");
+                    emit_indent(out, indent);
+                }
                 writeln!(out, "cielo_arc_retain(v{});", var.as_u32())
                     .expect("in-memory write should not fail");
             }
             ArcEmitPlacement::PostRelease => {
-                writeln!(
-                    out,
-                    "/* arc post-release s{} v{} */",
-                    stmt_id.as_u32(),
-                    var.as_u32()
-                )
-                .expect("in-memory write should not fail");
-                emit_indent(out, indent);
+                if cx.arc_emit_trace {
+                    writeln!(
+                        out,
+                        "/* arc post-release s{} v{} */",
+                        stmt_id.as_u32(),
+                        var.as_u32()
+                    )
+                    .expect("in-memory write should not fail");
+                    emit_indent(out, indent);
+                }
                 writeln!(out, "cielo_arc_release(v{});", var.as_u32())
                     .expect("in-memory write should not fail");
             }
@@ -939,6 +963,7 @@ struct EmitCx<'a> {
     scalar_pool: &'a ScalarConstPool,
     ctor_pool: &'a CtorConstPool,
     arc_plan: &'a ArcEmitPlan,
+    arc_emit_trace: bool,
     next_temp: u32,
     active_capabilities: Vec<(u32, String)>,
 }

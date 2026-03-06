@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use crate::common::gc::GcConfig;
 use crate::passes::{bta, ct_eval, handler_specialize, residualize};
 use crate::pipeline::compiler::TargetSpec;
 use crate::pipeline::phases::{
@@ -21,8 +22,15 @@ pub fn evaluate_classify(
 
 /// v1 fused stage B: Residualize+Specialize.
 pub fn residualize_specialize(classified: BtaClassified) -> Residualized {
-    let residual = residualize::run(classified);
-    let residual = handler_specialize::run(residual);
+    residualize_specialize_with_gc_config(classified, &GcConfig::default())
+}
+
+pub fn residualize_specialize_with_gc_config(
+    classified: BtaClassified,
+    gc: &GcConfig,
+) -> Residualized {
+    let residual = residualize::run_with_gc_config(classified, gc);
+    let residual = handler_specialize::run_with_gc_config(residual, gc);
     assert_residualize_specialize_invariants(&residual);
     residual
 }
