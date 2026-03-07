@@ -6,7 +6,7 @@ use cielo::common::symbols::Interner;
 use cielo::ir::core::CoreProgram;
 use cielo::pipeline::phases::SemanticTables;
 use cielo::sema::typecheck::typecheck_core;
-use cielo::{Compiler, CompilerConfig};
+use cielo::{CompiledC, Compiler, CompilerConfig};
 
 pub fn lower_to_core(source: &str) -> CoreProgram {
     let compiler = Compiler::new(CompilerConfig::default());
@@ -28,4 +28,20 @@ pub fn lower_and_typecheck(source: &str) -> (CoreProgram, SemanticTables) {
         diagnostics.entries()
     );
     (program, sema)
+}
+
+pub fn compile_source_to_c(source: &str) -> CompiledC {
+    compile_source_to_c_with_config(source, CompilerConfig::default())
+}
+
+pub fn compile_source_to_c_with_config(source: &str, config: CompilerConfig) -> CompiledC {
+    let compiler = Compiler::new(config);
+    let mut interner = Interner::new();
+    let compiled = compiler.compile_source_to_c(source, SourceId::from_u32(0), &mut interner);
+    assert!(
+        !compiled.residual.diagnostics().has_errors(),
+        "fixture must compile cleanly, got diagnostics: {:?}",
+        compiled.residual.diagnostics().entries()
+    );
+    compiled
 }

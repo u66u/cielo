@@ -216,7 +216,7 @@ impl Compiler {
         interner: &mut Interner,
     ) -> CompiledC {
         let residual = self.compile_source_v1(source, source_id, interner);
-        let normalized = normalize::run(residual);
+        let normalized = normalize::run_with_gc_config(residual, &self.config.gc);
         let linearized = linearize::run(normalized);
         let emitted = c_emit::run_with_gc_config(linearized, interner, &self.config.gc);
         CompiledC {
@@ -271,7 +271,7 @@ impl Compiler {
     ) -> CompiledC {
         let residual = self.compile_source_v0(source, source_id, interner);
         let specialized = handler_specialize::run_with_gc_config(residual, &self.config.gc);
-        let normalized = normalize::run(specialized);
+        let normalized = normalize::run_with_gc_config(specialized, &self.config.gc);
         let linearized = linearize::run(normalized);
         let emitted = c_emit::run_with_gc_config(linearized, interner, &self.config.gc);
         CompiledC {
@@ -382,6 +382,6 @@ impl Compiler {
     }
 
     fn normalize(&self, residual: Residualized) -> Residualized {
-        normalize::run(residual)
+        normalize::run_with_gc_config(residual, &self.config.gc)
     }
 }

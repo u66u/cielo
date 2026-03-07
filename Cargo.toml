@@ -23,3 +23,7 @@ harness = false
 [[bench]]
 name = "v1_runtime"
 harness = false
+
+[[bench]]
+name = "v1_gc_overhead"
+harness = false

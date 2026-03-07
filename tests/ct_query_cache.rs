@@ -13,14 +13,23 @@ fn fresh_path(prefix: &str, ext: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("{prefix}_{stamp}.{ext}"))
 }
 
-fn compile_source_run(compiler: &Compiler, source: &str, source_id: u32) -> cielo::pipeline::phases::Residualized {
+fn compile_source_run(
+    compiler: &Compiler,
+    source: &str,
+    source_id: u32,
+) -> cielo::pipeline::phases::Residualized {
     let mut interner = Interner::new();
     compiler.compile_source(source, SourceId::from_u32(source_id), &mut interner)
 }
 
-fn run_stage_a(compiler: &Compiler, source: &str, source_id: u32) -> cielo::pipeline::phases::BtaClassified {
+fn run_stage_a(
+    compiler: &Compiler,
+    source: &str,
+    source_id: u32,
+) -> cielo::pipeline::phases::BtaClassified {
     let mut interner = Interner::new();
-    let core = compiler.parse_and_lower_to_core(source, SourceId::from_u32(source_id), &mut interner);
+    let core =
+        compiler.parse_and_lower_to_core(source, SourceId::from_u32(source_id), &mut interner);
     compiler.run_v1_evaluate_classify(core)
 }
 

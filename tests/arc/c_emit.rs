@@ -1,0 +1,52 @@
+use crate::helpers::c_emit::assert_arc_trace_comments_align;
+use crate::helpers::core::compile_source_to_c_with_config;
+use cielo::{CompilerConfig, GcFeatureFlags, GcPreset};
+
+#[test]
+fn arc_c_emitter_trace_comments_align_with_runtime_calls() {
+    let src = r#"
+enum Boxed { Wrap(Int) }
+fn consume(v: Boxed) -> Int {
+  let one = 1;
+  let two = one + 1;
+  let three = two + 1;
+  let four = three + 1;
+  let five = four + 1;
+  match v {
+    Wrap(n) => n + five,
+  }
+}
+fn main() -> Int {
+  let b = Wrap(1);
+  consume(b)
+}
+"#;
+
+    let mut config = CompilerConfig::default().with_gc_preset(GcPreset::ArcRaw);
+    config
+        .gc
+        .features
+        .insert(GcFeatureFlags::ARC_EMIT_TRACE_COMMENTS);
+    let compiled = compile_source_to_c_with_config(src, config);
+    let arc_stats = compiled.residual.residual().arc_stats;
+    assert!(
+        arc_stats.final_retain_ops + arc_stats.final_release_ops > 0,
+        "fixture must produce ARC ops before C emission validation"
+    );
+    let linear_arc_ops = compiled
+        .linear
+        .stmts()
+        .iter()
+        .filter(|stmt| !stmt.arc_ops.pre_retain.is_empty() || !stmt.arc_ops.post_release.is_empty())
+        .count();
+    assert!(
+        linear_arc_ops > 0,
+        "linearized program should carry ARC ops to emission boundary"
+    );
+    let trace_comment_count = compiled.c_source.matches("/* arc ").count();
+    assert!(
+        trace_comment_count > 0,
+        "expected ARC trace comments in emitted C when trace flag is enabled"
+    );
+    assert_arc_trace_comments_align(compiled.c_source.as_str());
+}

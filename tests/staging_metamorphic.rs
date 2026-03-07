@@ -136,8 +136,11 @@ fn main() -> Int {
     let emitted_base =
         compiler.compile_source_to_c(src_base, SourceId::from_u32(12), &mut emit_interner_base);
     let mut emit_interner_dead = Interner::new();
-    let emitted_dead =
-        compiler.compile_source_to_c(src_with_dead, SourceId::from_u32(13), &mut emit_interner_dead);
+    let emitted_dead = compiler.compile_source_to_c(
+        src_with_dead,
+        SourceId::from_u32(13),
+        &mut emit_interner_dead,
+    );
     let emitted_base_main = main_func_id(emitted_base.residual.program(), &emit_interner_base);
     let emitted_dead_main = main_func_id(emitted_dead.residual.program(), &emit_interner_dead);
     let emitted_base_main_body = emitted_base
