@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::analysis::arc_cfg::ArcCfg;
 use crate::analysis::arc_last_use::ArcLastUseTables;
@@ -31,6 +31,20 @@ pub struct ArcInsertionPlan {
     pub stats: ArcInsertStats,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CallArgTransferDecision {
+    MoveToCallee,
+    RetainCopy,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AliasCopyDecision {
+    Noop,
+    DropDeadBinding { binding: VarId },
+    MoveSource { source: VarId },
+    RetainCopy { source: VarId },
+}
+
 pub fn plan(program: &CoreProgram, sema: &SemanticTables) -> ArcInsertionPlan {
     let cfg = ArcCfg::build(program);
     let last_use = ArcLastUseTables::analyze(&cfg);
@@ -42,8 +56,14 @@ pub fn plan(program: &CoreProgram, sema: &SemanticTables) -> ArcInsertionPlan {
         };
 
         let last_uses = last_use.last_uses(stmt_id);
-        let mut moved_call_args = Vec::new();
-        let mut moved_alias_sources = Vec::new();
+        let last_use_set = last_uses.iter().copied().collect::<HashSet<_>>();
+        let mut moved_call_args = HashSet::new();
+        let mut moved_alias_sources = HashSet::new();
+        let mut dropped_alias_bindings = HashSet::new();
+        let mut stmt_var_uses = HashMap::new();
+        for expr_id in stmt.child_exprs() {
+            collect_expr_var_counts(program, expr_id, &mut stmt_var_uses);
+        }
         let mut call_arg_uses = HashMap::new();
         for expr_id in stmt.child_exprs() {
             collect_call_arg_var_counts(program, expr_id, &mut call_arg_uses);
@@ -51,26 +71,35 @@ pub fn plan(program: &CoreProgram, sema: &SemanticTables) -> ArcInsertionPlan {
         if let StmtKind::Call { args, .. } = &stmt.kind {
             for arg in args {
                 if let Some(ExprKind::Var(var)) = program.expr(*arg).map(|expr| &expr.kind) {
-                    let count = call_arg_uses.entry(*var).or_insert(0);
-                    *count = count.saturating_add(1);
+                    bump_var_count(&mut call_arg_uses, *var);
                 }
             }
         }
         for (var, use_count) in call_arg_uses {
-            if ownership_of_var(sema, var) != OwnershipClass::RcManaged {
+            let ownership = ownership_of_var(sema, var);
+            if ownership != OwnershipClass::RcManaged {
                 continue;
             }
-            if use_count == 1 && last_uses.contains(&var) {
-                moved_call_args.push(var);
-                continue;
+            let total_stmt_uses = stmt_var_uses.get(&var).copied().unwrap_or(0);
+            match decide_call_arg_transfer(
+                ownership,
+                use_count,
+                total_stmt_uses,
+                last_use_set.contains(&var),
+            ) {
+                CallArgTransferDecision::MoveToCallee => {
+                    moved_call_args.insert(var);
+                }
+                CallArgTransferDecision::RetainCopy => {
+                    push_op(
+                        &mut plan,
+                        ArcPlannedOp {
+                            stmt: stmt_id,
+                            kind: ArcOpKind::Retain { var },
+                        },
+                    );
+                }
             }
-            push_op(
-                &mut plan,
-                ArcPlannedOp {
-                    stmt: stmt_id,
-                    kind: ArcOpKind::Retain { var },
-                },
-            );
         }
 
         if let StmtKind::Let {
@@ -83,28 +112,37 @@ pub fn plan(program: &CoreProgram, sema: &SemanticTables) -> ArcInsertionPlan {
         {
             let source_ownership = ownership_of_var(sema, source);
             let binding_ownership = ownership_of_var(sema, *binding);
-            if source_ownership == OwnershipClass::RcManaged
-                || binding_ownership == OwnershipClass::RcManaged
-            {
-                if source_ownership == OwnershipClass::RcManaged
-                    && binding_ownership == OwnershipClass::RcManaged
-                    && last_uses.contains(&source)
-                {
-                    moved_alias_sources.push(source);
-                    continue;
+            match decide_alias_copy(
+                source,
+                *binding,
+                source_ownership,
+                binding_ownership,
+                &last_use_set,
+            ) {
+                AliasCopyDecision::Noop => {}
+                AliasCopyDecision::DropDeadBinding { binding } => {
+                    dropped_alias_bindings.insert(binding);
                 }
-                push_op(
-                    &mut plan,
-                    ArcPlannedOp {
-                        stmt: stmt_id,
-                        kind: ArcOpKind::Retain { var: source },
-                    },
-                );
+                AliasCopyDecision::MoveSource { source } => {
+                    moved_alias_sources.insert(source);
+                }
+                AliasCopyDecision::RetainCopy { source } => {
+                    push_op(
+                        &mut plan,
+                        ArcPlannedOp {
+                            stmt: stmt_id,
+                            kind: ArcOpKind::Retain { var: source },
+                        },
+                    );
+                }
             }
         }
 
         for var in last_uses {
-            if moved_call_args.contains(var) || moved_alias_sources.contains(var) {
+            if moved_call_args.contains(var)
+                || moved_alias_sources.contains(var)
+                || dropped_alias_bindings.contains(var)
+            {
                 continue;
             }
             let ownership = ownership_of_var(sema, *var);
@@ -130,6 +168,48 @@ fn ownership_of_var(sema: &SemanticTables, var: VarId) -> OwnershipClass {
         .unwrap_or(OwnershipClass::BorrowedView)
 }
 
+fn decide_call_arg_transfer(
+    ownership: OwnershipClass,
+    call_arg_uses: u8,
+    stmt_uses: u8,
+    is_last_use: bool,
+) -> CallArgTransferDecision {
+    if ownership == OwnershipClass::RcManaged && call_arg_uses == 1 && stmt_uses == 1 && is_last_use
+    {
+        CallArgTransferDecision::MoveToCallee
+    } else {
+        CallArgTransferDecision::RetainCopy
+    }
+}
+
+fn decide_alias_copy(
+    source: VarId,
+    binding: VarId,
+    source_ownership: OwnershipClass,
+    binding_ownership: OwnershipClass,
+    last_use_set: &HashSet<VarId>,
+) -> AliasCopyDecision {
+    let is_managed_copy = source_ownership == OwnershipClass::RcManaged
+        || binding_ownership == OwnershipClass::RcManaged;
+    if !is_managed_copy {
+        return AliasCopyDecision::Noop;
+    }
+    if binding_ownership == OwnershipClass::RcManaged && last_use_set.contains(&binding) {
+        return AliasCopyDecision::DropDeadBinding { binding };
+    }
+    if source_ownership == OwnershipClass::RcManaged
+        && binding_ownership == OwnershipClass::RcManaged
+        && last_use_set.contains(&source)
+    {
+        return AliasCopyDecision::MoveSource { source };
+    }
+    if source_ownership == OwnershipClass::RcManaged {
+        AliasCopyDecision::RetainCopy { source }
+    } else {
+        AliasCopyDecision::Noop
+    }
+}
+
 fn collect_call_arg_var_counts(
     program: &CoreProgram,
     expr_id: ExprId,
@@ -142,8 +222,7 @@ fn collect_call_arg_var_counts(
         ExprKind::PureCall { args, .. } => {
             for arg in args {
                 if let Some(ExprKind::Var(var)) = program.expr(*arg).map(|expr| &expr.kind) {
-                    let count = out.entry(*var).or_insert(0);
-                    *count = count.saturating_add(1);
+                    bump_var_count(out, *var);
                 }
                 collect_call_arg_var_counts(program, *arg, out);
             }
@@ -162,6 +241,35 @@ fn collect_call_arg_var_counts(
     }
 }
 
+fn collect_expr_var_counts(program: &CoreProgram, expr_id: ExprId, out: &mut HashMap<VarId, u8>) {
+    let Some(expr) = program.expr(expr_id) else {
+        return;
+    };
+    match &expr.kind {
+        ExprKind::Var(var) => {
+            bump_var_count(out, *var);
+        }
+        ExprKind::Unary { expr, .. } => collect_expr_var_counts(program, *expr, out),
+        ExprKind::Binary { lhs, rhs, .. } => {
+            collect_expr_var_counts(program, *lhs, out);
+            collect_expr_var_counts(program, *rhs, out);
+        }
+        ExprKind::PureCall { args, .. }
+        | ExprKind::MakeStruct { fields: args, .. }
+        | ExprKind::MakeEnum { fields: args, .. } => {
+            for arg in args {
+                collect_expr_var_counts(program, *arg, out);
+            }
+        }
+        ExprKind::Literal(_) | ExprKind::Error(_) => {}
+    }
+}
+
+fn bump_var_count(out: &mut HashMap<VarId, u8>, var: VarId) {
+    let count = out.entry(var).or_insert(0);
+    *count = count.saturating_add(1);
+}
+
 fn push_op(plan: &mut ArcInsertionPlan, op: ArcPlannedOp) {
     if plan.ops.contains(&op) {
         return;
@@ -173,14 +281,25 @@ fn push_op(plan: &mut ArcInsertionPlan, op: ArcPlannedOp) {
         }
     }
     plan.ops.push(op);
-    plan.ops
-        .sort_by_key(|entry| (entry.stmt.index(), arc_kind_order(entry.kind)));
+    plan.ops.sort_by_key(|entry| {
+        (
+            entry.stmt.index(),
+            arc_kind_order(entry.kind),
+            arc_var(entry.kind).index(),
+        )
+    });
 }
 
 fn arc_kind_order(kind: ArcOpKind) -> u8 {
     match kind {
         ArcOpKind::Retain { .. } => 0,
         ArcOpKind::Release { .. } => 1,
+    }
+}
+
+fn arc_var(kind: ArcOpKind) -> VarId {
+    match kind {
+        ArcOpKind::Retain { var } | ArcOpKind::Release { var } => var,
     }
 }
 
