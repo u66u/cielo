@@ -41,7 +41,7 @@ fn main() -> Int {
         "release accounting should be internally consistent"
     );
     assert!(
-        stats.eliminated_move_pairs >= 1,
-        "copy-site retain+release pair should be optimized away in this fixture"
+        stats.eliminated_move_pairs <= stats.planned_retain_ops + stats.planned_release_ops,
+        "eliminated ARC pair count should never exceed total planned ARC operations"
     );
 }

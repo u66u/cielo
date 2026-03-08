@@ -156,3 +156,37 @@ fn main() -> Int {
         "shared alias vars should still get terminal-use release candidates when they go dead"
     );
 }
+
+#[test]
+fn arc_cfg_reaches_non_entry_function_bodies() {
+    let program = lower_to_core(
+        r#"
+enum Boxed { Wrap(Int) }
+fn helper(n: Int) -> Int {
+  let x = Wrap(n);
+  match x {
+    Wrap(v) => v,
+  }
+}
+fn main() -> Int {
+  helper(7)
+}
+"#,
+    );
+    let cfg = ArcCfg::build(&program);
+
+    let helper_body = program
+        .functions()
+        .iter()
+        .enumerate()
+        .find_map(|(idx, function)| {
+            let func_id = cielo::common::ids::FuncId::new(idx);
+            (!program.entrypoints().contains(&func_id)).then_some(function.body)
+        })
+        .expect("expected one non-entry helper function");
+
+    assert!(
+        cfg.reachable().contains(&helper_body),
+        "arc cfg should include reachable non-entry function bodies via call graph roots"
+    );
+}
