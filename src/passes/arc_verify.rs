@@ -101,6 +101,7 @@ pub fn verify(
                 stats.errors = stats.errors.saturating_add(1);
             }
         }
+        verify_managed_call_arg_aliases(program, sema, stmt_id, diagnostics, &mut stats.errors);
 
         stats.checked_retain_ops = stats
             .checked_retain_ops
@@ -119,6 +120,96 @@ fn is_managed_var(sema: &SemanticTables, var: VarId) -> bool {
         .copied()
         .unwrap_or(OwnershipClass::BorrowedView)
         == OwnershipClass::RcManaged
+}
+
+fn verify_managed_call_arg_aliases(
+    program: &LinearProgram,
+    sema: &SemanticTables,
+    stmt_id: LinearStmtId,
+    diagnostics: &mut DiagnosticBag,
+    errors: &mut u32,
+) {
+    let Some(stmt) = program.stmt(stmt_id) else {
+        return;
+    };
+    match &stmt.kind {
+        LinearStmt::PureCall { args, .. }
+        | LinearStmt::DirectCall { args, .. }
+        | LinearStmt::ControlCall { args, .. } => {
+            report_duplicate_managed_direct_args(program, sema, stmt_id, args, diagnostics, errors);
+        }
+        _ => {}
+    }
+    for expr_id in stmt.child_exprs() {
+        verify_expr_call_arg_aliases(program, sema, stmt_id, expr_id, diagnostics, errors);
+    }
+}
+
+fn verify_expr_call_arg_aliases(
+    program: &LinearProgram,
+    sema: &SemanticTables,
+    stmt_id: LinearStmtId,
+    expr_id: crate::common::ids::LinearExprId,
+    diagnostics: &mut DiagnosticBag,
+    errors: &mut u32,
+) {
+    let Some(expr) = program.expr(expr_id) else {
+        return;
+    };
+    match &expr.kind {
+        LinearExpr::PureCall { args, .. } => {
+            report_duplicate_managed_direct_args(program, sema, stmt_id, args, diagnostics, errors);
+            for arg in args {
+                verify_expr_call_arg_aliases(program, sema, stmt_id, *arg, diagnostics, errors);
+            }
+        }
+        LinearExpr::Unary { expr, .. } => {
+            verify_expr_call_arg_aliases(program, sema, stmt_id, *expr, diagnostics, errors);
+        }
+        LinearExpr::Binary { lhs, rhs, .. } => {
+            verify_expr_call_arg_aliases(program, sema, stmt_id, *lhs, diagnostics, errors);
+            verify_expr_call_arg_aliases(program, sema, stmt_id, *rhs, diagnostics, errors);
+        }
+        LinearExpr::MakeStruct { fields, .. } | LinearExpr::MakeEnum { fields, .. } => {
+            for field in fields {
+                verify_expr_call_arg_aliases(program, sema, stmt_id, *field, diagnostics, errors);
+            }
+        }
+        LinearExpr::Var(_) | LinearExpr::Literal(_) | LinearExpr::Error => {}
+    }
+}
+
+fn report_duplicate_managed_direct_args(
+    program: &LinearProgram,
+    sema: &SemanticTables,
+    stmt_id: LinearStmtId,
+    args: &[crate::common::ids::LinearExprId],
+    diagnostics: &mut DiagnosticBag,
+    errors: &mut u32,
+) {
+    let mut counts = HashMap::<VarId, u8>::new();
+    for arg in args {
+        if let Some(LinearExpr::Var(var)) = program.expr(*arg).map(|expr| &expr.kind) {
+            let count = counts.entry(*var).or_insert(0);
+            *count = count.saturating_add(1);
+        }
+    }
+    for (var, count) in counts {
+        if count < 2 || !is_managed_var(sema, var) {
+            continue;
+        }
+        diagnostics.error(
+            "ARC_VERIFY_DUP_MANAGED_CALL_ARG",
+            format!(
+                "managed var v{} is passed {} times in call at linear stmt s{}; ARC multiplicity is unsupported in v1",
+                var.as_u32(),
+                count,
+                stmt_id.as_u32()
+            ),
+            Span::synthetic(),
+        );
+        *errors = errors.saturating_add(1);
+    }
 }
 
 fn verify_state_transitions(

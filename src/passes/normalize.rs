@@ -35,6 +35,7 @@ use crate::passes::arc_insert;
 use crate::passes::arc_opt;
 use crate::passes::constant_table;
 use crate::pipeline::phases::{ArcStats, Residualized};
+use crate::sema::typecheck::typecheck_core;
 
 const MAX_SHRINK_ITERS: usize = 16;
 const MAX_SPEC_INLINE_STMTS: usize = 6;
@@ -45,11 +46,12 @@ pub fn run(residual: Residualized) -> Residualized {
 }
 
 pub fn run_with_gc_config(residual: Residualized, gc: &GcConfig) -> Residualized {
-    let (mut program, diagnostics, sema, mono, ct, bta, mut residual_tables) =
+    let (mut program, mut diagnostics, _sema, mono, ct, bta, mut residual_tables) =
         residual.into_parts();
     shrink_to_fixpoint(&mut program);
     speculative_inline_once(&mut program);
     shrink_to_fixpoint(&mut program);
+    let sema = typecheck_core(&program, &mut diagnostics);
     residual_tables.constant_table = constant_table::build_for_core(&program);
     let planned_arc = if gc.arc_insertion_enabled() {
         arc_insert::plan(&program, &sema)

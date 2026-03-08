@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::analysis::arc_cfg::ArcCfg;
 use crate::common::gc::ArcOptLevel;
 use crate::common::ids::{StmtId, VarId};
-use crate::ir::core::CoreProgram;
+use crate::ir::core::{CoreProgram, ExprKind, StmtKind};
 
 use super::arc_insert::{ArcInsertionPlan, ArcOpKind, ArcPlannedOp};
 
@@ -47,7 +47,7 @@ fn optimize_internal(
 ) -> ArcOptResult {
     let mut stats = ArcOptStats::default();
     if level.contains(ArcOptLevel::SAME_STMT_PAIR_ELIM) {
-        eliminate_same_stmt_pairs(&mut plan, &mut stats);
+        eliminate_same_stmt_pairs(program, &mut plan, &mut stats);
     }
     if level.contains(ArcOptLevel::CFG_REDUNDANT_RELEASE_ELIM)
         && let Some(program) = program
@@ -59,7 +59,11 @@ fn optimize_internal(
     result
 }
 
-fn eliminate_same_stmt_pairs(plan: &mut ArcInsertionPlan, stats: &mut ArcOptStats) {
+fn eliminate_same_stmt_pairs(
+    program: Option<&CoreProgram>,
+    plan: &mut ArcInsertionPlan,
+    stats: &mut ArcOptStats,
+) {
     let mut retain_sites = HashSet::new();
     let mut release_sites = HashSet::new();
     for op in &plan.ops {
@@ -73,10 +77,13 @@ fn eliminate_same_stmt_pairs(plan: &mut ArcInsertionPlan, stats: &mut ArcOptStat
         }
     }
 
-    let cancelled = retain_sites
+    let mut cancelled = retain_sites
         .intersection(&release_sites)
         .copied()
         .collect::<HashSet<_>>();
+    if let Some(program) = program {
+        cancelled.retain(|site| is_move_equivalent_pair(program, *site));
+    }
     stats.eliminated_move_pairs = stats
         .eliminated_move_pairs
         .saturating_add(cancelled.len() as u32);
@@ -97,6 +104,19 @@ fn eliminate_same_stmt_pairs(plan: &mut ArcInsertionPlan, stats: &mut ArcOptStat
         optimized_ops.push(op);
     }
     plan.ops = optimized_ops;
+}
+
+fn is_move_equivalent_pair(program: &CoreProgram, site: ArcOpSite) -> bool {
+    let Some(stmt) = program.stmt(site.stmt) else {
+        return false;
+    };
+    if let StmtKind::Let { value, .. } = &stmt.kind
+        && let Some(expr) = program.expr(*value)
+        && let ExprKind::Var(source) = expr.kind
+    {
+        return source == site.var;
+    }
+    false
 }
 
 fn eliminate_cfg_redundant_releases(

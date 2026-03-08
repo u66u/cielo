@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+
 use crate::analysis::arc_cfg::ArcCfg;
 use crate::analysis::arc_last_use::ArcLastUseTables;
-use crate::common::ids::{StmtId, VarId};
+use crate::common::ids::{ExprId, StmtId, VarId};
 use crate::ir::core::{CoreProgram, ExprKind, StmtKind};
 use crate::pipeline::phases::{ArcResidualOp, ArcResidualOpKind, ArcResidualPlan, SemanticTables};
 use crate::sema::ownership::OwnershipClass;
@@ -39,6 +41,38 @@ pub fn plan(program: &CoreProgram, sema: &SemanticTables) -> ArcInsertionPlan {
             continue;
         };
 
+        let last_uses = last_use.last_uses(stmt_id);
+        let mut moved_call_args = Vec::new();
+        let mut moved_alias_sources = Vec::new();
+        let mut call_arg_uses = HashMap::new();
+        for expr_id in stmt.child_exprs() {
+            collect_call_arg_var_counts(program, expr_id, &mut call_arg_uses);
+        }
+        if let StmtKind::Call { args, .. } = &stmt.kind {
+            for arg in args {
+                if let Some(ExprKind::Var(var)) = program.expr(*arg).map(|expr| &expr.kind) {
+                    let count = call_arg_uses.entry(*var).or_insert(0);
+                    *count = count.saturating_add(1);
+                }
+            }
+        }
+        for (var, use_count) in call_arg_uses {
+            if ownership_of_var(sema, var) != OwnershipClass::RcManaged {
+                continue;
+            }
+            if use_count == 1 && last_uses.contains(&var) {
+                moved_call_args.push(var);
+                continue;
+            }
+            push_op(
+                &mut plan,
+                ArcPlannedOp {
+                    stmt: stmt_id,
+                    kind: ArcOpKind::Retain { var },
+                },
+            );
+        }
+
         if let StmtKind::Let {
             binding,
             value,
@@ -52,6 +86,13 @@ pub fn plan(program: &CoreProgram, sema: &SemanticTables) -> ArcInsertionPlan {
             if source_ownership == OwnershipClass::RcManaged
                 || binding_ownership == OwnershipClass::RcManaged
             {
+                if source_ownership == OwnershipClass::RcManaged
+                    && binding_ownership == OwnershipClass::RcManaged
+                    && last_uses.contains(&source)
+                {
+                    moved_alias_sources.push(source);
+                    continue;
+                }
                 push_op(
                     &mut plan,
                     ArcPlannedOp {
@@ -62,7 +103,10 @@ pub fn plan(program: &CoreProgram, sema: &SemanticTables) -> ArcInsertionPlan {
             }
         }
 
-        for var in last_use.last_uses(stmt_id) {
+        for var in last_uses {
+            if moved_call_args.contains(var) || moved_alias_sources.contains(var) {
+                continue;
+            }
             let ownership = ownership_of_var(sema, *var);
             if ownership == OwnershipClass::RcManaged {
                 push_op(
@@ -84,6 +128,38 @@ fn ownership_of_var(sema: &SemanticTables, var: VarId) -> OwnershipClass {
         .get(&var)
         .copied()
         .unwrap_or(OwnershipClass::BorrowedView)
+}
+
+fn collect_call_arg_var_counts(
+    program: &CoreProgram,
+    expr_id: ExprId,
+    out: &mut HashMap<VarId, u8>,
+) {
+    let Some(expr) = program.expr(expr_id) else {
+        return;
+    };
+    match &expr.kind {
+        ExprKind::PureCall { args, .. } => {
+            for arg in args {
+                if let Some(ExprKind::Var(var)) = program.expr(*arg).map(|expr| &expr.kind) {
+                    let count = out.entry(*var).or_insert(0);
+                    *count = count.saturating_add(1);
+                }
+                collect_call_arg_var_counts(program, *arg, out);
+            }
+        }
+        ExprKind::Unary { expr, .. } => collect_call_arg_var_counts(program, *expr, out),
+        ExprKind::Binary { lhs, rhs, .. } => {
+            collect_call_arg_var_counts(program, *lhs, out);
+            collect_call_arg_var_counts(program, *rhs, out);
+        }
+        ExprKind::MakeStruct { fields, .. } | ExprKind::MakeEnum { fields, .. } => {
+            for field in fields {
+                collect_call_arg_var_counts(program, *field, out);
+            }
+        }
+        ExprKind::Var(_) | ExprKind::Literal(_) | ExprKind::Error(_) => {}
+    }
 }
 
 fn push_op(plan: &mut ArcInsertionPlan, op: ArcPlannedOp) {

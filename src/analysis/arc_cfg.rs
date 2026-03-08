@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use crate::analysis::function_graph::collect_reachable_functions;
 use crate::common::ids::{ExprId, StmtId, VarId};
 use crate::ir::core::{CoreProgram, ExprKind, StmtKind};
 use smallvec::SmallVec;
@@ -20,10 +21,9 @@ pub struct ArcCfg {
 
 impl ArcCfg {
     pub fn build(program: &CoreProgram) -> Self {
-        let roots = program
-            .entrypoints()
-            .iter()
-            .filter_map(|func_id| program.function(*func_id).map(|function| function.body))
+        let roots = collect_reachable_functions(program)
+            .into_iter()
+            .filter_map(|func_id| program.function(func_id).map(|function| function.body))
             .collect::<Vec<_>>();
         let mut summaries = vec![None; program.stmts().len()];
         let mut stack = roots.clone();
