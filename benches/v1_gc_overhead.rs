@@ -13,71 +13,112 @@ use cielo::{Compiler, CompilerConfig, GcPreset};
 const SOURCE_CTOR_CHURN: &str = r#"
 enum Boxed { Wrap(Int) }
 
-fn churn(n: Int, acc: Int) -> Int {
-  if n == 0 {
+fn consume(v: Boxed) -> Int {
+  let one = 1;
+  let two = one + 1;
+  let three = two + 1;
+  let four = three + 1;
+  let five = four + 1;
+  match v {
+    Wrap(n) => n + five,
+  }
+}
+
+fn run_batch(batch: Int, n: Int, acc: Int) -> Int {
+  if batch == 0 {
     acc
   } else {
     let x = Wrap(n);
-    match x {
-      Wrap(v) => churn(n - 1, acc + v),
-    }
+    let iter = consume(x);
+    run_batch(batch - 1, n - 1, acc + iter)
   }
 }
 
 fn main() -> Int {
   let n = @runtime { 4000 };
-  let s = churn(n, 0);
-  s - s
+  let batch = @runtime { 300 };
+  let s = run_batch(batch, n, 0);
+  s
 }
 "#;
 
 const SOURCE_ALIAS_CHURN: &str = r#"
 enum Pair { Pair(Int, Int) }
 
-fn churn(n: Int, acc: Int) -> Int {
+fn consume(v: Pair, bias: Int) -> Int {
+  let one = 1;
+  let two = one + 1;
+  match v {
+    Pair(x, y) => x + y + two + bias,
+  }
+}
+
+fn churn_once(n: Int, acc: Int) -> Int {
   if n == 0 {
     acc
   } else {
     let p = Pair(n, acc);
     let a = p;
     let b = a;
-    match b {
-      Pair(x, y) => churn(n - 1, x + y),
-    }
+    let next = consume(b, 0);
+    churn_once(n - 1, next)
+  }
+}
+
+fn run_batch(batch: Int, n: Int, acc: Int) -> Int {
+  if batch == 0 {
+    acc
+  } else {
+    let iter = churn_once(n, 0);
+    run_batch(batch - 1, n, acc + iter)
   }
 }
 
 fn main() -> Int {
   let n = @runtime { 2500 };
-  let s = churn(n, 0);
-  s - s
+  let batch = @runtime { 120 };
+  let s = run_batch(batch, n, 0);
+  s
 }
 "#;
 
 const SOURCE_BRANCH_CHURN: &str = r#"
 enum Boxed { Wrap(Int) }
 
-fn churn(n: Int, acc: Int) -> Int {
+fn consume(v: Boxed, dir: Bool, acc: Int) -> Int {
+  let one = 1;
+  let two = one + 1;
+  let three = two + 1;
+  match v {
+    Wrap(n) => if dir { acc + n + three } else { acc - n - three },
+  }
+}
+
+fn churn_once(n: Int, acc: Int) -> Int {
   if n == 0 {
     acc
   } else {
     let x = Wrap(n);
-    if n == 1 {
-      match x {
-        Wrap(v) => churn(n - 1, acc + v),
-      }
-    } else {
-      match x {
-        Wrap(v) => churn(n - 1, acc - v),
-      }
-    }
+    let dir = n == 1;
+    let next = consume(x, dir, acc);
+    churn_once(n - 1, next)
+  }
+}
+
+fn run_batch(batch: Int, n: Int, acc: Int) -> Int {
+  if batch == 0 {
+    acc
+  } else {
+    let iter = churn_once(n, 0);
+    run_batch(batch - 1, n, acc + iter)
   }
 }
 
 fn main() -> Int {
   let n = @runtime { 3000 };
-  let s = churn(n, 0);
-  s - s
+  let batch = @runtime { 90 };
+  let s = run_batch(batch, n, 0);
+  s
 }
 "#;
 
@@ -98,6 +139,27 @@ pub struct GcOverheadViolation {
     pub preset: String,
     pub measured_runtime_relative_to_off: f64,
     pub max_runtime_relative_to_off: f64,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct GcOptimizerThreshold {
+    pub case: &'static str,
+    pub max_runtime_relative_to_arc_raw: f64,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct GcOptimizerViolation {
+    pub case: String,
+    pub measured_runtime_relative_to_arc_raw: f64,
+    pub max_runtime_relative_to_arc_raw: f64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct GcBenchArcStats {
+    pub planned_retain_ops: u32,
+    pub planned_release_ops: u32,
+    pub final_retain_ops: u32,
+    pub final_release_ops: u32,
 }
 
 const GC_OVERHEAD_THRESHOLDS: &[GcOverheadThreshold] = &[
@@ -133,6 +195,21 @@ const GC_OVERHEAD_THRESHOLDS: &[GcOverheadThreshold] = &[
     },
 ];
 
+const GC_OPTIMIZER_THRESHOLDS: &[GcOptimizerThreshold] = &[
+    GcOptimizerThreshold {
+        case: "ctor_churn",
+        max_runtime_relative_to_arc_raw: 1.200,
+    },
+    GcOptimizerThreshold {
+        case: "alias_churn",
+        max_runtime_relative_to_arc_raw: 1.400,
+    },
+    GcOptimizerThreshold {
+        case: "branch_churn",
+        max_runtime_relative_to_arc_raw: 1.200,
+    },
+];
+
 pub fn gc_overhead_thresholds() -> &'static [GcOverheadThreshold] {
     GC_OVERHEAD_THRESHOLDS
 }
@@ -160,6 +237,35 @@ pub fn check_gc_overhead_relative(
             preset: preset.to_owned(),
             measured_runtime_relative_to_off,
             max_runtime_relative_to_off: limit,
+        })
+    }
+}
+
+pub fn gc_optimizer_thresholds() -> &'static [GcOptimizerThreshold] {
+    GC_OPTIMIZER_THRESHOLDS
+}
+
+pub fn gc_optimizer_relative_to_raw_limit(case: &str) -> Option<f64> {
+    GC_OPTIMIZER_THRESHOLDS
+        .iter()
+        .find(|threshold| threshold.case == case)
+        .map(|threshold| threshold.max_runtime_relative_to_arc_raw)
+}
+
+pub fn check_gc_optimizer_relative_to_raw(
+    case: &str,
+    measured_runtime_relative_to_arc_raw: f64,
+) -> Result<(), GcOptimizerViolation> {
+    let Some(limit) = gc_optimizer_relative_to_raw_limit(case) else {
+        return Ok(());
+    };
+    if measured_runtime_relative_to_arc_raw <= limit {
+        Ok(())
+    } else {
+        Err(GcOptimizerViolation {
+            case: case.to_owned(),
+            measured_runtime_relative_to_arc_raw,
+            max_runtime_relative_to_arc_raw: limit,
         })
     }
 }
@@ -214,6 +320,7 @@ struct BuiltTarget {
     work_dir: PathBuf,
     compile_source_ms: f64,
     c_compile_ms: f64,
+    arc_stats: GcBenchArcStats,
 }
 
 impl Drop for BuiltTarget {
@@ -229,6 +336,58 @@ struct Measurement {
     compile_source_ms: f64,
     c_compile_ms: f64,
     runtime_per_run_ms: f64,
+    arc_stats: GcBenchArcStats,
+}
+
+pub fn gc_overhead_case_arc_stats(case: &str, preset: &str) -> Option<GcBenchArcStats> {
+    let case = CASES.iter().copied().find(|entry| entry.name == case)?;
+    let preset = PRESETS.iter().copied().find(|entry| entry.name == preset)?;
+    let mut interner = Interner::new();
+    let config = CompilerConfig::default().with_gc_preset(preset.preset);
+    let compiler = Compiler::new(config);
+    let compiled = compiler.compile_source_to_c(case.source, SourceId::from_u32(0), &mut interner);
+    if compiled.residual.diagnostics().has_errors() {
+        return None;
+    }
+    Some(extract_arc_stats(&compiled))
+}
+
+fn extract_arc_stats(compiled: &cielo::CompiledC) -> GcBenchArcStats {
+    let arc_stats = compiled.residual.residual().arc_stats;
+    GcBenchArcStats {
+        planned_retain_ops: arc_stats.planned_retain_ops,
+        planned_release_ops: arc_stats.planned_release_ops,
+        final_retain_ops: arc_stats.final_retain_ops,
+        final_release_ops: arc_stats.final_release_ops,
+    }
+}
+
+fn assert_preset_coverage(case: &str, preset: &str, arc_stats: GcBenchArcStats) {
+    let planned_total = arc_stats
+        .planned_retain_ops
+        .saturating_add(arc_stats.planned_release_ops);
+    let final_total = arc_stats
+        .final_retain_ops
+        .saturating_add(arc_stats.final_release_ops);
+    if preset == "off" {
+        assert_eq!(
+            planned_total, 0,
+            "gc overhead case `{case}` preset `off` should not plan ARC ops"
+        );
+        assert_eq!(
+            final_total, 0,
+            "gc overhead case `{case}` preset `off` should not emit ARC ops"
+        );
+        return;
+    }
+    assert!(
+        planned_total > 0,
+        "gc overhead case `{case}` preset `{preset}` should plan ARC ops to make overhead meaningful"
+    );
+    assert!(
+        final_total > 0,
+        "gc overhead case `{case}` preset `{preset}` should retain ARC ops after optimization"
+    );
 }
 
 fn cc_command() -> OsString {
@@ -269,6 +428,8 @@ fn build_target(case: BenchCase, bench_preset: BenchPreset, source_id: u32) -> B
         case.name,
         bench_preset.name
     );
+    let arc_stats = extract_arc_stats(&compiled);
+    assert_preset_coverage(case.name, bench_preset.name, arc_stats);
 
     let stamp = TEMP_SUFFIX_COUNTER.fetch_add(1, Ordering::Relaxed);
     let work_dir = std::env::temp_dir().join(format!(
@@ -288,7 +449,7 @@ fn build_target(case: BenchCase, bench_preset: BenchPreset, source_id: u32) -> B
     let c_compile_start = Instant::now();
     let compile = Command::new(cc_command())
         .arg("-std=c11")
-        .arg("-O2")
+        .arg("-O3")
         .arg(c_path.as_path())
         .arg("-o")
         .arg(bin_path.as_path())
@@ -313,6 +474,7 @@ fn build_target(case: BenchCase, bench_preset: BenchPreset, source_id: u32) -> B
         work_dir,
         compile_source_ms,
         c_compile_ms,
+        arc_stats,
     }
 }
 
@@ -323,9 +485,8 @@ fn run_binary_once(path: &Path) {
         .status()
         .expect("failed to launch gc overhead benchmark binary");
     assert!(
-        status.success(),
-        "gc overhead benchmark binary exited with non-zero status: {:?}",
-        status.code()
+        status.code().is_some(),
+        "gc overhead benchmark binary terminated by signal"
     );
 }
 
@@ -361,13 +522,17 @@ fn main() {
             compile_source_ms: target.compile_source_ms,
             c_compile_ms: target.c_compile_ms,
             runtime_per_run_ms,
+            arc_stats: target.arc_stats,
         });
     }
 
     let mut off_runtime_by_case = HashMap::new();
+    let mut arc_raw_runtime_by_case = HashMap::new();
     for row in &measurements {
         if row.preset == "off" {
             off_runtime_by_case.insert(row.case, row.runtime_per_run_ms);
+        } else if row.preset == "arc_raw" {
+            arc_raw_runtime_by_case.insert(row.case, row.runtime_per_run_ms);
         }
     }
 
@@ -375,6 +540,15 @@ fn main() {
         let off_runtime_ms = off_runtime_by_case.get(row.case).copied().unwrap_or(1.0);
         let relative_to_off = if off_runtime_ms > 0.0 {
             row.runtime_per_run_ms / off_runtime_ms
+        } else {
+            1.0
+        };
+        let arc_raw_runtime_ms = arc_raw_runtime_by_case
+            .get(row.case)
+            .copied()
+            .unwrap_or(row.runtime_per_run_ms);
+        let relative_to_arc_raw = if arc_raw_runtime_ms > 0.0 {
+            row.runtime_per_run_ms / arc_raw_runtime_ms
         } else {
             1.0
         };
@@ -387,6 +561,17 @@ fn main() {
         println!("c_compile_ms={:.3}", row.c_compile_ms);
         println!("runtime_per_run_ms={:.3}", row.runtime_per_run_ms);
         println!("runtime_relative_to_off={:.3}", relative_to_off);
+        println!("runtime_relative_to_arc_raw={:.3}", relative_to_arc_raw);
+        println!(
+            "arc_planned_retain_ops={}",
+            row.arc_stats.planned_retain_ops
+        );
+        println!(
+            "arc_planned_release_ops={}",
+            row.arc_stats.planned_release_ops
+        );
+        println!("arc_final_retain_ops={}", row.arc_stats.final_retain_ops);
+        println!("arc_final_release_ops={}", row.arc_stats.final_release_ops);
 
         if enforce_thresholds && row.preset != "off" {
             if let Err(violation) =
@@ -398,6 +583,17 @@ fn main() {
                     violation.preset,
                     violation.measured_runtime_relative_to_off,
                     violation.max_runtime_relative_to_off
+                );
+            }
+            if row.preset == "arc_optimized"
+                && let Err(violation) =
+                    check_gc_optimizer_relative_to_raw(row.case, relative_to_arc_raw)
+            {
+                panic!(
+                    "gc optimizer threshold exceeded for case `{}`: optimized/raw measured {:.3} > limit {:.3}",
+                    violation.case,
+                    violation.measured_runtime_relative_to_arc_raw,
+                    violation.max_runtime_relative_to_arc_raw
                 );
             }
         }

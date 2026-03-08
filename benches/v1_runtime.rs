@@ -355,7 +355,7 @@ fn build_case(case: RuntimeBenchCase, source_id: u32) -> BuiltCase {
 
     let compile = Command::new(cc_command())
         .arg("-std=c11")
-        .arg("-O2")
+        .arg("-O3")
         .arg(c_path.as_path())
         .arg("-o")
         .arg(bin_path.as_path())
