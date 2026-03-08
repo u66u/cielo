@@ -11,11 +11,18 @@ fn arc_insert_plans_retain_for_managed_alias_copy() {
     let (program, sema) = lower_and_typecheck(
         r#"
 enum Boxed { Wrap(Int) }
+fn consume(v: Boxed) -> Int {
+  match v {
+    Wrap(n) => n,
+  }
+}
 fn main() -> Int {
   let a = Wrap(1);
   let b = a;
   let c = a;
-  0
+  let x = consume(b);
+  let y = consume(c);
+  x + y
 }
 "#,
     );
@@ -91,36 +98,57 @@ fn main() -> Int {
 }
 
 #[test]
-fn arc_insert_releases_shared_alias_roots_when_they_go_dead() {
+fn arc_insert_drops_dead_alias_binding_without_arc_churn() {
     let (program, sema) = lower_and_typecheck(
         r#"
 enum Boxed { Wrap(Int) }
 fn main() -> Int {
   let a = Wrap(1);
   let b = a;
-  let c = a;
+  let c = b;
   0
 }
 "#,
     );
     let insertion = plan(&program, &sema);
 
-    let a_var = root_binding_var(&program).expect("root binding");
-    let mut alias_vars = Vec::new();
-    for stmt in program.stmts() {
-        if let StmtKind::Let { binding, value, .. } = &stmt.kind
-            && let Some(ExprKind::Var(_)) = program.expr(*value).map(|expr| &expr.kind)
-        {
-            alias_vars.push(*binding);
-        }
-    }
-    alias_vars.push(a_var);
+    let dead_alias_binding = program
+        .stmts()
+        .iter()
+        .enumerate()
+        .find_map(|(idx, stmt)| {
+            if let StmtKind::Let { binding, value, .. } = &stmt.kind
+                && let Some(ExprKind::Var(source)) = program.expr(*value).map(|expr| &expr.kind)
+            {
+                let stmt_id = StmtId::new(idx);
+                if program
+                    .stmts()
+                    .iter()
+                    .enumerate()
+                    .skip(idx + 1)
+                    .all(|(_, later)| !later.child_exprs().iter().copied().any(|expr_id| {
+                        matches!(program.expr(expr_id).map(|expr| &expr.kind), Some(ExprKind::Var(var)) if var == binding)
+                    }))
+                {
+                    return Some((stmt_id, *binding, *source));
+                }
+            }
+            None
+        })
+        .expect("dead alias binding");
     assert!(
-        insertion
-            .ops
-            .iter()
-            .any(|op| matches!(op.kind, ArcOpKind::Release { var } if alias_vars.contains(&var))),
-        "shared alias chains should still release a managed owner when the chain goes dead"
+        !insertion.ops.iter().any(|op| {
+            op.stmt == dead_alias_binding.0
+                && matches!(op.kind, ArcOpKind::Retain { var } if var == dead_alias_binding.2)
+        }),
+        "dead alias binding should not retain the copied source at its definition site"
+    );
+    assert!(
+        !insertion.ops.iter().any(|op| {
+            op.stmt == dead_alias_binding.0
+                && matches!(op.kind, ArcOpKind::Release { var } if var == dead_alias_binding.1)
+        }),
+        "dead alias binding should not emit a release for the dead destination binding"
     );
 }
 
@@ -318,16 +346,109 @@ fn main() -> Int {
     );
 }
 
-fn root_binding_var(program: &CoreProgram) -> Option<VarId> {
-    program.stmts().iter().find_map(|stmt| {
-        if let StmtKind::Let { binding, value, .. } = &stmt.kind
-            && let Some(ExprKind::MakeEnum { .. } | ExprKind::MakeStruct { .. }) =
-                program.expr(*value).map(|expr| &expr.kind)
-        {
-            return Some(*binding);
-        }
-        None
-    })
+#[test]
+fn arc_insert_ignores_trivial_call_arg_arc_ops() {
+    let (program, sema) = lower_and_typecheck(
+        r#"
+fn id(v: Int) -> Int {
+  v
+}
+fn main() -> Int {
+  let x = 1;
+  id(x)
+}
+"#,
+    );
+    let insertion = plan(&program, &sema);
+
+    let x_var = program
+        .stmts()
+        .iter()
+        .find_map(|stmt| {
+            if let StmtKind::Let { binding, value, .. } = &stmt.kind
+                && let Some(ExprKind::Literal(cielo::ir::core::Literal::Int(1))) =
+                    program.expr(*value).map(|expr| &expr.kind)
+            {
+                return Some(*binding);
+            }
+            None
+        })
+        .expect("main x binding");
+    assert!(
+        !insertion.ops.iter().any(|op| {
+            matches!(
+                op.kind,
+                ArcOpKind::Retain { var } | ArcOpKind::Release { var } if var == x_var
+            )
+        }),
+        "trivial call arguments must never receive ARC retain/release planning"
+    );
+}
+
+#[test]
+fn arc_insert_tracks_only_managed_call_args_in_mixed_signature_calls() {
+    let (program, sema) = lower_and_typecheck(
+        r#"
+enum Boxed { Wrap(Int) }
+fn mix(v: Boxed, n: Int) -> Int {
+  match v {
+    Wrap(x) => x + n,
+  }
+}
+fn main() -> Int {
+  let b = Wrap(1);
+  let n = 2;
+  let a = mix(b, n);
+  let c = mix(b, n);
+  a + c
+}
+"#,
+    );
+    let insertion = plan(&program, &sema);
+
+    let managed_var = program
+        .stmts()
+        .iter()
+        .find_map(|stmt| {
+            if let StmtKind::Let { binding, value, .. } = &stmt.kind
+                && let Some(ExprKind::MakeEnum { .. }) = program.expr(*value).map(|expr| &expr.kind)
+            {
+                return Some(*binding);
+            }
+            None
+        })
+        .expect("managed var b");
+    let trivial_var = program
+        .stmts()
+        .iter()
+        .find_map(|stmt| {
+            if let StmtKind::Let { binding, value, .. } = &stmt.kind
+                && let Some(ExprKind::Literal(cielo::ir::core::Literal::Int(2))) =
+                    program.expr(*value).map(|expr| &expr.kind)
+            {
+                return Some(*binding);
+            }
+            None
+        })
+        .expect("trivial var n");
+    assert!(
+        insertion.ops.iter().any(|op| {
+            matches!(
+                op.kind,
+                ArcOpKind::Retain { var } | ArcOpKind::Release { var } if var == managed_var
+            )
+        }),
+        "mixed call sites should still plan ARC ops for the managed argument"
+    );
+    assert!(
+        !insertion.ops.iter().any(|op| {
+            matches!(
+                op.kind,
+                ArcOpKind::Retain { var } | ArcOpKind::Release { var } if var == trivial_var
+            )
+        }),
+        "mixed call sites must not plan ARC ops for trivial arguments"
+    );
 }
 
 fn stmt_contains_pure_call_arg_var(program: &CoreProgram, stmt_id: StmtId, target: VarId) -> bool {
