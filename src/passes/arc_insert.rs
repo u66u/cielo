@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::analysis::arc_alias::ArcAliasTables;
 use crate::analysis::arc_cfg::ArcCfg;
 use crate::analysis::arc_last_use::ArcLastUseTables;
 use crate::common::ids::{ExprId, StmtId, VarId};
@@ -47,7 +48,9 @@ enum AliasCopyDecision {
 
 pub fn plan(program: &CoreProgram, sema: &SemanticTables) -> ArcInsertionPlan {
     let cfg = ArcCfg::build(program);
+    let alias = ArcAliasTables::analyze(program, &cfg);
     let last_use = ArcLastUseTables::analyze(&cfg);
+    let alias_graph = build_alias_graph(&alias);
     let mut plan = ArcInsertionPlan::default();
 
     for stmt_id in cfg.reachable().iter().copied() {
@@ -57,6 +60,7 @@ pub fn plan(program: &CoreProgram, sema: &SemanticTables) -> ArcInsertionPlan {
 
         let last_uses = last_use.last_uses(stmt_id);
         let last_use_set = last_uses.iter().copied().collect::<HashSet<_>>();
+        let live_out_set = last_use.live_out(stmt_id).cloned().unwrap_or_default();
         let mut moved_call_args = HashSet::new();
         let mut moved_alias_sources = HashSet::new();
         let mut dropped_alias_bindings = HashSet::new();
@@ -81,11 +85,13 @@ pub fn plan(program: &CoreProgram, sema: &SemanticTables) -> ArcInsertionPlan {
                 continue;
             }
             let total_stmt_uses = stmt_var_uses.get(&var).copied().unwrap_or(0);
+            let has_live_alias = has_live_alias_after_stmt(var, &live_out_set, &alias_graph, sema);
             match decide_call_arg_transfer(
                 ownership,
                 use_count,
                 total_stmt_uses,
                 last_use_set.contains(&var),
+                has_live_alias,
             ) {
                 CallArgTransferDecision::MoveToCallee => {
                     moved_call_args.insert(var);
@@ -173,8 +179,13 @@ fn decide_call_arg_transfer(
     call_arg_uses: u8,
     stmt_uses: u8,
     is_last_use: bool,
+    has_live_alias: bool,
 ) -> CallArgTransferDecision {
-    if ownership == OwnershipClass::RcManaged && call_arg_uses == 1 && stmt_uses == 1 && is_last_use
+    if ownership == OwnershipClass::RcManaged
+        && call_arg_uses == 1
+        && stmt_uses == 1
+        && is_last_use
+        && !has_live_alias
     {
         CallArgTransferDecision::MoveToCallee
     } else {
@@ -268,6 +279,51 @@ fn collect_expr_var_counts(program: &CoreProgram, expr_id: ExprId, out: &mut Has
 fn bump_var_count(out: &mut HashMap<VarId, u8>, var: VarId) {
     let count = out.entry(var).or_insert(0);
     *count = count.saturating_add(1);
+}
+
+fn build_alias_graph(alias: &ArcAliasTables) -> HashMap<VarId, Vec<VarId>> {
+    let mut out = HashMap::<VarId, Vec<VarId>>::new();
+    for (lhs, rhs) in &alias.copy_alias_edges {
+        push_alias_neighbor(&mut out, *lhs, *rhs);
+        push_alias_neighbor(&mut out, *rhs, *lhs);
+    }
+    out
+}
+
+fn push_alias_neighbor(out: &mut HashMap<VarId, Vec<VarId>>, var: VarId, neighbor: VarId) {
+    let neighbors = out.entry(var).or_default();
+    if !neighbors.contains(&neighbor) {
+        neighbors.push(neighbor);
+    }
+}
+
+fn has_live_alias_after_stmt(
+    var: VarId,
+    live_out_set: &HashSet<VarId>,
+    alias_graph: &HashMap<VarId, Vec<VarId>>,
+    sema: &SemanticTables,
+) -> bool {
+    let mut stack = vec![var];
+    let mut seen = HashSet::new();
+    seen.insert(var);
+    while let Some(current) = stack.pop() {
+        let Some(neighbors) = alias_graph.get(&current) else {
+            continue;
+        };
+        for neighbor in neighbors {
+            if !seen.insert(*neighbor) {
+                continue;
+            }
+            if *neighbor != var
+                && live_out_set.contains(neighbor)
+                && ownership_of_var(sema, *neighbor) == OwnershipClass::RcManaged
+            {
+                return true;
+            }
+            stack.push(*neighbor);
+        }
+    }
+    false
 }
 
 fn push_op(plan: &mut ArcInsertionPlan, op: ArcPlannedOp) {
