@@ -1,4 +1,4 @@
-use cielo::{ArcOptLevel, GcConfig, GcPreset};
+use cielo::{ArcInsertRule, ArcOptLevel, GcConfig, GcPreset};
 
 #[test]
 fn gc_preset_off_disables_arc_pipeline() {
@@ -18,6 +18,10 @@ fn gc_preset_off_disables_arc_pipeline() {
     assert!(
         config.effective_arc_opt_level().is_empty(),
         "off preset should not enable ARC optimizer flags"
+    );
+    assert!(
+        config.effective_arc_insert_rules().is_empty(),
+        "off preset should not enable ARC insertion rules"
     );
 }
 
@@ -41,6 +45,11 @@ fn gc_preset_arc_bench_raw_keeps_arc_without_optimizer() {
         !config.arc_verify_enabled(),
         "bench raw preset should disable ARC verifier for compile overhead isolation"
     );
+    assert_eq!(
+        config.effective_arc_insert_rules(),
+        ArcInsertRule::all(),
+        "bench raw preset should keep all ARC insertion decision rules enabled"
+    );
 }
 
 #[test]
@@ -60,5 +69,10 @@ fn gc_preset_arc_optimized_enables_full_arc_opt_level() {
     assert!(
         config.borrow_hazard_diagnostics_enabled(),
         "optimized preset should keep hazard diagnostics enabled"
+    );
+    assert_eq!(
+        config.effective_arc_insert_rules(),
+        ArcInsertRule::all(),
+        "optimized preset should keep full ARC insertion rule set enabled"
     );
 }

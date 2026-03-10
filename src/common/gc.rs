@@ -26,6 +26,16 @@ bitflags! {
     }
 }
 
+bitflags! {
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+    pub struct ArcInsertRule: u32 {
+        const CALL_ARG_LAST_USE_MOVE = 1 << 0;
+        const CALL_ARG_ALIAS_LIVE_OUT_GUARD = 1 << 1;
+        const ALIAS_COPY_MOVE_SOURCE = 1 << 2;
+        const ALIAS_COPY_DROP_DEAD_BINDING = 1 << 3;
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum GcPreset {
     Off,
@@ -41,6 +51,7 @@ pub struct GcConfig {
     pub mode: GcMode,
     pub features: GcFeatureFlags,
     pub arc_opt_level: ArcOptLevel,
+    pub arc_insert_rules: ArcInsertRule,
 }
 
 impl Default for GcConfig {
@@ -56,11 +67,13 @@ impl GcConfig {
                 mode: GcMode::Off,
                 features: GcFeatureFlags::empty(),
                 arc_opt_level: ArcOptLevel::empty(),
+                arc_insert_rules: ArcInsertRule::empty(),
             },
             GcPreset::ArcRaw => Self {
                 mode: GcMode::Arc,
                 features: GcFeatureFlags::ARC_INSERTION.union(GcFeatureFlags::ARC_EMISSION),
                 arc_opt_level: ArcOptLevel::empty(),
+                arc_insert_rules: ArcInsertRule::all(),
             },
             GcPreset::ArcOptimized => Self {
                 mode: GcMode::Arc,
@@ -72,6 +85,7 @@ impl GcConfig {
                     .union(GcFeatureFlags::ARC_EMIT_TRACE_COMMENTS),
                 arc_opt_level: ArcOptLevel::SAME_STMT_PAIR_ELIM
                     .union(ArcOptLevel::CFG_REDUNDANT_RELEASE_ELIM),
+                arc_insert_rules: ArcInsertRule::all(),
             },
             GcPreset::ArcNoVerify => Self {
                 mode: GcMode::Arc,
@@ -82,11 +96,13 @@ impl GcConfig {
                     .union(GcFeatureFlags::ARC_EMIT_TRACE_COMMENTS),
                 arc_opt_level: ArcOptLevel::SAME_STMT_PAIR_ELIM
                     .union(ArcOptLevel::CFG_REDUNDANT_RELEASE_ELIM),
+                arc_insert_rules: ArcInsertRule::all(),
             },
             GcPreset::ArcBenchRaw => Self {
                 mode: GcMode::Arc,
                 features: GcFeatureFlags::ARC_INSERTION.union(GcFeatureFlags::ARC_EMISSION),
                 arc_opt_level: ArcOptLevel::empty(),
+                arc_insert_rules: ArcInsertRule::all(),
             },
             GcPreset::ArcBenchOptimized => Self {
                 mode: GcMode::Arc,
@@ -95,6 +111,7 @@ impl GcConfig {
                     .union(GcFeatureFlags::ARC_EMISSION),
                 arc_opt_level: ArcOptLevel::SAME_STMT_PAIR_ELIM
                     .union(ArcOptLevel::CFG_REDUNDANT_RELEASE_ELIM),
+                arc_insert_rules: ArcInsertRule::all(),
             },
         }
     }
@@ -138,6 +155,14 @@ impl GcConfig {
             self.arc_opt_level
         } else {
             ArcOptLevel::empty()
+        }
+    }
+
+    pub fn effective_arc_insert_rules(self) -> ArcInsertRule {
+        if self.arc_insertion_enabled() {
+            self.arc_insert_rules
+        } else {
+            ArcInsertRule::empty()
         }
     }
 }

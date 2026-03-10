@@ -451,6 +451,109 @@ fn main() -> Int {
     );
 }
 
+#[test]
+fn arc_insert_does_not_move_call_arg_when_direct_alias_is_live_after_call() {
+    let (program, sema) = lower_and_typecheck(
+        r#"
+enum Boxed { Wrap(Int) }
+fn consume(v: Boxed) -> Int {
+  match v {
+    Wrap(n) => n,
+  }
+}
+fn main() -> Int {
+  let a = Wrap(1);
+  let b = a;
+  let consumed = consume(a);
+  match b {
+    Wrap(n) => consumed + n,
+  }
+}
+"#,
+    );
+    let insertion = plan(&program, &sema);
+
+    let a_var = program
+        .stmts()
+        .iter()
+        .find_map(|stmt| {
+            if let StmtKind::Let { binding, value, .. } = &stmt.kind
+                && let Some(ExprKind::MakeEnum { .. }) = program.expr(*value).map(|expr| &expr.kind)
+            {
+                return Some(*binding);
+            }
+            None
+        })
+        .expect("managed source a");
+    let call_stmt = program
+        .stmts()
+        .iter()
+        .enumerate()
+        .find_map(|(idx, _)| {
+            let stmt_id = StmtId::new(idx);
+            stmt_contains_pure_call_arg_var(&program, stmt_id, a_var).then_some(stmt_id)
+        })
+        .expect("consume(a) stmt");
+
+    assert!(
+        insertion.ops.iter().any(|op| op.stmt == call_stmt
+            && matches!(op.kind, ArcOpKind::Retain { var } if var == a_var)),
+        "Nim parity invariant: a direct live alias after the call must block move; planner must retain the call argument"
+    );
+}
+
+#[test]
+fn arc_insert_does_not_move_call_arg_when_transitive_alias_is_live_after_call() {
+    let (program, sema) = lower_and_typecheck(
+        r#"
+enum Boxed { Wrap(Int) }
+fn consume(v: Boxed) -> Int {
+  match v {
+    Wrap(n) => n,
+  }
+}
+fn main() -> Int {
+  let a = Wrap(1);
+  let b = a;
+  let c = b;
+  let consumed = consume(a);
+  match c {
+    Wrap(n) => consumed + n,
+  }
+}
+"#,
+    );
+    let insertion = plan(&program, &sema);
+
+    let a_var = program
+        .stmts()
+        .iter()
+        .find_map(|stmt| {
+            if let StmtKind::Let { binding, value, .. } = &stmt.kind
+                && let Some(ExprKind::MakeEnum { .. }) = program.expr(*value).map(|expr| &expr.kind)
+            {
+                return Some(*binding);
+            }
+            None
+        })
+        .expect("managed source a");
+    let call_stmt = program
+        .stmts()
+        .iter()
+        .enumerate()
+        .find_map(|(idx, _)| {
+            let stmt_id = StmtId::new(idx);
+            stmt_contains_pure_call_arg_var(&program, stmt_id, a_var).then_some(stmt_id)
+        })
+        .expect("consume(a) stmt");
+
+    assert!(
+        insertion.ops.iter().any(|op| op.stmt == call_stmt
+            && matches!(op.kind, ArcOpKind::Retain { var } if var == a_var)),
+        "Nim parity invariant: transitive alias liveness after the call must block move and force retain/copy behavior"
+    );
+}
+
 fn stmt_contains_pure_call_arg_var(program: &CoreProgram, stmt_id: StmtId, target: VarId) -> bool {
     let Some(stmt) = program.stmt(stmt_id) else {
         return false;

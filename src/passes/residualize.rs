@@ -49,7 +49,7 @@ pub fn run_with_gc_config(mut bta: BtaClassified, gc: &GcConfig) -> Residualized
     rewrite_call_effect_rows(bta.program_mut(), &function_effect_summary);
     erase_function_effect_annotations(bta.program_mut());
     let planned_arc = if gc.arc_insertion_enabled() {
-        arc_insert::plan(bta.program(), bta.sema())
+        arc_insert::plan_with_rules(bta.program(), bta.sema(), gc.effective_arc_insert_rules())
     } else {
         Default::default()
     };
