@@ -1,8 +1,13 @@
+use cielo::analysis::arc_cfg::ArcCfg;
 use cielo::common::ids::{ExprId, StmtId, VarId};
 use cielo::ir::core::{ExprKind, StmtKind};
-use cielo::passes::arc_insert::{ArcInsertionPlan, ArcOpKind, ArcPlannedOp, plan};
+use cielo::passes::arc_insert::{
+    ArcDecisionOutcome, ArcDecisionReason, ArcDecisionSite, ArcDecisionTraceEntry,
+    ArcInsertionPlan, ArcOpKind, ArcPlannedOp, plan,
+};
 use cielo::passes::arc_opt::{optimize, optimize_with_cfg};
 
+use crate::helpers::arc::call_stmt_with_arg_var;
 use crate::helpers::core::lower_and_typecheck;
 
 #[test]
@@ -177,6 +182,81 @@ fn main() -> Int {
             op.stmt == call_stmt && matches!(op.kind, ArcOpKind::Release { var } if var == x_var)
         }),
         "optimizer must not cancel call-boundary release ops as move-equivalent"
+    );
+}
+
+#[test]
+fn arc_opt_cfg_release_elim_uses_move_decision_facts() {
+    let (program, _sema) = lower_and_typecheck(
+        r#"
+enum Boxed { Wrap(Int) }
+fn consume(v: Boxed) -> Int {
+  match v {
+    Wrap(n) => n,
+  }
+}
+fn main() -> Int {
+  let x = Wrap(1);
+  let y = consume(x);
+  y
+}
+"#,
+    );
+    let x_var = program
+        .stmts()
+        .iter()
+        .find_map(|stmt| {
+            if let StmtKind::Let { binding, value, .. } = &stmt.kind
+                && let Some(ExprKind::MakeEnum { .. }) = program.expr(*value).map(|expr| &expr.kind)
+            {
+                return Some(*binding);
+            }
+            None
+        })
+        .expect("x binding");
+    let call_stmt = call_stmt_with_arg_var(&program, x_var);
+    let cfg = ArcCfg::build(&program);
+    let succ_stmt = cfg
+        .summary(call_stmt)
+        .and_then(|summary| summary.successors.first().copied())
+        .expect("successor stmt after consume(x)");
+    let base_ops = vec![ArcPlannedOp {
+        stmt: succ_stmt,
+        kind: ArcOpKind::Release { var: x_var },
+    }];
+
+    let without_move_fact = ArcInsertionPlan {
+        ops: base_ops.clone(),
+        ..Default::default()
+    };
+    let without_move_fact_opt = optimize_with_cfg(&program, without_move_fact);
+    assert!(
+        without_move_fact_opt.plan.ops.iter().any(|op| {
+            op.stmt == succ_stmt && matches!(op.kind, ArcOpKind::Release { var } if var == x_var)
+        }),
+        "without move facts, optimizer must keep the explicit release"
+    );
+
+    let with_move_fact = ArcInsertionPlan {
+        ops: base_ops,
+        decision_trace: vec![ArcDecisionTraceEntry {
+            stmt: call_stmt,
+            site: ArcDecisionSite::CallArg { var: x_var },
+            outcome: ArcDecisionOutcome::MoveToCallee,
+            reason: ArcDecisionReason::EligibleMove,
+        }],
+        ..Default::default()
+    };
+    let with_move_fact_opt = optimize_with_cfg(&program, with_move_fact);
+    assert!(
+        !with_move_fact_opt.plan.ops.iter().any(|op| {
+            op.stmt == succ_stmt && matches!(op.kind, ArcOpKind::Release { var } if var == x_var)
+        }),
+        "with move facts, redundant successor release should be removed"
+    );
+    assert!(
+        with_move_fact_opt.stats.removed_release_ops >= 1,
+        "optimizer stats should report at least one removed release when move fact eliminates it"
     );
 }
 

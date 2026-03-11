@@ -122,6 +122,70 @@ fn main() -> Int {
 }
 "#;
 
+const SOURCE_SINK_COPY_MOVE_CHURN: &str = r#"
+enum Boxed { Wrap(Int) }
+enum PairArg { PairArg(Boxed, Int) }
+
+fn consume(v: Boxed) -> Int {
+  let one = 1;
+  let two = one + 1;
+  match v {
+    Wrap(n) => n + two,
+  }
+}
+
+fn mix(p: PairArg, n: Int) -> Int {
+  match p {
+    PairArg(kept, bias) => n + bias,
+  }
+}
+
+fn mix_rev(n: Int, p: PairArg) -> Int {
+  mix(p, n)
+}
+
+fn churn_once(n: Int, acc: Int) -> Int {
+  if n == 0 {
+    acc
+  } else {
+    let x = Wrap(n);
+    let ok = mix(PairArg(x, 1), consume(x));
+
+    let y = Wrap(n + 1);
+    let blocked = mix_rev(consume(y), PairArg(y, 2));
+
+    let z = Wrap(n + 2);
+    let dup_left = consume(z);
+    let dup_right = consume(z);
+    let dup = dup_left + dup_right;
+
+    let a = Wrap(n + 3);
+    let b = a;
+    let c = b;
+    let alias_tail = consume(c);
+
+    let step = ok + blocked + dup + alias_tail + acc;
+    churn_once(n - 1, step)
+  }
+}
+
+fn run_batch(batch: Int, n: Int, acc: Int) -> Int {
+  if batch == 0 {
+    acc
+  } else {
+    let iter = churn_once(n, 0);
+    run_batch(batch - 1, n, acc + iter)
+  }
+}
+
+fn main() -> Int {
+  let n = @runtime { 500 };
+  let batch = @runtime { 60 };
+  let s = run_batch(batch, n, 0);
+  s
+}
+"#;
+
 const DEFAULT_WARMUP_RUNS: usize = 3;
 const DEFAULT_MEASURE_RUNS: usize = 15;
 static TEMP_SUFFIX_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -193,6 +257,16 @@ const GC_OVERHEAD_THRESHOLDS: &[GcOverheadThreshold] = &[
         preset: "arc_optimized",
         max_runtime_relative_to_off: 3.500,
     },
+    GcOverheadThreshold {
+        case: "sink_copy_move_churn",
+        preset: "arc_raw",
+        max_runtime_relative_to_off: 4.500,
+    },
+    GcOverheadThreshold {
+        case: "sink_copy_move_churn",
+        preset: "arc_optimized",
+        max_runtime_relative_to_off: 3.500,
+    },
 ];
 
 const GC_OPTIMIZER_THRESHOLDS: &[GcOptimizerThreshold] = &[
@@ -207,6 +281,10 @@ const GC_OPTIMIZER_THRESHOLDS: &[GcOptimizerThreshold] = &[
     GcOptimizerThreshold {
         case: "branch_churn",
         max_runtime_relative_to_arc_raw: 1.200,
+    },
+    GcOptimizerThreshold {
+        case: "sink_copy_move_churn",
+        max_runtime_relative_to_arc_raw: 1.250,
     },
 ];
 
@@ -294,6 +372,10 @@ const CASES: &[BenchCase] = &[
     BenchCase {
         name: "branch_churn",
         source: SOURCE_BRANCH_CHURN,
+    },
+    BenchCase {
+        name: "sink_copy_move_churn",
+        source: SOURCE_SINK_COPY_MOVE_CHURN,
     },
 ];
 
@@ -478,7 +560,7 @@ fn build_target(case: BenchCase, bench_preset: BenchPreset, source_id: u32) -> B
     }
 }
 
-fn run_binary_once(path: &Path) {
+fn run_binary_once(path: &Path, case: &str, preset: &str) {
     let status = Command::new(path)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -486,14 +568,14 @@ fn run_binary_once(path: &Path) {
         .expect("failed to launch gc overhead benchmark binary");
     assert!(
         status.code().is_some(),
-        "gc overhead benchmark binary terminated by signal"
+        "gc overhead benchmark binary terminated by signal for case `{case}` preset `{preset}`"
     );
 }
 
-fn run_binary_iterations(path: &Path, iterations: usize) -> f64 {
+fn run_binary_iterations(path: &Path, case: &str, preset: &str, iterations: usize) -> f64 {
     let start = Instant::now();
     for _ in 0..iterations {
-        run_binary_once(path);
+        run_binary_once(path, case, preset);
     }
     start.elapsed().as_secs_f64() * 1_000.0 / iterations as f64
 }
@@ -514,8 +596,18 @@ fn main() {
 
     let mut measurements = Vec::new();
     for target in &built {
-        let _ = run_binary_iterations(target.bin_path.as_path(), warmup_runs);
-        let runtime_per_run_ms = run_binary_iterations(target.bin_path.as_path(), measure_runs);
+        let _ = run_binary_iterations(
+            target.bin_path.as_path(),
+            target.case,
+            target.preset,
+            warmup_runs,
+        );
+        let runtime_per_run_ms = run_binary_iterations(
+            target.bin_path.as_path(),
+            target.case,
+            target.preset,
+            measure_runs,
+        );
         measurements.push(Measurement {
             case: target.case,
             preset: target.preset,

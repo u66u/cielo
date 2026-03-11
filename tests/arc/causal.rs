@@ -318,6 +318,52 @@ fn main() -> Int {
 }
 
 #[test]
+fn arc_causal_non_call_read_before_consume_uses_keepalive_move_compensation() {
+    let source = r#"
+enum Boxed { Wrap(Int) }
+enum PairBoxed { Both(Boxed, Int) }
+fn consume(v: Boxed) -> Int {
+  match v {
+    Wrap(n) => n,
+  }
+}
+fn head(p: PairBoxed) -> Int {
+  match p {
+    Both(kept, n) => n,
+  }
+}
+fn main() -> Int {
+  let x = Wrap(1);
+  head(Both(x, consume(x)))
+}
+"#;
+
+    let (program, plan) = plan_with_rules(source, ArcInsertRule::all());
+    let x_var = managed_ctor_binding(&program);
+    let call_stmt = call_stmt_with_arg_var(&program, x_var);
+    let decision =
+        call_arg_decision(&plan, call_stmt, x_var).expect("decision trace for consume(x)");
+    assert_eq!(
+        decision.outcome,
+        ArcDecisionOutcome::MoveToCallee,
+        "pre-call non-call reads should still permit move-to-callee"
+    );
+    assert_eq!(
+        decision.reason,
+        ArcDecisionReason::EligibleMove,
+        "keepalive-compensated pre-call reads should remain EligibleMove"
+    );
+    assert!(
+        has_retain_op(&plan, call_stmt, x_var),
+        "pre-call mixed reads should add keepalive retain when move is selected"
+    );
+    assert!(
+        has_release_op(&plan, call_stmt, x_var),
+        "keepalive retain for pre-call mixed reads must be balanced by post-release"
+    );
+}
+
+#[test]
 fn arc_causal_not_last_use_blocks_first_call_until_terminal_use() {
     let source = r#"
 enum Boxed { Wrap(Int) }

@@ -4,7 +4,12 @@ mod v1_gc_overhead;
 
 #[test]
 fn gc_overhead_thresholds_cover_all_cases_and_presets() {
-    let cases = ["ctor_churn", "alias_churn", "branch_churn"];
+    let cases = [
+        "ctor_churn",
+        "alias_churn",
+        "branch_churn",
+        "sink_copy_move_churn",
+    ];
     let presets = ["arc_raw", "arc_optimized"];
     for case in cases {
         for preset in presets {
@@ -25,6 +30,8 @@ fn gc_overhead_baselines_fit_thresholds() {
         ("alias_churn", "arc_optimized", 0.700),
         ("branch_churn", "arc_raw", 0.450),
         ("branch_churn", "arc_optimized", 0.450),
+        ("sink_copy_move_churn", "arc_raw", 1.000),
+        ("sink_copy_move_churn", "arc_optimized", 1.100),
     ];
     for (case, preset, relative_to_off) in baseline_relative {
         assert!(
@@ -36,7 +43,12 @@ fn gc_overhead_baselines_fit_thresholds() {
 
 #[test]
 fn gc_optimizer_thresholds_cover_all_cases() {
-    let cases = ["ctor_churn", "alias_churn", "branch_churn"];
+    let cases = [
+        "ctor_churn",
+        "alias_churn",
+        "branch_churn",
+        "sink_copy_move_churn",
+    ];
     for case in cases {
         assert!(
             v1_gc_overhead::gc_optimizer_relative_to_raw_limit(case).is_some(),
@@ -51,6 +63,7 @@ fn gc_optimizer_baselines_fit_thresholds() {
         ("ctor_churn", 1.100),
         ("alias_churn", 1.340),
         ("branch_churn", 1.100),
+        ("sink_copy_move_churn", 1.100),
     ];
     for (case, relative_to_raw) in baseline_relative_to_raw {
         assert!(
@@ -112,7 +125,12 @@ fn gc_overhead_threshold_table_is_non_empty_and_positive() {
 
 #[test]
 fn gc_overhead_presets_activate_expected_arc_paths() {
-    let cases = ["ctor_churn", "alias_churn", "branch_churn"];
+    let cases = [
+        "ctor_churn",
+        "alias_churn",
+        "branch_churn",
+        "sink_copy_move_churn",
+    ];
     for case in cases {
         let off = v1_gc_overhead::gc_overhead_case_arc_stats(case, "off")
             .expect("off preset stats should compile");

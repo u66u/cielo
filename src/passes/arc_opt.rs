@@ -5,7 +5,9 @@ use crate::common::gc::ArcOptLevel;
 use crate::common::ids::{StmtId, VarId};
 use crate::ir::core::{CoreProgram, ExprKind, StmtKind};
 
-use super::arc_insert::{ArcInsertionPlan, ArcOpKind, ArcPlannedOp};
+use super::arc_insert::{
+    ArcDecisionOutcome, ArcDecisionSite, ArcInsertionPlan, ArcOpKind, ArcPlannedOp,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct ArcOptStats {
@@ -141,6 +143,13 @@ fn eliminate_cfg_redundant_releases(
             ArcOpKind::Release { var } => push_unique_site_var(&mut release_by_stmt, op.stmt, var),
         }
     }
+    for decision in &plan.decision_trace {
+        if let Some((stmt, var)) =
+            implicit_release_fact(decision.stmt, decision.site, decision.outcome)
+        {
+            push_unique_site_var(&mut release_by_stmt, stmt, var);
+        }
+    }
 
     let mut in_released = vec![None::<HashSet<VarId>>; cfg.stmt_capacity()];
     let mut worklist = VecDeque::new();
@@ -240,6 +249,23 @@ fn push_unique_site_var(out: &mut HashMap<StmtId, Vec<VarId>>, stmt: StmtId, var
     let vars = out.entry(stmt).or_default();
     if !vars.contains(&var) {
         vars.push(var);
+    }
+}
+
+fn implicit_release_fact(
+    stmt: StmtId,
+    site: ArcDecisionSite,
+    outcome: ArcDecisionOutcome,
+) -> Option<(StmtId, VarId)> {
+    match (site, outcome) {
+        (ArcDecisionSite::CallArg { var }, ArcDecisionOutcome::MoveToCallee) => Some((stmt, var)),
+        (ArcDecisionSite::AliasCopy { source, .. }, ArcDecisionOutcome::MoveSource) => {
+            Some((stmt, source))
+        }
+        (ArcDecisionSite::AliasCopy { binding, .. }, ArcDecisionOutcome::DropDeadBinding) => {
+            Some((stmt, binding))
+        }
+        _ => None,
     }
 }
 

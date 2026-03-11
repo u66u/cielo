@@ -86,6 +86,25 @@ enum AliasCopyDecision {
     RetainCopy { source: VarId },
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum StmtVarUseContext {
+    CallArgDirect,
+    Other,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct StmtVarUseEvent {
+    var: VarId,
+    context: StmtVarUseContext,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+struct CallArgUseAfter {
+    has_non_call_use_before_call: bool,
+    has_use_after_call: bool,
+    has_non_call_use_after_call: bool,
+}
+
 pub fn plan(program: &CoreProgram, sema: &SemanticTables) -> ArcInsertionPlan {
     plan_with_rules(program, sema, ArcInsertRule::all())
 }
@@ -110,23 +129,40 @@ pub fn plan_with_rules(
         let last_use_set = last_uses.iter().copied().collect::<HashSet<_>>();
         let live_out_set = last_use.live_out(stmt_id).cloned().unwrap_or_default();
         let mut moved_call_args = HashSet::new();
+        let mut moved_call_args_with_keepalive = HashSet::new();
         let mut moved_alias_sources = HashSet::new();
         let mut dropped_alias_bindings = HashSet::new();
-        let mut stmt_var_uses = HashMap::new();
-        for expr_id in stmt.child_exprs() {
-            collect_expr_var_counts(program, expr_id, &mut stmt_var_uses);
-        }
+        let mut stmt_var_use_events = Vec::<StmtVarUseEvent>::new();
+        collect_stmt_var_use_events(program, stmt, &mut stmt_var_use_events);
+
         let mut call_arg_uses = HashMap::new();
-        for expr_id in stmt.child_exprs() {
-            collect_call_arg_var_counts(program, expr_id, &mut call_arg_uses);
-        }
-        if let StmtKind::Call { args, .. } = &stmt.kind {
-            for arg in args {
-                if let Some(ExprKind::Var(var)) = program.expr(*arg).map(|expr| &expr.kind) {
-                    bump_var_count(&mut call_arg_uses, *var);
-                }
+        let mut first_call_arg_event = HashMap::<VarId, usize>::new();
+        for (idx, event) in stmt_var_use_events.iter().enumerate() {
+            if event.context == StmtVarUseContext::CallArgDirect {
+                bump_var_count(&mut call_arg_uses, event.var);
+                first_call_arg_event.entry(event.var).or_insert(idx);
             }
         }
+        let mut use_after_call = HashMap::<VarId, CallArgUseAfter>::new();
+        for (var, first_idx) in first_call_arg_event {
+            let mut facts = CallArgUseAfter::default();
+            for event in stmt_var_use_events.iter().take(first_idx) {
+                if event.var == var && event.context == StmtVarUseContext::Other {
+                    facts.has_non_call_use_before_call = true;
+                }
+            }
+            for event in stmt_var_use_events.iter().skip(first_idx.saturating_add(1)) {
+                if event.var != var {
+                    continue;
+                }
+                facts.has_use_after_call = true;
+                if event.context == StmtVarUseContext::Other {
+                    facts.has_non_call_use_after_call = true;
+                }
+            }
+            use_after_call.insert(var, facts);
+        }
+
         for (var, use_count) in call_arg_uses {
             let ownership = ownership_of_var(sema, var);
             if ownership != OwnershipClass::RcManaged {
@@ -141,13 +177,14 @@ pub fn plan_with_rules(
                 );
                 continue;
             }
-            let total_stmt_uses = stmt_var_uses.get(&var).copied().unwrap_or(0);
             let has_live_alias = has_live_alias_after_stmt(var, &live_out_set, &alias_graph, sema);
+            let use_after = use_after_call.get(&var).copied().unwrap_or_default();
             let call_decision = decide_call_arg_transfer(
                 rules,
                 ownership,
                 use_count,
-                total_stmt_uses,
+                use_after.has_use_after_call,
+                use_after.has_non_call_use_after_call,
                 last_use_set.contains(&var),
                 has_live_alias,
             );
@@ -166,6 +203,16 @@ pub fn plan_with_rules(
             match call_decision.outcome {
                 CallArgTransferDecision::MoveToCallee => {
                     moved_call_args.insert(var);
+                    if use_after.has_non_call_use_before_call {
+                        moved_call_args_with_keepalive.insert(var);
+                        push_op(
+                            &mut plan,
+                            ArcPlannedOp {
+                                stmt: stmt_id,
+                                kind: ArcOpKind::Retain { var },
+                            },
+                        );
+                    }
                 }
                 CallArgTransferDecision::RetainCopy => {
                     push_op(
@@ -237,10 +284,10 @@ pub fn plan_with_rules(
         }
 
         for var in last_uses {
-            if moved_call_args.contains(var)
-                || moved_alias_sources.contains(var)
-                || dropped_alias_bindings.contains(var)
-            {
+            if moved_alias_sources.contains(var) || dropped_alias_bindings.contains(var) {
+                continue;
+            }
+            if moved_call_args.contains(var) && !moved_call_args_with_keepalive.contains(var) {
                 continue;
             }
             let ownership = ownership_of_var(sema, *var);
@@ -276,7 +323,8 @@ fn decide_call_arg_transfer(
     rules: ArcInsertRule,
     ownership: OwnershipClass,
     call_arg_uses: u8,
-    stmt_uses: u8,
+    has_use_after_call: bool,
+    has_non_call_use_after_call: bool,
     is_last_use: bool,
     has_live_alias: bool,
 ) -> CallArgDecision {
@@ -298,10 +346,14 @@ fn decide_call_arg_transfer(
             reason: ArcDecisionReason::MultipleCallArgUses,
         };
     }
-    if stmt_uses != 1 {
+    if has_use_after_call {
         return CallArgDecision {
             outcome: CallArgTransferDecision::RetainCopy,
-            reason: ArcDecisionReason::MultipleStmtUses,
+            reason: if has_non_call_use_after_call {
+                ArcDecisionReason::MultipleStmtUses
+            } else {
+                ArcDecisionReason::NotLastUse
+            },
         };
     }
     if !is_last_use {
@@ -390,55 +442,68 @@ fn decide_alias_copy(
     }
 }
 
-fn collect_call_arg_var_counts(
+fn collect_stmt_var_use_events(
+    program: &CoreProgram,
+    stmt: &crate::ir::core::StmtNode,
+    out: &mut Vec<StmtVarUseEvent>,
+) {
+    if let StmtKind::Call { args, .. } = &stmt.kind {
+        for arg in args {
+            collect_call_arg_var_use_events(program, *arg, out);
+        }
+        return;
+    }
+    for expr_id in stmt.child_exprs() {
+        collect_expr_var_use_events(program, expr_id, out);
+    }
+}
+
+fn collect_call_arg_var_use_events(
     program: &CoreProgram,
     expr_id: ExprId,
-    out: &mut HashMap<VarId, u8>,
+    out: &mut Vec<StmtVarUseEvent>,
+) {
+    let Some(expr) = program.expr(expr_id) else {
+        return;
+    };
+    if let ExprKind::Var(var) = expr.kind {
+        out.push(StmtVarUseEvent {
+            var,
+            context: StmtVarUseContext::CallArgDirect,
+        });
+        return;
+    }
+    collect_expr_var_use_events(program, expr_id, out);
+}
+
+fn collect_expr_var_use_events(
+    program: &CoreProgram,
+    expr_id: ExprId,
+    out: &mut Vec<StmtVarUseEvent>,
 ) {
     let Some(expr) = program.expr(expr_id) else {
         return;
     };
     match &expr.kind {
+        ExprKind::Var(var) => {
+            out.push(StmtVarUseEvent {
+                var: *var,
+                context: StmtVarUseContext::Other,
+            });
+        }
+        ExprKind::Unary { expr, .. } => collect_expr_var_use_events(program, *expr, out),
+        ExprKind::Binary { lhs, rhs, .. } => {
+            collect_expr_var_use_events(program, *lhs, out);
+            collect_expr_var_use_events(program, *rhs, out);
+        }
         ExprKind::PureCall { args, .. } => {
             for arg in args {
-                if let Some(ExprKind::Var(var)) = program.expr(*arg).map(|expr| &expr.kind) {
-                    bump_var_count(out, *var);
-                }
-                collect_call_arg_var_counts(program, *arg, out);
+                collect_call_arg_var_use_events(program, *arg, out);
             }
         }
-        ExprKind::Unary { expr, .. } => collect_call_arg_var_counts(program, *expr, out),
-        ExprKind::Binary { lhs, rhs, .. } => {
-            collect_call_arg_var_counts(program, *lhs, out);
-            collect_call_arg_var_counts(program, *rhs, out);
-        }
-        ExprKind::MakeStruct { fields, .. } | ExprKind::MakeEnum { fields, .. } => {
-            for field in fields {
-                collect_call_arg_var_counts(program, *field, out);
-            }
-        }
-        ExprKind::Var(_) | ExprKind::Literal(_) | ExprKind::Error(_) => {}
-    }
-}
-
-fn collect_expr_var_counts(program: &CoreProgram, expr_id: ExprId, out: &mut HashMap<VarId, u8>) {
-    let Some(expr) = program.expr(expr_id) else {
-        return;
-    };
-    match &expr.kind {
-        ExprKind::Var(var) => {
-            bump_var_count(out, *var);
-        }
-        ExprKind::Unary { expr, .. } => collect_expr_var_counts(program, *expr, out),
-        ExprKind::Binary { lhs, rhs, .. } => {
-            collect_expr_var_counts(program, *lhs, out);
-            collect_expr_var_counts(program, *rhs, out);
-        }
-        ExprKind::PureCall { args, .. }
-        | ExprKind::MakeStruct { fields: args, .. }
-        | ExprKind::MakeEnum { fields: args, .. } => {
+        ExprKind::MakeStruct { fields: args, .. } | ExprKind::MakeEnum { fields: args, .. } => {
             for arg in args {
-                collect_expr_var_counts(program, *arg, out);
+                collect_expr_var_use_events(program, *arg, out);
             }
         }
         ExprKind::Literal(_) | ExprKind::Error(_) => {}
