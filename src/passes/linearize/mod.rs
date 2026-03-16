@@ -27,10 +27,9 @@ use crate::pipeline::phases::Residualized;
 
 pub fn run(mut residual: Residualized) -> Linearized {
     let sema = residual.sema().clone();
-    let arc_plan = residual.residual().arc_plan.clone();
     let linear = {
         let (program, diagnostics) = residual.program_and_diagnostics_mut();
-        lowering::lower_program(program, &sema, &arc_plan, diagnostics)
+        lowering::lower_program(program, &sema, diagnostics)
     };
     Linearized { residual, linear }
 }

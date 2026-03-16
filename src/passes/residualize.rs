@@ -22,17 +22,14 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::analysis::borrow_hazard;
-use crate::analysis::orc;
 use crate::common::gc::GcConfig;
 use crate::common::ids::{ExprId, FuncId, HandlerId, StmtId, VarId};
 use crate::common::span::Span;
 use crate::ir::core::{CoreProgram, ExprKind, Literal, MatchArm, StmtKind, StmtNode};
-use crate::passes::arc_insert;
-use crate::passes::arc_opt;
 use crate::passes::constant_table;
 use crate::pipeline::phases::{
-    ArcStats, BranchDecision, BtaClassified, BtaTables, CtPropagationTables, Knownness,
-    ResidualTables, ResidualizeStats, Residualized, Stage,
+    BranchDecision, BtaClassified, BtaTables, CtPropagationTables, Knownness, ResidualTables,
+    ResidualizeStats, Residualized, Stage,
 };
 use crate::sema::effect::SortedEffectRow;
 
@@ -40,7 +37,7 @@ pub fn run(bta: BtaClassified) -> Residualized {
     run_with_gc_config(bta, &GcConfig::default())
 }
 
-pub fn run_with_gc_config(mut bta: BtaClassified, gc: &GcConfig) -> Residualized {
+pub fn run_with_gc_config(mut bta: BtaClassified, _gc: &GcConfig) -> Residualized {
     let ct_tables = bta.ct().clone();
     let bta_tables = bta.bta().clone();
     let residualize_stats = apply_ct_residualization(bta.program_mut(), &ct_tables, &bta_tables);
@@ -48,36 +45,14 @@ pub fn run_with_gc_config(mut bta: BtaClassified, gc: &GcConfig) -> Residualized
     let function_effect_summary = collect_function_effect_summary(bta.program());
     rewrite_call_effect_rows(bta.program_mut(), &function_effect_summary);
     erase_function_effect_annotations(bta.program_mut());
-    let planned_arc = if gc.arc_insertion_enabled() {
-        arc_insert::plan_with_rules(bta.program(), bta.sema(), gc.effective_arc_insert_rules())
-    } else {
-        Default::default()
-    };
-    let optimized_arc = arc_opt::optimize_with_level(
-        bta.program(),
-        planned_arc.clone(),
-        gc.effective_arc_opt_level(),
-    );
-    let arc_plan = arc_insert::to_residual_plan(&optimized_arc.plan);
     let constant_table = constant_table::build_for_core(bta.program());
-    let orc_foundation = orc::analyze(bta.program(), bta.sema());
     let borrow_hazards = borrow_hazard::analyze(bta.program(), bta.sema());
     bta.into_residualized(ResidualTables {
         function_effect_summary,
         constant_table,
         residualize_stats,
         specialization_stats: Default::default(),
-        arc_stats: ArcStats {
-            planned_retain_ops: planned_arc.stats.retain_ops,
-            planned_release_ops: planned_arc.stats.release_ops,
-            eliminated_move_pairs: optimized_arc.stats.eliminated_move_pairs,
-            removed_retain_ops: optimized_arc.stats.removed_retain_ops,
-            removed_release_ops: optimized_arc.stats.removed_release_ops,
-            final_retain_ops: optimized_arc.plan.stats.retain_ops,
-            final_release_ops: optimized_arc.plan.stats.release_ops,
-        },
-        arc_plan,
-        orc_foundation,
+        arc_stats: Default::default(),
         borrow_hazards,
     })
 }

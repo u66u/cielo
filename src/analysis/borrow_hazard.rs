@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use crate::analysis::arc_cfg::ArcCfg;
 use crate::common::diagnostics::DiagnosticBag;
 use crate::common::ids::{ExprId, StmtId, VarId};
 use crate::common::span::Span;
@@ -71,19 +70,19 @@ pub struct BorrowHazardReport {
 }
 
 pub fn analyze(program: &CoreProgram, sema: &SemanticTables) -> BorrowHazardReport {
-    let cfg = ArcCfg::build(program);
+    let reachable = collect_reachable(program);
     let mut use_counts = HashMap::<VarId, u32>::new();
-    for stmt_id in cfg.reachable() {
-        if let Some(summary) = cfg.summary(*stmt_id) {
-            for used in &summary.uses {
-                let count = use_counts.entry(*used).or_insert(0);
-                *count = count.saturating_add(1);
+    for stmt_id in &reachable {
+        if let Some(stmt) = program.stmt(*stmt_id) {
+            let mut seen = std::collections::HashSet::new();
+            for expression in stmt.child_exprs() {
+                collect_var_uses(program, expression, &mut seen, &mut use_counts);
             }
         }
     }
 
     let mut report = BorrowHazardReport::default();
-    for stmt_id in cfg.reachable().iter().copied() {
+    for stmt_id in reachable {
         let Some(stmt) = program.stmt(stmt_id) else {
             continue;
         };
@@ -149,6 +148,58 @@ pub fn analyze(program: &CoreProgram, sema: &SemanticTables) -> BorrowHazardRepo
     report.call_escape_count = report.call_escape_sites.len() as u32;
     report.hotspots = collect_hotspots(&report);
     report
+}
+
+fn collect_reachable(program: &CoreProgram) -> Vec<StmtId> {
+    let mut stack = program
+        .functions()
+        .iter()
+        .map(|function| function.body)
+        .collect::<Vec<_>>();
+    let mut seen = std::collections::HashSet::new();
+    while let Some(stmt) = stack.pop() {
+        if seen.insert(stmt) {
+            if let Some(node) = program.stmt(stmt) {
+                stack.extend(node.child_stmts());
+            }
+        }
+    }
+    let mut result = seen.into_iter().collect::<Vec<_>>();
+    result.sort_by_key(|stmt| stmt.index());
+    result
+}
+
+fn collect_var_uses(
+    program: &CoreProgram,
+    expression: ExprId,
+    seen: &mut std::collections::HashSet<ExprId>,
+    counts: &mut HashMap<VarId, u32>,
+) {
+    if !seen.insert(expression) {
+        return;
+    }
+    let Some(expression) = program.expr(expression) else {
+        return;
+    };
+    match &expression.kind {
+        ExprKind::Var(var) => {
+            let count = counts.entry(*var).or_default();
+            *count = count.saturating_add(1);
+        }
+        ExprKind::Unary { expr, .. } => collect_var_uses(program, *expr, seen, counts),
+        ExprKind::Binary { lhs, rhs, .. } => {
+            collect_var_uses(program, *lhs, seen, counts);
+            collect_var_uses(program, *rhs, seen, counts);
+        }
+        ExprKind::PureCall { args, .. }
+        | ExprKind::MakeStruct { fields: args, .. }
+        | ExprKind::MakeEnum { fields: args, .. } => {
+            for arg in args {
+                collect_var_uses(program, *arg, seen, counts);
+            }
+        }
+        ExprKind::Literal(_) | ExprKind::Error(_) => {}
+    }
 }
 
 pub fn emit_diagnostics(

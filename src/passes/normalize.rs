@@ -26,15 +26,12 @@ use std::collections::{HashMap, HashSet};
 
 use crate::analysis::borrow_hazard;
 use crate::analysis::function_graph::collect_reachable_functions;
-use crate::analysis::orc;
 use crate::common::gc::GcConfig;
 use crate::common::ids::{ExprId, FuncId, HandlerId, StmtId, VarId};
 use crate::common::span::Span;
 use crate::ir::core::{CoreProgram, ExprKind, ExprNode, MatchArm, StmtKind, StmtNode};
-use crate::passes::arc_insert;
-use crate::passes::arc_opt;
 use crate::passes::constant_table;
-use crate::pipeline::phases::{ArcStats, Residualized};
+use crate::pipeline::phases::Residualized;
 use crate::sema::typecheck::typecheck_core;
 
 const MAX_SHRINK_ITERS: usize = 16;
@@ -45,7 +42,7 @@ pub fn run(residual: Residualized) -> Residualized {
     run_with_gc_config(residual, &GcConfig::default())
 }
 
-pub fn run_with_gc_config(residual: Residualized, gc: &GcConfig) -> Residualized {
+pub fn run_with_gc_config(residual: Residualized, _gc: &GcConfig) -> Residualized {
     let (mut program, mut diagnostics, _sema, mono, ct, bta, mut residual_tables) =
         residual.into_parts();
     shrink_to_fixpoint(&mut program);
@@ -53,24 +50,7 @@ pub fn run_with_gc_config(residual: Residualized, gc: &GcConfig) -> Residualized
     shrink_to_fixpoint(&mut program);
     let sema = typecheck_core(&program, &mut diagnostics);
     residual_tables.constant_table = constant_table::build_for_core(&program);
-    let planned_arc = if gc.arc_insertion_enabled() {
-        arc_insert::plan(&program, &sema)
-    } else {
-        Default::default()
-    };
-    let optimized_arc =
-        arc_opt::optimize_with_level(&program, planned_arc.clone(), gc.effective_arc_opt_level());
-    residual_tables.arc_stats = ArcStats {
-        planned_retain_ops: planned_arc.stats.retain_ops,
-        planned_release_ops: planned_arc.stats.release_ops,
-        eliminated_move_pairs: optimized_arc.stats.eliminated_move_pairs,
-        removed_retain_ops: optimized_arc.stats.removed_retain_ops,
-        removed_release_ops: optimized_arc.stats.removed_release_ops,
-        final_retain_ops: optimized_arc.plan.stats.retain_ops,
-        final_release_ops: optimized_arc.plan.stats.release_ops,
-    };
-    residual_tables.arc_plan = arc_insert::to_residual_plan(&optimized_arc.plan);
-    residual_tables.orc_foundation = orc::analyze(&program, &sema);
+    residual_tables.arc_stats = Default::default();
     residual_tables.borrow_hazards = borrow_hazard::analyze(&program, &sema);
     Residualized::new(program, diagnostics, sema, mono, ct, bta, residual_tables)
 }

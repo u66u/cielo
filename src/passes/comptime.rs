@@ -5,7 +5,7 @@ use crate::common::gc::GcConfig;
 use crate::passes::{bta, ct_eval, handler_specialize, residualize};
 use crate::pipeline::compiler::TargetSpec;
 use crate::pipeline::phases::{
-    ArcResidualOpKind, BranchDecision, BtaClassified, Monomorphized, Reason, Residualized, Stage,
+    BranchDecision, BtaClassified, Monomorphized, Reason, Residualized, Stage,
 };
 
 /// v1 fused stage A: Evaluate+Classify.
@@ -354,72 +354,6 @@ fn assert_residualize_specialize_invariants(residual: &crate::pipeline::phases::
         "compiler bug: arc release accounting mismatch"
     );
 
-    let mut seen_arc_sites = HashSet::new();
-    let mut retained_ops = 0u32;
-    let mut released_ops = 0u32;
-    for pair in residual_tables.arc_plan.ops.windows(2) {
-        let lhs = pair[0];
-        let rhs = pair[1];
-        assert!(
-            (
-                lhs.stmt.index(),
-                arc_op_kind_order(lhs.kind),
-                arc_op_var(lhs.kind).index()
-            ) < (
-                rhs.stmt.index(),
-                arc_op_kind_order(rhs.kind),
-                arc_op_var(rhs.kind).index()
-            ),
-            "compiler bug: residual ARC plan ops are not sorted/deduplicated"
-        );
-    }
-    for op in &residual_tables.arc_plan.ops {
-        assert!(
-            op.stmt.index() < program.stmts().len(),
-            "compiler bug: residual ARC plan references out-of-bounds stmt s{}",
-            op.stmt.as_u32()
-        );
-        let site_key = (op.stmt, arc_op_kind_order(op.kind), arc_op_var(op.kind));
-        assert!(
-            seen_arc_sites.insert(site_key),
-            "compiler bug: residual ARC plan contains duplicate op at stmt s{} var v{}",
-            op.stmt.as_u32(),
-            arc_op_var(op.kind).as_u32()
-        );
-        match op.kind {
-            ArcResidualOpKind::Retain { .. } => retained_ops = retained_ops.saturating_add(1),
-            ArcResidualOpKind::Release { .. } => released_ops = released_ops.saturating_add(1),
-        }
-    }
-    assert_eq!(
-        retained_ops, arc_stats.final_retain_ops,
-        "compiler bug: residual ARC retain plan count diverges from arc_stats.final_retain_ops"
-    );
-    assert_eq!(
-        released_ops, arc_stats.final_release_ops,
-        "compiler bug: residual ARC release plan count diverges from arc_stats.final_release_ops"
-    );
-
-    let orc_foundation = &residual_tables.orc_foundation;
-    assert_eq!(
-        orc_foundation.candidate_root_count as usize,
-        orc_foundation.candidate_roots.len(),
-        "compiler bug: ORC foundation root count mismatch"
-    );
-    assert_eq!(
-        orc_foundation.candidate_link_count as usize,
-        orc_foundation.candidate_links.len(),
-        "compiler bug: ORC foundation link count mismatch"
-    );
-    for pair in orc_foundation.candidate_links.windows(2) {
-        let lhs = pair[0];
-        let rhs = pair[1];
-        assert!(
-            (lhs.0.index(), lhs.1.index()) < (rhs.0.index(), rhs.1.index()),
-            "compiler bug: ORC foundation links are not sorted/deduplicated"
-        );
-    }
-
     let hazards = &residual_tables.borrow_hazards;
     assert_eq!(
         hazards.alias_fanout_count as usize,
@@ -475,18 +409,5 @@ fn assert_reason_in_bounds(reason: Reason, function_count: usize, context: &str)
         | Reason::BranchOnRuntime(_)
         | Reason::NotPersistable(_)
         | Reason::UserForcedRuntime => {}
-    }
-}
-
-fn arc_op_kind_order(kind: ArcResidualOpKind) -> u8 {
-    match kind {
-        ArcResidualOpKind::Retain { .. } => 0,
-        ArcResidualOpKind::Release { .. } => 1,
-    }
-}
-
-fn arc_op_var(kind: ArcResidualOpKind) -> crate::common::ids::VarId {
-    match kind {
-        ArcResidualOpKind::Retain { var } | ArcResidualOpKind::Release { var } => var,
     }
 }
