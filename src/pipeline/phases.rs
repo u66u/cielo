@@ -1,12 +1,9 @@
 use std::collections::HashMap;
 
 use crate::analysis::borrow_hazard::BorrowHazardReport;
-use crate::analysis::orc::OrcFoundationTables;
 use crate::common::densemap::DenseMap;
 use crate::common::diagnostics::DiagnosticBag;
-use crate::common::ids::{
-    EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, TypeId, VarId,
-};
+use crate::common::ids::{EffectLabelId, ExprId, FuncId, HandlerId, SymbolId, TypeId, VarId};
 use crate::frontend::ast::Program as AstProgram;
 use crate::ir::core::{CoreProgram, Literal};
 use crate::sema::effect::{EffectProperties, SortedEffectRow};
@@ -236,23 +233,6 @@ pub struct ArcStats {
     pub final_release_ops: u32,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ArcResidualOpKind {
-    Retain { var: VarId },
-    Release { var: VarId },
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct ArcResidualOp {
-    pub stmt: StmtId,
-    pub kind: ArcResidualOpKind,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct ArcResidualPlan {
-    pub ops: Vec<ArcResidualOp>,
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct CtPropagationTables {
     pub ct_cache: DenseMap<ExprId, Literal>,
@@ -381,8 +361,6 @@ pub struct ResidualTables {
     pub residualize_stats: ResidualizeStats,
     pub specialization_stats: SpecializationStats,
     pub arc_stats: ArcStats,
-    pub arc_plan: ArcResidualPlan,
-    pub orc_foundation: OrcFoundationTables,
     pub borrow_hazards: BorrowHazardReport,
 }
 
@@ -546,5 +524,9 @@ define_phase_state_with_parts!(Residualized {
 impl Residualized {
     pub(crate) fn program_and_diagnostics_mut(&mut self) -> (&CoreProgram, &mut DiagnosticBag) {
         (&self.program, &mut self.diagnostics)
+    }
+
+    pub(crate) fn residual_mut(&mut self) -> &mut ResidualTables {
+        &mut self.residual
     }
 }

@@ -10,7 +10,7 @@ use cielo::common::symbols::Interner;
 use cielo::frontend::ast::{Item, Program};
 use cielo::ir::core::CoreProgram;
 use cielo::passes::lowering::{LowerConfig, TargetBuiltinSymbols};
-use cielo::passes::{c_emit, linearize};
+use cielo::passes::{c_emit, cfg_lower, linearize};
 use cielo::pipeline::ct_invalidation::{
     CtDepSnapshot, CtInvalidationReason, diff as diff_ct_invalidation,
     load_snapshot as load_ct_snapshot, save_snapshot as save_ct_snapshot,
@@ -68,6 +68,7 @@ enum DumpKind {
     Sema,
     StagingReport,
     Linear,
+    Cfg,
     Anf,
     C,
 }
@@ -149,6 +150,7 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
     let need_c_backend = cli.emit_c
         || cli.run_c
         || should_dump(cli, DumpKind::Linear)
+        || should_dump(cli, DumpKind::Cfg)
         || should_dump(cli, DumpKind::C);
 
     if residual.diagnostics().has_errors() {
@@ -167,8 +169,12 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
     if should_dump(cli, DumpKind::Linear) {
         println!("=== Linear IR ===\n{:#?}", linearized.linear);
     }
+    let cfg_lowered = cfg_lower::run(linearized);
+    if should_dump(cli, DumpKind::Cfg) {
+        println!("=== CFG IR ===\n{:#?}", cfg_lowered.cfg);
+    }
 
-    let emitted = c_emit::run_with_gc_config(linearized, &interner, &compiler.config().gc);
+    let emitted = c_emit::run_with_gc_config(cfg_lowered, &interner, &compiler.config().gc);
     if should_dump(cli, DumpKind::C) || cli.emit_c || cli.run_c {
         println!("=== Emitted C ===\n{}", emitted.c_source);
     }

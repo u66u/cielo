@@ -6,7 +6,7 @@
 #include <string.h>
 
 enum {
-  CIELO_RUNTIME_ABI_VERSION_MAJOR = 1,
+  CIELO_RUNTIME_ABI_VERSION_MAJOR = 2,
   CIELO_RUNTIME_ABI_VERSION_MINOR = 0,
   CIELO_RUNTIME_ABI_VERSION_PATCH = 0,
   CIELO_RUNTIME_ABI_VERSION = (CIELO_RUNTIME_ABI_VERSION_MAJOR << 16) |
@@ -15,10 +15,6 @@ enum {
 };
 /* ABI policy: major=breaking layout/signature changes, minor=additive
  * compatible, patch=behavior-only fixes. */
-
-#ifndef CIELO_RUNTIME_ENABLE_ORC_HOOKS
-#define CIELO_RUNTIME_ENABLE_ORC_HOOKS 0
-#endif
 
 typedef enum {
   CV_UNIT = 0,
@@ -33,21 +29,16 @@ typedef enum {
 typedef struct CieloValue CieloValue;
 
 enum {
-  CIELO_ARC_FLAG_IMMORTAL = 1u << 0,
-  CIELO_ARC_FLAG_ORC_PINNED = 1u << 1
+  CIELO_ARC_FLAG_IMMORTAL = 1u << 0
 };
 
 typedef struct {
   uint32_t refcount;
   uint32_t flags;
-  uint32_t orc_color;
-  uint32_t reserved0;
 } CieloArcHeader;
 
-#define CIELO_ARC_HEADER_INIT(REFCOUNT, FLAGS)                                \
-  {                                                                            \
-    .refcount = (REFCOUNT), .flags = (FLAGS), .orc_color = 0u, .reserved0 = 0u \
-  }
+#define CIELO_ARC_HEADER_INIT(REFCOUNT, FLAGS) \
+  { .refcount = (REFCOUNT), .flags = (FLAGS) }
 #define CIELO_ARC_IMMORTAL_HEADER CIELO_ARC_HEADER_INIT(0u, CIELO_ARC_FLAG_IMMORTAL)
 #define CIELO_ARC_OWNED_HEADER CIELO_ARC_HEADER_INIT(1u, 0u)
 
@@ -58,14 +49,6 @@ typedef struct {
   size_t argc;
   CieloValue *fields;
 } CieloCtor;
-
-typedef void (*CieloOrcObjectHook)(const CieloCtor *ctor);
-
-typedef struct {
-  CieloOrcObjectHook on_retain;
-  CieloOrcObjectHook on_release;
-  CieloOrcObjectHook on_destroy;
-} CieloOrcHooks;
 
 struct CieloValue {
   CieloTag tag;
@@ -136,7 +119,6 @@ typedef struct {
 } CieloArcStats;
 
 static CieloArcStats g_cielo_arc_stats = {0};
-static CieloOrcHooks g_cielo_orc_hooks = {0};
 
 static inline uint32_t cielo_runtime_abi_version(void) {
   return (uint32_t)CIELO_RUNTIME_ABI_VERSION;
@@ -162,44 +144,6 @@ static inline CieloArcStats cielo_arc_stats_snapshot(void) {
   return g_cielo_arc_stats;
 }
 
-static inline void cielo_orc_install_hooks(CieloOrcHooks hooks) {
-  g_cielo_orc_hooks = hooks;
-}
-
-static inline void cielo_orc_reset_hooks(void) {
-  memset(&g_cielo_orc_hooks, 0, sizeof(g_cielo_orc_hooks));
-}
-
-static inline void cielo_orc_notify_retain(const CieloCtor *ctor) {
-#if CIELO_RUNTIME_ENABLE_ORC_HOOKS
-  if (g_cielo_orc_hooks.on_retain != NULL) {
-    g_cielo_orc_hooks.on_retain(ctor);
-  }
-#else
-  (void)ctor;
-#endif
-}
-
-static inline void cielo_orc_notify_release(const CieloCtor *ctor) {
-#if CIELO_RUNTIME_ENABLE_ORC_HOOKS
-  if (g_cielo_orc_hooks.on_release != NULL) {
-    g_cielo_orc_hooks.on_release(ctor);
-  }
-#else
-  (void)ctor;
-#endif
-}
-
-static inline void cielo_orc_notify_destroy(const CieloCtor *ctor) {
-#if CIELO_RUNTIME_ENABLE_ORC_HOOKS
-  if (g_cielo_orc_hooks.on_destroy != NULL) {
-    g_cielo_orc_hooks.on_destroy(ctor);
-  }
-#else
-  (void)ctor;
-#endif
-}
-
 static inline bool cielo_arc_is_managed(CieloValue value) {
   return value.tag == CV_CTOR && value.as.ctor != NULL;
 }
@@ -218,7 +162,6 @@ static inline void cielo_arc_retain(CieloValue value) {
   if (count == 0u || count == UINT32_MAX)
     return;
   ctor->arc.refcount = count + 1u;
-  cielo_orc_notify_retain(ctor);
   g_cielo_arc_stats.retain_calls++;
 }
 
@@ -240,7 +183,6 @@ static inline void cielo_arc_release(CieloValue value) {
   if (!cielo_arc_is_managed(value))
     return;
   g_cielo_arc_stats.release_calls++;
-  cielo_orc_notify_release(value.as.ctor);
   if (!cielo_arc_dec_is_last(value))
     return;
   g_cielo_arc_stats.release_last_calls++;
@@ -253,7 +195,6 @@ static inline void cielo_arc_destroy_and_dispose(CieloValue value) {
   CieloCtor *ctor = value.as.ctor;
   if (cielo_arc_is_immortal_ctor(ctor))
     return;
-  cielo_orc_notify_destroy(ctor);
   CieloValue *fields = ctor->fields;
   size_t argc = ctor->argc;
   ctor->fields = NULL;
@@ -283,6 +224,19 @@ static inline CieloValue cielo_ctor_field(CieloValue value, size_t index) {
   if (index >= value.as.ctor->argc || value.as.ctor->fields == NULL)
     return cv_unit();
   return value.as.ctor->fields[index];
+}
+
+/* Move a field out of an owned constructor. Clearing the slot is the runtime
+ * equivalent of Nim's `wasMoved`: destroying the parent no longer decrements
+ * the transferred field. */
+static inline CieloValue cielo_ctor_take_field(CieloValue value, size_t index) {
+  if (value.tag != CV_CTOR || value.as.ctor == NULL)
+    return cv_unit();
+  if (index >= value.as.ctor->argc || value.as.ctor->fields == NULL)
+    return cv_unit();
+  CieloValue result = value.as.ctor->fields[index];
+  value.as.ctor->fields[index] = cv_unit();
+  return result;
 }
 
 static inline uint32_t cielo_handler_push(uint32_t effect) {
@@ -530,8 +484,11 @@ static CieloValue cielo_perform_scoped(uint32_t effect,
 static CieloValue cielo_make_ctor(const char *ty, const char *variant,
                                   size_t argc, const CieloValue *fields) {
   CieloCtor *ctor = (CieloCtor *)malloc(sizeof(CieloCtor));
-  if (ctor == NULL)
+  if (ctor == NULL) {
+    for (size_t i = 0; fields != NULL && i < argc; i++)
+      cielo_arc_release(fields[i]);
     return cv_unit();
+  }
 
   ctor->arc = (CieloArcHeader)CIELO_ARC_OWNED_HEADER;
   ctor->ty = ty;
@@ -543,13 +500,14 @@ static CieloValue cielo_make_ctor(const char *ty, const char *variant,
     ctor->fields = (CieloValue *)malloc(sizeof(CieloValue) * argc);
     if (ctor->fields == NULL) {
       free(ctor);
+      for (size_t i = 0; fields != NULL && i < argc; i++)
+        cielo_arc_release(fields[i]);
       return cv_unit();
     }
     if (fields != NULL) {
+      /* Constructor arguments are sink arguments. The generated CFG inserts a
+       * retain only for fields that remain live at the call site. */
       memcpy(ctor->fields, fields, sizeof(CieloValue) * argc);
-      for (size_t i = 0; i < argc; i++) {
-        cielo_arc_retain(ctor->fields[i]);
-      }
     } else {
       for (size_t i = 0; i < argc; i++) {
         ctor->fields[i] = cv_unit();

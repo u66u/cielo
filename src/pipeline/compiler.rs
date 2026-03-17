@@ -9,6 +9,7 @@ use crate::frontend::parser::parse_source;
 use crate::ir::core::CoreProgram;
 use crate::passes::bta;
 use crate::passes::c_emit;
+use crate::passes::cfg_lower;
 use crate::passes::comptime;
 use crate::passes::ct_eval;
 use crate::passes::handler_specialize;
@@ -130,6 +131,7 @@ impl V0PipelineTimings {
 pub struct CompiledC {
     pub residual: Residualized,
     pub linear: crate::ir::linear::LinearProgram,
+    pub cfg: crate::ir::cfg::CfgProgram,
     pub c_source: String,
 }
 
@@ -218,10 +220,12 @@ impl Compiler {
         let residual = self.compile_source_v1(source, source_id, interner);
         let normalized = normalize::run_with_gc_config(residual, &self.config.gc);
         let linearized = linearize::run(normalized);
-        let emitted = c_emit::run_with_gc_config(linearized, interner, &self.config.gc);
+        let cfg_lowered = cfg_lower::run(linearized);
+        let emitted = c_emit::run_with_gc_config(cfg_lowered, interner, &self.config.gc);
         CompiledC {
             residual: emitted.linearized.residual,
             linear: emitted.linearized.linear,
+            cfg: emitted.cfg,
             c_source: emitted.c_source,
         }
     }
@@ -273,10 +277,12 @@ impl Compiler {
         let specialized = handler_specialize::run_with_gc_config(residual, &self.config.gc);
         let normalized = normalize::run_with_gc_config(specialized, &self.config.gc);
         let linearized = linearize::run(normalized);
-        let emitted = c_emit::run_with_gc_config(linearized, interner, &self.config.gc);
+        let cfg_lowered = cfg_lower::run(linearized);
+        let emitted = c_emit::run_with_gc_config(cfg_lowered, interner, &self.config.gc);
         CompiledC {
             residual: emitted.linearized.residual,
             linear: emitted.linearized.linear,
+            cfg: emitted.cfg,
             c_source: emitted.c_source,
         }
     }
