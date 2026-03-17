@@ -106,7 +106,7 @@ After linearize, before effect-qualified opts:
 
 text
 
-... → linearize → normalize_linear → effect-qualified opts → ARC → C
+... → linearize → normalize_linear → cfg_lower → effect-qualified opts → ARC → C
 
 Effect-Qualified Optimizations (expanded)
 Motivation

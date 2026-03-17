@@ -80,6 +80,30 @@ The Linear IR has its own ID types (LinearExprId, LinearStmtId, LinearFuncId) wh
 distinct from Core IR IDs. Dense remapping occurs during linearization: only reachable
 functions get LinearFuncIds.
 
+## CFG IR: ownership and control-flow boundary
+
+The `cfg_lower` pass consumes Linear IR after handler lowering and builds a separate,
+block-form `CfgProgram`. CFG expressions, instructions, blocks, values, and functions
+have phase-specific IDs. Block parameters model values returned by `Val`, calls,
+effect operations, match arms, and cleanup paths without treating sequential subgraphs
+as parallel tree children.
+
+Linear IR ends at this boundary. Ownership planning, verification, and C emission all
+consume CFG IR directly. The backend never reconstructs structured Linear control flow:
+it emits labels, explicit edges, and parallel block-argument copies from the CFG.
+
+CFG liveness drives a sink-oriented ARC transform. Calls, constructor fields, block
+arguments, and returns consume owned references. A last use moves its reference; a
+non-last consume retains a copy. Destructuring a dead constructor uses a moved-field
+projection and clears the parent slot before releasing the parent, equivalent to Nim's
+`=sink`/`wasMoved` lowering.
+
+The current language cannot construct heap cycles: constructors are immutable and can
+only point to values that existed before their allocation. ARC is therefore complete,
+not a cycle-leaking approximation. A real ORC mode belongs with the first feature that
+can create cyclic heap graphs (for example mutable reference fields or heap closures);
+dormant Core-level candidate analysis and no-op ORC hooks are deliberately excluded.
+
 ## Fused pass architecture
 
 ### Evaluate+Classify (replaces separate CT propagation + BTA)
@@ -123,11 +147,11 @@ shouldInline — core/optimizer/Normalizer.scala; Appel & Jim "Shrinking lambda"
 ### MLIR patterns: adopted and rejected
 
 Adopted:
-- IrNode trait for generic traversal across Core and Linear IRs
+- IrNode trait for generic traversal across tree-shaped Core and Linear IRs
 - Phase-typed side tables carrying only what downstream passes need
 
 Rejected:
-- Full dialect/operation system (two IRs are sufficient for v1)
+- Full dialect/operation system (the Core, Linear, and compact block CFG forms are sufficient)
 - Progressive lowering within a single IR (handler lowering is a
   clean Core → Linear transition)
 
@@ -494,19 +518,35 @@ Shrinking reductions to fixpoint, one round of speculative inlining, shrink agai
 **Side tables:**
 - keep `func_effect_summary` (for later opt gating)
 
-### 7) Effect-qualified opts
+### 7) CFG lowering
+
+**Consumes:** Linear IR
+**Produces:** block-form CFG with SSA-like values and explicit continuations
+
+`Val`, call, `Perform`, match-arm, handler-exit, and stage-exit sequencing is represented
+by block parameters and edges. Backward liveness and last-use analysis runs on this graph.
+
+### 8) Effect-qualified opts
 
 **Consumes:** `inst_effect_class` + `func_effect_summary`
 Gates CSE/LICM/DSE etc.
 
-### 8) ARC insertion
+### 9) CFG ARC insertion and verification
 
-**Consumes:** escape/capture info, SSA graph
-Effects matter only for motion; encoded in instruction classes.
+**Consumes:** CFG liveness, semantic ownership classes
+**Produces:** ARC operations on block entries, instructions, and terminators; match
+projection modes (`Borrow`, `Copy`, `Move`)
 
-### 9) C emission
+Raw mode materializes retain/release ownership transfers. Optimized mode folds a
+last-use pair into a sink move and uses moved-field projection when a match consumes its
+parent. The verifier rejects invalid ARC value references, duplicate releases at one
+site, and moves from live parents.
 
-No effect system needed; just emit.
+### 10) Direct CFG C emission
+
+The emitter consumes the annotated CFG. It emits explicit labels and gotos, preserves
+parallel edge-copy semantics with temporaries, and passes lexical handler capabilities
+to scoped effects. No legacy Linear emitter or Linear ARC annotations remain.
 
 ## Normalizer reduction rules
 

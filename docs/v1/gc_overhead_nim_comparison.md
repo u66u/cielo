@@ -25,12 +25,15 @@ And runtime args:
 | Cielo preset | Intent | Nim equivalent |
 | --- | --- | --- |
 | `off` | no ARC insertion/emission | `gc_overhead_value.nim` (value types) |
-| `arc_raw` | ARC without Cielo ARC optimizer pass | closest available: `--mm:arc --opt:none` |
-| `arc_optimized` | ARC with Cielo ARC optimizer pass | closest available: `--mm:arc -d:danger --opt:speed` |
+| `arc_raw` | CFG ARC with explicit transfer retain/release pairs | closest available: `--mm:arc --opt:none` |
+| `arc_optimized` | CFG ARC with last-use sink and moved-field elimination | closest available: `--mm:arc -d:danger --opt:speed` |
 
 Notes:
 
 - Nim does not expose a direct "disable ARC semantic optimizer but keep ARC semantics" switch. The `arc_raw` mapping is an approximation.
+- In Cielo both presets use the same CFG ownership planner. `arc_raw` materializes the
+  transfer pairs; `arc_optimized` eliminates provably redundant pairs into moves. This
+  isolates the ownership optimization without switching backends.
 - Nim `--mm:none` with `ref`-heavy code is not a drop-in equivalent to Cielo `off`; this is why the value baseline is separate.
 - Cielo `off` in this benchmark does not release ctor allocations, so long-running cases can look slower than ARC due to heap growth. For optimizer comparisons, prefer `runtime_relative_to_arc_raw`.
 
