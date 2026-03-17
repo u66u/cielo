@@ -33,15 +33,25 @@ fn main() -> Int {
         arc_stats.final_retain_ops + arc_stats.final_release_ops > 0,
         "fixture must produce ARC ops before C emission validation"
     );
-    let linear_arc_ops = compiled
-        .linear
-        .stmts()
+    let cfg_arc_ops = compiled
+        .cfg
+        .blocks()
         .iter()
-        .filter(|stmt| !stmt.arc_ops.pre_retain.is_empty() || !stmt.arc_ops.post_release.is_empty())
-        .count();
+        .map(|block| {
+            block.entry_arc.len()
+                + block.terminator_arc.pre.len()
+                + block.terminator_arc.post.len()
+                + block
+                    .instructions
+                    .iter()
+                    .filter_map(|instruction| compiled.cfg.instruction(*instruction))
+                    .map(|instruction| instruction.arc.pre.len() + instruction.arc.post.len())
+                    .sum::<usize>()
+        })
+        .sum::<usize>();
     assert!(
-        linear_arc_ops > 0,
-        "linearized program should carry ARC ops to emission boundary"
+        cfg_arc_ops > 0,
+        "CFG should carry ARC ops to emission boundary"
     );
     let trace_comment_count = compiled.c_source.matches("/* arc ").count();
     assert!(

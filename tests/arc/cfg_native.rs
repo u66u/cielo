@@ -1,0 +1,181 @@
+use cielo::common::ids::SourceId;
+use cielo::common::symbols::Interner;
+use cielo::ir::cfg::{CfgArcOpKind, CfgProjectionMode, CfgTerminator};
+use cielo::passes::{c_emit, cfg_lower, linearize};
+use cielo::{Compiler, CompilerConfig, GcPreset};
+
+fn compile(source: &str) -> cielo::CompiledC {
+    let mut interner = Interner::new();
+    Compiler::new(CompilerConfig::default()).compile_source_to_c(
+        source,
+        SourceId::from_u32(0),
+        &mut interner,
+    )
+}
+
+fn compile_with_preset(source: &str, preset: GcPreset) -> cielo::CompiledC {
+    let mut interner = Interner::new();
+    Compiler::new(CompilerConfig::default().with_gc_preset(preset)).compile_source_to_c(
+        source,
+        SourceId::from_u32(0),
+        &mut interner,
+    )
+}
+
+fn compile_without_normalize(source: &str) -> cielo::CompiledC {
+    let mut interner = Interner::new();
+    let compiler = Compiler::new(CompilerConfig::default());
+    let core = compiler.parse_and_lower_to_core(source, SourceId::from_u32(0), &mut interner);
+    let residual = compiler.run_v1_core_pipeline(core);
+    let emitted = c_emit::run(cfg_lower::run(linearize::run(residual)), &interner);
+    cielo::CompiledC {
+        residual: emitted.linearized.residual,
+        linear: emitted.linearized.linear,
+        cfg: emitted.cfg,
+        c_source: emitted.c_source,
+    }
+}
+
+fn arc_op_count(compiled: &cielo::CompiledC, kind: CfgArcOpKind) -> usize {
+    let mut count = 0;
+    for block in compiled.cfg.blocks() {
+        count += block.entry_arc.iter().filter(|op| op.kind == kind).count();
+        count += block
+            .terminator_arc
+            .pre
+            .iter()
+            .chain(&block.terminator_arc.post)
+            .filter(|op| op.kind == kind)
+            .count();
+        for instruction in &block.instructions {
+            let instruction = compiled.cfg.instruction(*instruction).unwrap();
+            count += instruction
+                .arc
+                .pre
+                .iter()
+                .chain(&instruction.arc.post)
+                .filter(|op| op.kind == kind)
+                .count();
+        }
+    }
+    count
+}
+
+#[test]
+fn cfg_arc_moves_last_use_call_arguments() {
+    let compiled = compile(
+        r#"
+enum Boxed { Wrap(Int) }
+fn consume(v: Boxed) -> Int { match v { | Wrap(n) => n | _ => 0 } }
+fn main() -> Int { let value = Wrap(1); consume(value) }
+"#,
+    );
+    assert_eq!(
+        arc_op_count(&compiled, CfgArcOpKind::Retain),
+        0,
+        "a unique last-use argument should sink without a retain"
+    );
+    assert!(compiled.residual.residual().arc_stats.eliminated_move_pairs > 0);
+}
+
+#[test]
+fn cfg_arc_raw_materializes_pairs_that_optimized_sinks() {
+    let source = r#"
+enum Boxed { Wrap(Int) }
+fn consume(v: Boxed) -> Int { match v { | Wrap(n) => n | _ => 0 } }
+fn main() -> Int { let value = Wrap(1); consume(value) }
+"#;
+    let raw = compile_with_preset(source, GcPreset::ArcRaw);
+    let optimized = compile_with_preset(source, GcPreset::ArcOptimized);
+
+    assert!(arc_op_count(&raw, CfgArcOpKind::Retain) > 0);
+    assert!(arc_op_count(&raw, CfgArcOpKind::Release) > 0);
+    assert_eq!(arc_op_count(&optimized, CfgArcOpKind::Retain), 0);
+    assert!(
+        optimized
+            .residual
+            .residual()
+            .arc_stats
+            .eliminated_move_pairs
+            > raw.residual.residual().arc_stats.eliminated_move_pairs
+    );
+}
+
+#[test]
+fn cfg_arc_retains_non_last_call_arguments() {
+    let compiled = compile(
+        r#"
+enum Boxed { Wrap(Int) }
+fn consume(v: Boxed) -> Int { match v { | Wrap(n) => n | _ => 0 } }
+fn main() -> Int {
+  let value = Wrap(1);
+  let first = consume(value);
+  first + consume(value)
+}
+"#,
+    );
+    assert!(arc_op_count(&compiled, CfgArcOpKind::Retain) >= 1);
+}
+
+#[test]
+fn cfg_arc_accounts_for_duplicate_sink_arguments() {
+    let compiled = compile_without_normalize(
+        r#"
+enum Boxed { Wrap(Int) }
+fn score(value: Boxed) -> Int { match value { | Wrap(n) => n | _ => 0 } }
+fn choose(a: Boxed, b: Boxed) -> Int { score(a) + score(b) }
+fn main() -> Int { @runtime { let value = Wrap(1); choose(value, value) } }
+"#,
+    );
+    assert!(
+        arc_op_count(&compiled, CfgArcOpKind::Retain) >= 1,
+        "two owned parameters require two references"
+    );
+}
+
+#[test]
+fn cfg_match_moves_fields_out_of_dead_parent() {
+    let compiled = compile_without_normalize(
+        r#"
+enum Leaf { N(Int) }
+enum Boxed { Wrap(Leaf) }
+fn unbox(value: Boxed) -> Leaf {
+  match value { | Wrap(leaf) => leaf | _ => N(0) }
+}
+fn main() -> Int {
+  let leaf = unbox(Wrap(N(42)));
+  match leaf { | N(value) => value | _ => 0 }
+}
+"#,
+    );
+    assert!(
+        compiled.cfg.blocks().iter().any(|block| {
+            matches!(&block.terminator, CfgTerminator::Match { arms, .. }
+                if arms.iter().any(|arm| arm.projections.contains(&CfgProjectionMode::Move)))
+        }),
+        "expected moved projection in {:#?}",
+        compiled.cfg
+    );
+    assert!(compiled.c_source.contains("cielo_ctor_take_field"));
+}
+
+#[test]
+fn cfg_arc_verifier_accepts_generated_plan() {
+    let compiled = compile(
+        r#"
+enum Boxed { Wrap(Int) }
+fn main() -> Int { let value = Wrap(1); match value { | Wrap(n) => n | _ => 0 } }
+"#,
+    );
+    assert!(
+        compiled
+            .residual
+            .diagnostics()
+            .entries()
+            .iter()
+            .all(|diagnostic| {
+                !diagnostic.code.starts_with("CFG_ARC_VERIFY")
+                    && !diagnostic.code.starts_with("CFG_VERIFY")
+            })
+    );
+}

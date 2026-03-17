@@ -663,13 +663,7 @@ int main(void) {{
         return 2;
     }}
 
-    cielo_arc_release(left);
-    cielo_arc_release(right);
-    CieloArcStats after_local_release = cielo_arc_stats_snapshot();
-    if (after_local_release.ctor_frees != 0u) {{
-        return 3;
-    }}
-
+    /* Constructor fields are sink arguments: left and right moved into pair. */
     cielo_arc_release(pair);
     CieloArcStats after_root_release = cielo_arc_stats_snapshot();
     return (after_root_release.ctor_allocations == 3u &&

@@ -26,9 +26,9 @@ pub fn assert_arc_trace_comments_align(c_source: &str) {
             continue;
         }
 
-        if trimmed.starts_with("/* arc pre-retain s") {
+        if trimmed.starts_with("/* arc ") && trimmed.contains(" retain */") {
             pending_trace = Some("retain");
-        } else if trimmed.starts_with("/* arc post-release s") {
+        } else if trimmed.starts_with("/* arc ") && trimmed.contains(" release */") {
             pending_trace = Some("release");
         }
     }

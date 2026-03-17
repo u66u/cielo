@@ -6,7 +6,7 @@ use cielo::ir::core::{
     CoreProgram, CoreTypeRef, ExprKind, ExprNode, FunctionDecl, Literal, MatchArm,
     PrimitiveTypeRef, StmtKind, StmtNode,
 };
-use cielo::passes::{bta, c_emit, ct_propagate, linearize, residualize};
+use cielo::passes::{bta, c_emit, cfg_lower, ct_propagate, linearize, residualize};
 use cielo::pipeline::compiler::TargetSpec;
 use cielo::pipeline::phases::{
     BranchDecision, BtaClassified, BtaTables, CtPropagationTables, Knownness,
@@ -2223,7 +2223,7 @@ fn main() -> Int {
     let staged = compiler.run_v1_evaluate_classify(core);
     let residual = compiler.run_v1_residualize_specialize(staged);
     let normalized = compiler.run_v1_normalize(residual);
-    let fused_emitted = c_emit::run(linearize::run(normalized), &fused_interner);
+    let fused_emitted = c_emit::run(cfg_lower::run(linearize::run(normalized)), &fused_interner);
 
     let mut split_interner = Interner::new();
     let split_emitted =

@@ -1,7 +1,3 @@
-mod analysis;
 mod c_emit;
-mod causal;
-mod insert;
-mod opt;
+mod cfg_native;
 mod pipeline;
-mod verify;

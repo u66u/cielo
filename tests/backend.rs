@@ -7,7 +7,7 @@ use cielo::ir::core::Literal;
 use cielo::ir::linear::{
     CallConvention, LinearExpr, LinearFunction, LinearMatchArm, LinearProgram, LinearStmt,
 };
-use cielo::passes::{c_emit, c_emit::emit_c_program, linearize};
+use cielo::passes::{c_emit, c_emit::emit_c_program, cfg_lower, linearize};
 use cielo::pipeline::phases::{ConstantEmbedStrategy, ConstantKey, CtorFieldKey, ScalarLiteralKey};
 use cielo::{Compiler, CompilerConfig};
 use std::collections::HashSet;
@@ -839,11 +839,11 @@ fn c_emitter_materializes_handler_evidence_records() {
 
     let emitted = emit_c_program(&program, &interner);
     assert!(
-        emitted.contains("CieloEvidence __cielo_evidence_"),
+        emitted.contains("CieloEvidence hev"),
         "handler lowering should materialize a concrete evidence struct per installation"
     );
     assert!(
-        emitted.contains("cielo_handler_push_with_evidence(0, &__cielo_evidence_"),
+        emitted.contains("cielo_handler_push_with_evidence(0, &hev"),
         "handler installation should bind capability and evidence together"
     );
 }
@@ -1681,10 +1681,11 @@ fn compile_source_to_c_without_normalize(
     let core = compiler.parse_and_lower_to_core(src, source_id, interner);
     let residual = compiler.run_v1_core_pipeline(core);
     let linearized = linearize::run(residual);
-    let emitted = c_emit::run(linearized, interner);
+    let emitted = c_emit::run(cfg_lower::run(linearized), interner);
     cielo::CompiledC {
         residual: emitted.linearized.residual,
         linear: emitted.linearized.linear,
+        cfg: emitted.cfg,
         c_source: emitted.c_source,
     }
 }
@@ -1958,11 +1959,6 @@ fn handler_push_capability_temps_for_effect(c_source: &str, effect: u32) -> Vec<
         .lines()
         .filter_map(|line| {
             let trimmed = line.trim();
-            if !trimmed.starts_with("uint32_t ") {
-                return None;
-            }
-            let declaration = trimmed.strip_prefix("uint32_t ")?;
-            let (binding, _) = declaration.split_once(" = ")?;
             let push_with_effect = format!("= cielo_handler_push({effect});");
             let push_with_evidence = format!("= cielo_handler_push_with_evidence({effect}, &");
             if !trimmed.ends_with(push_with_effect.as_str())
@@ -1970,7 +1966,13 @@ fn handler_push_capability_temps_for_effect(c_source: &str, effect: u32) -> Vec<
             {
                 return None;
             }
-            Some(binding.to_owned())
+            let (binding, _) = trimmed.split_once(" = ")?;
+            Some(
+                binding
+                    .strip_prefix("uint32_t ")
+                    .unwrap_or(binding)
+                    .to_owned(),
+            )
         })
         .collect()
 }

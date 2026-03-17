@@ -1,4 +1,4 @@
-use cielo::{ArcInsertRule, ArcOptLevel, GcConfig, GcPreset};
+use cielo::{GcConfig, GcPreset};
 
 #[test]
 fn gc_preset_off_disables_arc_pipeline() {
@@ -14,14 +14,6 @@ fn gc_preset_off_disables_arc_pipeline() {
     assert!(
         !config.arc_emission_enabled(),
         "off preset should not emit ARC runtime calls"
-    );
-    assert!(
-        config.effective_arc_opt_level().is_empty(),
-        "off preset should not enable ARC optimizer flags"
-    );
-    assert!(
-        config.effective_arc_insert_rules().is_empty(),
-        "off preset should not enable ARC insertion rules"
     );
 }
 
@@ -45,34 +37,18 @@ fn gc_preset_arc_bench_raw_keeps_arc_without_optimizer() {
         !config.arc_verify_enabled(),
         "bench raw preset should disable ARC verifier for compile overhead isolation"
     );
-    assert_eq!(
-        config.effective_arc_insert_rules(),
-        ArcInsertRule::all(),
-        "bench raw preset should keep all ARC insertion decision rules enabled"
-    );
 }
 
 #[test]
-fn gc_preset_arc_optimized_enables_full_arc_opt_level() {
+fn gc_preset_arc_optimized_enables_cfg_move_optimization() {
     let config = GcConfig::from_preset(GcPreset::ArcOptimized);
-    let expected = ArcOptLevel::SAME_STMT_PAIR_ELIM | ArcOptLevel::CFG_REDUNDANT_RELEASE_ELIM;
     assert!(config.gc_enabled(), "optimized preset should keep ARC on");
     assert!(
         config.arc_optimization_enabled(),
         "optimized preset should enable ARC optimization pass"
     );
-    assert_eq!(
-        config.effective_arc_opt_level(),
-        expected,
-        "optimized preset should enable both local and cfg ARC elimination flags"
-    );
     assert!(
         config.borrow_hazard_diagnostics_enabled(),
         "optimized preset should keep hazard diagnostics enabled"
-    );
-    assert_eq!(
-        config.effective_arc_insert_rules(),
-        ArcInsertRule::all(),
-        "optimized preset should keep full ARC insertion rule set enabled"
     );
 }
