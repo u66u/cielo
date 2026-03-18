@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::common::ids::SymbolId;
+use crate::SymbolId;
 
 #[derive(Clone, Debug, Default)]
 pub struct Interner {

@@ -1,4 +1,4 @@
-use cielo::common::symbols::Interner;
+use cielo_base::Interner;
 
 #[test]
 fn interning_is_stable() {

@@ -1,5 +1,5 @@
-use cielo::common::densemap::DenseMap;
-use cielo::common::ids::{ExprId, VarId};
+use cielo_base::densemap::DenseMap;
+use cielo_base::{ExprId, VarId};
 
 #[test]
 fn densemap_supports_sparse_id_insert_and_lookup() {

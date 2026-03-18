@@ -1,4 +1,4 @@
-use cielo::common::fixpoint::fixpoint;
+use cielo_base::fixpoint::fixpoint;
 
 #[test]
 fn converges_to_expected_value() {

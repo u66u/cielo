@@ -1,6 +1,6 @@
 use miette::{GraphicalReportHandler, LabeledSpan, MietteDiagnostic, NamedSource, Report};
 
-use crate::common::diagnostics::{Diagnostic, Severity};
+use crate::diagnostics::{Diagnostic, Severity};
 
 pub fn diagnostic_report(diag: &Diagnostic, source_name: &str, source: &str) -> Report {
     let source_len = source.len();

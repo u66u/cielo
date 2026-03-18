@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use crate::common::ids::{ExprId, HandlerId, VarId};
+use crate::ids::{ExprId, HandlerId, VarId};
 
 pub trait DenseId: Copy {
     fn from_index(index: usize) -> Self;

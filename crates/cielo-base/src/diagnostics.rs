@@ -1,5 +1,4 @@
-use crate::common::ids::DiagnosticId;
-use crate::common::span::Span;
+use crate::{DiagnosticId, Span};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Severity {

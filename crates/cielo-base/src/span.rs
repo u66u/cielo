@@ -1,4 +1,4 @@
-use crate::common::ids::SourceId;
+use crate::SourceId;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct Span {
@@ -25,6 +25,11 @@ impl Span {
     #[inline]
     pub const fn len(self) -> u32 {
         self.end.saturating_sub(self.start)
+    }
+
+    #[inline]
+    pub const fn is_empty(self) -> bool {
+        self.start >= self.end
     }
 
     #[inline]
