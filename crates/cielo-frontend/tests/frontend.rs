@@ -1,8 +1,7 @@
-use cielo::common::ids::SourceId;
-use cielo::common::symbols::Interner;
-use cielo::frontend::ast::{ExprKind, Item, Stmt};
-use cielo::frontend::lexer::{Keyword, TokenKind, lex};
-use cielo::frontend::parser::parse_source;
+use cielo_base::{Interner, SourceId};
+use cielo_frontend::ast::{ExprKind, Item, Stmt};
+use cielo_frontend::lexer::{Keyword, TokenKind, lex};
+use cielo_frontend::parser::parse_source;
 
 #[test]
 fn lexes_keywords_and_symbols() {

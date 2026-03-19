@@ -1,7 +1,5 @@
-use crate::common::diagnostics::DiagnosticBag;
-use crate::common::ids::{SourceId, SymbolId};
-use crate::common::span::Span;
-use crate::common::symbols::Interner;
+use cielo_base::diagnostics::DiagnosticBag;
+use cielo_base::{Interner, SourceId, Span, SymbolId};
 
 macro_rules! define_keywords {
     ($($text:literal => $variant:ident),* $(,)?) => {

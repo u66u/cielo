@@ -1,8 +1,7 @@
-use cielo::common::ids::SourceId;
-use cielo::common::symbols::Interner;
-use cielo::frontend::parser::parse_source;
-use cielo::ir::core::StmtKind;
-use cielo::passes::lowering::{LowerConfig, lower_program};
+use cielo_base::{Interner, SourceId};
+use cielo_frontend::parser::parse_source;
+use cielo_ir::core::StmtKind;
+use cielo_lowering::{LowerConfig, lower_program};
 
 #[test]
 fn lowers_simple_program() {
@@ -121,8 +120,8 @@ fn main() -> Int {
 }
 
 fn stmt_graph_contains_resume(
-    program: &cielo::ir::core::CoreProgram,
-    root: cielo::common::ids::StmtId,
+    program: &cielo_ir::core::CoreProgram,
+    root: cielo_base::StmtId,
 ) -> bool {
     let mut stack = vec![root];
     let mut seen = std::collections::HashSet::new();
@@ -445,7 +444,7 @@ fn main() -> Int {
         .program
         .exprs()
         .iter()
-        .any(|expr| matches!(expr.kind, cielo::ir::core::ExprKind::MakeEnum { .. }));
+        .any(|expr| matches!(expr.kind, cielo_ir::core::ExprKind::MakeEnum { .. }));
     assert!(has_ctor);
 }
 
@@ -467,6 +466,6 @@ fn main() -> Int {
         .program
         .exprs()
         .iter()
-        .any(|expr| matches!(expr.kind, cielo::ir::core::ExprKind::MakeStruct { .. }));
+        .any(|expr| matches!(expr.kind, cielo_ir::core::ExprKind::MakeStruct { .. }));
     assert!(has_ctor);
 }

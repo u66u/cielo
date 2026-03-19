@@ -22,21 +22,19 @@ use std::collections::{HashMap, HashSet};
 // Complexity:
 // - Linear in AST size (single walk + reverse statement stitching per block)
 
-use crate::common::diagnostics::DiagnosticBag;
-use crate::common::ids::{EffectLabelId, FuncId, SymbolId, VarId};
-use crate::common::span::Span;
-use crate::common::symbols::Interner;
-use crate::frontend::ast::{
+use cielo_base::diagnostics::DiagnosticBag;
+use cielo_base::{EffectLabelId, FuncId, Interner, Span, SymbolId, VarId};
+use cielo_frontend::ast::{
     self, BuiltinType, EffectCapabilityHint, EffectPropertyHint, ExprKind as AstExprKind, Item,
     Stmt as AstStmt, TypeExpr, TypeExprKind,
 };
-use crate::ir::core::{
+use cielo_ir::core::{
     AdtEnumDecl, AdtEnumVariantDecl, AdtStructDecl, BinaryOp, CoreProgram, CoreTypeRef, EffectDecl,
     EffectOperationDecl, ExprKind, ExprNode, FunctionDecl, HandlerClause, HandlerDef, Literal,
     MatchArm, PrimitiveTypeRef, StageDirective, StmtKind, StmtNode, UnaryOp,
 };
-use crate::pipeline::compiler::{Endianness, TargetSpec};
-use crate::sema::effect::{CapabilityLevel, EffectFlags, EffectProperties, SortedEffectRow};
+use cielo_ir::effect::{CapabilityLevel, EffectFlags, EffectProperties, SortedEffectRow};
+use cielo_ir::target::{Endianness, TargetSpec};
 
 #[derive(Clone, Debug)]
 pub struct LowerOutput {
@@ -44,21 +42,11 @@ pub struct LowerOutput {
     pub diagnostics: DiagnosticBag,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct LowerConfig {
     pub entrypoints: Vec<SymbolId>,
     pub target_spec: Option<TargetSpec>,
     pub target_builtins: Option<TargetBuiltinSymbols>,
-}
-
-impl Default for LowerConfig {
-    fn default() -> Self {
-        Self {
-            entrypoints: Vec::new(),
-            target_spec: None,
-            target_builtins: None,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -121,8 +109,8 @@ struct Lowerer {
 }
 
 enum LoweredValue {
-    Expr(crate::common::ids::ExprId),
-    Stmt(crate::common::ids::StmtId),
+    Expr(cielo_base::ExprId),
+    Stmt(cielo_base::StmtId),
 }
 
 impl Lowerer {
@@ -281,23 +269,23 @@ impl Lowerer {
         &mut self,
         block: &ast::BlockExpr,
         outer_locals: &mut HashMap<SymbolId, VarId>,
-    ) -> crate::common::ids::StmtId {
+    ) -> cielo_base::StmtId {
         enum Action {
             Let {
                 span: Span,
                 binding: VarId,
-                value: crate::common::ids::ExprId,
+                value: cielo_base::ExprId,
             },
             Val {
                 span: Span,
                 binding: VarId,
-                value: crate::common::ids::StmtId,
+                value: cielo_base::StmtId,
             },
             Perform {
                 span: Span,
                 effect: EffectLabelId,
                 operation: SymbolId,
-                args: Vec<crate::common::ids::ExprId>,
+                args: Vec<cielo_base::ExprId>,
             },
         }
 
@@ -487,7 +475,7 @@ impl Lowerer {
         &mut self,
         expr: &ast::Expr,
         locals: &HashMap<SymbolId, VarId>,
-    ) -> Option<crate::common::ids::StmtId> {
+    ) -> Option<cielo_base::StmtId> {
         if let AstExprKind::StageBlock { stage, block } = &expr.kind {
             let mut block_locals = locals.clone();
             let body = self.lower_block(block, &mut block_locals);
@@ -611,9 +599,7 @@ impl Lowerer {
                     .function(func_id)
                     .map(|f| f.declared_effects.clone())
                     .filter(|row| !row.is_empty());
-                let Some(effects) = effects else {
-                    return None;
-                };
+                let effects = effects?;
                 let result = self.fresh_var();
                 let arg_ids = args
                     .iter()
@@ -765,7 +751,7 @@ impl Lowerer {
         &mut self,
         expr: &ast::Expr,
         locals: &HashMap<SymbolId, VarId>,
-    ) -> crate::common::ids::ExprId {
+    ) -> cielo_base::ExprId {
         let kind = match &expr.kind {
             AstExprKind::Int(value) => ExprKind::Literal(Literal::Int(*value)),
             AstExprKind::Bool(value) => ExprKind::Literal(Literal::Bool(*value)),
@@ -920,12 +906,8 @@ impl Lowerer {
         locals: &HashMap<SymbolId, VarId>,
         span: Span,
     ) -> Option<ExprKind> {
-        let Some(target_spec) = self.config.target_spec else {
-            return None;
-        };
-        let Some(target_builtins) = self.config.target_builtins else {
-            return None;
-        };
+        let target_spec = self.config.target_spec?;
+        let target_builtins = self.config.target_builtins?;
 
         let literal = if callee == target_builtins.target_word_size_bits {
             Literal::Int(i64::from(target_spec.word_size_bits))
@@ -952,16 +934,16 @@ impl Lowerer {
         Some(ExprKind::Error(error))
     }
 
-    fn make_dummy_body(&mut self, span: Span) -> crate::common::ids::StmtId {
+    fn make_dummy_body(&mut self, span: Span) -> cielo_base::StmtId {
         let unit = self.push_expr(ExprKind::Literal(Literal::Unit), span);
         self.push_stmt(StmtKind::Return(unit), span)
     }
 
-    fn push_expr(&mut self, kind: ExprKind, span: Span) -> crate::common::ids::ExprId {
+    fn push_expr(&mut self, kind: ExprKind, span: Span) -> cielo_base::ExprId {
         self.program.push_expr(ExprNode { span, kind })
     }
 
-    fn push_stmt(&mut self, kind: StmtKind, span: Span) -> crate::common::ids::StmtId {
+    fn push_stmt(&mut self, kind: StmtKind, span: Span) -> cielo_base::StmtId {
         self.program.push_stmt(StmtNode { span, kind })
     }
 

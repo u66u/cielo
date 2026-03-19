@@ -1,6 +1,5 @@
-use crate::common::diagnostics::ErrorNode;
-use crate::common::ids::SymbolId;
-use crate::common::span::Span;
+use cielo_base::diagnostics::ErrorNode;
+use cielo_base::{Span, SymbolId};
 
 #[derive(Clone, Debug, Default)]
 pub struct Program {

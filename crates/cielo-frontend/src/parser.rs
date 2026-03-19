@@ -1,14 +1,12 @@
-use crate::common::diagnostics::DiagnosticBag;
-use crate::common::ids::{SourceId, SymbolId};
-use crate::common::span::Span;
-use crate::common::symbols::Interner;
-use crate::frontend::ast::{
+use crate::ast::{
     BinOp, BlockExpr, BuiltinType, EffectCapabilityHint, EffectDecl, EffectOperationDecl,
     EffectPropertyHint, EnumDecl, EnumVariantDecl, Expr, ExprKind, FieldDecl, FunctionDecl,
     HandleClause, Item, MatchClause, Param, Program, StageMarker, Stmt, StructDecl, TypeExpr,
     TypeExprKind, UnaryOp,
 };
-use crate::frontend::lexer::{Keyword, Token, TokenKind, lex};
+use crate::lexer::{Keyword, Token, TokenKind, lex};
+use cielo_base::diagnostics::DiagnosticBag;
+use cielo_base::{Interner, SourceId, Span, SymbolId};
 
 macro_rules! map_binops {
     ($tok:expr, $($pat:pat => $op:expr),+ $(,)?) => {

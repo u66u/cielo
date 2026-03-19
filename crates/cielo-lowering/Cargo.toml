@@ -1,0 +1,9 @@
+[package]
+name = "cielo-lowering"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cielo-base = { path = "../cielo-base" }
+cielo-frontend = { path = "../cielo-frontend" }
+cielo-ir = { path = "../cielo-ir" }
