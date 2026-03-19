@@ -2,9 +2,9 @@ use std::hash::Hash;
 
 use smallvec::SmallVec;
 
-use crate::common::ids::{ExprId, LinearExprId, LinearStmtId, StmtId, SymbolId};
-use crate::ir::core::{CoreProgram, ExprKind, ExprNode, Literal, StmtNode};
-use crate::ir::linear::{LinearExpr, LinearExprNode, LinearProgram, LinearStmtNode};
+use crate::core::{CoreProgram, ExprKind, ExprNode, Literal, StmtNode};
+use crate::linear::{LinearExpr, LinearExprNode, LinearProgram, LinearStmtNode};
+use cielo_base::{ExprId, LinearExprId, LinearStmtId, StmtId, SymbolId};
 
 pub trait IrStmtNode {
     type StmtId: Copy + Eq + Hash;

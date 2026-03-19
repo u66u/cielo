@@ -1,7 +1,5 @@
-use crate::common::ids::{
-    EffectLabelId, LinearExprId, LinearFuncId, LinearStmtId, SymbolId, VarId,
-};
-use crate::ir::core::{BinaryOp, Literal, StageDirective, UnaryOp};
+use crate::core::{BinaryOp, Literal, StageDirective, UnaryOp};
+use cielo_base::{EffectLabelId, LinearExprId, LinearFuncId, LinearStmtId, SymbolId, VarId};
 use smallvec::{SmallVec, smallvec};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

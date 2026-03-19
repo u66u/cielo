@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::ops::Deref;
 
-use crate::common::ids::EffectLabelId;
+use cielo_base::EffectLabelId;
 use smallvec::SmallVec;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]

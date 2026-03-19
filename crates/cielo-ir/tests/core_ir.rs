@@ -1,6 +1,5 @@
-use cielo::common::ids::VarId;
-use cielo::common::span::Span;
-use cielo::ir::core::{CoreProgram, ExprKind, ExprNode, Literal, StmtKind, StmtNode};
+use cielo_base::{Span, VarId};
+use cielo_ir::core::{CoreProgram, ExprKind, ExprNode, Literal, StmtKind, StmtNode};
 
 #[test]
 fn core_program_assigns_dense_ids() {

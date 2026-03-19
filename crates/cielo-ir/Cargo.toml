@@ -1,0 +1,9 @@
+[package]
+name = "cielo-ir"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cielo-base = { path = "../cielo-base" }
+serde = { version = "1.0.228", features = ["derive"] }
+smallvec = "1.15.1"

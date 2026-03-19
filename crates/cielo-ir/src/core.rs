@@ -1,9 +1,7 @@
-use crate::common::diagnostics::ErrorNode;
-use crate::common::ids::{
-    EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, TypeId, VarId,
-};
-use crate::common::span::Span;
-use crate::sema::effect::{EffectProperties, SortedEffectRow};
+use crate::effect::{EffectProperties, SortedEffectRow};
+use cielo_base::Span;
+use cielo_base::diagnostics::ErrorNode;
+use cielo_base::{EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, TypeId, VarId};
 use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 use std::collections::HashSet;

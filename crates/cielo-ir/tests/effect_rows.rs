@@ -1,5 +1,5 @@
-use cielo::common::ids::EffectLabelId;
-use cielo::sema::effect::SortedEffectRow;
+use cielo_base::EffectLabelId;
+use cielo_ir::effect::SortedEffectRow;
 
 #[test]
 fn sorted_effect_row_is_unique_and_ordered() {

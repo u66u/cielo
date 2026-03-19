@@ -5,11 +5,11 @@
 //! variables are preserved as optional provenance while synthetic block values
 //! are free to model continuations and cleanup paths.
 
-use crate::common::ids::{
+use crate::core::{BinaryOp, Literal, StageDirective, UnaryOp};
+use cielo_base::{
     CfgBlockId, CfgExprId, CfgFuncId, CfgHandlerId, CfgInstId, CfgValueId, EffectLabelId,
     LinearExprId, LinearStmtId, SymbolId, VarId,
 };
-use crate::ir::core::{BinaryOp, Literal, StageDirective, UnaryOp};
 
 #[derive(Clone, Debug, Default)]
 pub struct CfgProgram {
@@ -255,6 +255,16 @@ pub enum CfgCallConvention {
     Pure,
     Direct,
     Control,
+}
+
+impl From<crate::linear::CallConvention> for CfgCallConvention {
+    fn from(value: crate::linear::CallConvention) -> Self {
+        match value {
+            crate::linear::CallConvention::Pure => Self::Pure,
+            crate::linear::CallConvention::Direct => Self::Direct,
+            crate::linear::CallConvention::Control => Self::Control,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
