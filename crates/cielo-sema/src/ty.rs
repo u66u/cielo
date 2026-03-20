@@ -1,5 +1,5 @@
-use crate::common::ids::{SymbolId, TypeId};
-use crate::sema::effect::SortedEffectRow;
+use cielo_base::{SymbolId, TypeId};
+use cielo_ir::effect::SortedEffectRow;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Persistability {

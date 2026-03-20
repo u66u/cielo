@@ -1,0 +1,12 @@
+[package]
+name = "cielo-sema"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cielo-base = { path = "../cielo-base" }
+cielo-ir = { path = "../cielo-ir" }
+
+[dev-dependencies]
+cielo-frontend = { path = "../cielo-frontend" }
+cielo-lowering = { path = "../cielo-lowering" }

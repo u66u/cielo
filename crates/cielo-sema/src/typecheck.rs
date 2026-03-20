@@ -21,19 +21,17 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::common::densemap::DenseMap;
-use crate::common::diagnostics::DiagnosticBag;
-use crate::common::ids::{
-    EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, TypeId, VarId,
-};
-use crate::common::span::Span;
-use crate::ir::core::{
+use crate::facts::SemanticTables;
+use crate::ownership::{OwnershipClass, classify_core_type_ref, classify_type_kind};
+use crate::ty::{EnumVariant, PrimitiveType, StructField, TypeKind, TypeStore};
+use cielo_base::Span;
+use cielo_base::densemap::DenseMap;
+use cielo_base::diagnostics::DiagnosticBag;
+use cielo_base::{EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, TypeId, VarId};
+use cielo_ir::core::{
     CoreProgram, CoreTypeRef, ExprKind, Literal, OpCategory, PrimitiveTypeRef, StmtKind, UnaryOp,
 };
-use crate::pipeline::phases::SemanticTables;
-use crate::sema::effect::SortedEffectRow;
-use crate::sema::ownership::{OwnershipClass, classify_core_type_ref, classify_type_kind};
-use crate::sema::ty::{EnumVariant, PrimitiveType, StructField, TypeKind, TypeStore};
+use cielo_ir::effect::SortedEffectRow;
 
 macro_rules! define_primitive_type_ids {
     ($($field:ident => $primitive:ident),* $(,)?) => {
@@ -688,7 +686,7 @@ impl<'a> TypeChecker<'a> {
     fn infer_match_stmt(
         &mut self,
         scrutinee: ExprId,
-        arms: &[crate::ir::core::MatchArm],
+        arms: &[cielo_ir::core::MatchArm],
         default: Option<StmtId>,
         env: &mut Env,
         resume_ctx: &mut ResumeCtx,
@@ -762,7 +760,7 @@ impl<'a> TypeChecker<'a> {
             });
         }
 
-        result_ty.unwrap_or_else(|| InferTy::Concrete(self.prim.unit))
+        result_ty.unwrap_or(InferTy::Concrete(self.prim.unit))
     }
 
     fn infer_handle_stmt(
@@ -1510,7 +1508,7 @@ fn intern_program_adts(
             .collect::<Vec<_>>();
 
         if let Some(TypeKind::Struct { fields, .. }) = store.get_mut(ty_id) {
-            for (field, resolved_ty) in fields.iter_mut().zip(resolved_fields.into_iter()) {
+            for (field, resolved_ty) in fields.iter_mut().zip(resolved_fields) {
                 field.ty = resolved_ty;
             }
         }

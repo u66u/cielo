@@ -1,13 +1,11 @@
-use cielo::common::diagnostics::DiagnosticBag;
-use cielo::common::ids::{EffectLabelId, SourceId};
-use cielo::common::span::Span;
-use cielo::common::symbols::Interner;
-use cielo::frontend::parser::parse_source;
-use cielo::ir::core::{BinaryOp, CoreProgram, ExprKind, ExprNode, Literal, StmtKind};
-use cielo::passes::lowering::{LowerConfig, lower_program};
-use cielo::sema::effect::{CapabilityLevel, EffectFlags, is_thunkable};
-use cielo::sema::ownership::OwnershipClass;
-use cielo::sema::typecheck::typecheck_core;
+use cielo_base::diagnostics::{DiagnosticBag, Severity};
+use cielo_base::{EffectLabelId, Interner, SourceId, Span};
+use cielo_frontend::parser::parse_source;
+use cielo_ir::core::{BinaryOp, CoreProgram, ExprKind, ExprNode, Literal, StmtKind};
+use cielo_ir::effect::{CapabilityLevel, EffectFlags, SortedEffectRow, is_thunkable};
+use cielo_lowering::{LowerConfig, lower_program};
+use cielo_sema::ownership::OwnershipClass;
+use cielo_sema::typecheck::typecheck_core;
 
 #[test]
 fn infers_simple_binary_types() {
@@ -453,14 +451,14 @@ fn main() -> Int {
 
     assert!(
         !is_thunkable(
-            &cielo::sema::effect::SortedEffectRow::singleton(EffectLabelId::from_u32(0)),
+            &SortedEffectRow::singleton(EffectLabelId::from_u32(0)),
             &sema.effect_properties
         ),
         "IO effects should not be thunkable"
     );
     assert!(
         is_thunkable(
-            &cielo::sema::effect::SortedEffectRow::singleton(EffectLabelId::from_u32(2)),
+            &SortedEffectRow::singleton(EffectLabelId::from_u32(2)),
             &sema.effect_properties
         ),
         "ComptimeReadFiles should stay thunkable for staging decisions"
@@ -488,7 +486,7 @@ fn main() -> Int {
         diagnostics
             .entries()
             .iter()
-            .all(|entry| entry.severity != cielo::common::diagnostics::Severity::Error),
+            .all(|entry| entry.severity != Severity::Error),
         "generic signature should instantiate per-call without type errors: {:?}",
         diagnostics.entries()
     );
