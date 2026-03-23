@@ -6,9 +6,8 @@ use crate::common::diagnostics::DiagnosticBag;
 use crate::common::ids::{EffectLabelId, ExprId, FuncId, HandlerId, SymbolId, TypeId, VarId};
 use crate::frontend::ast::Program as AstProgram;
 use crate::ir::core::{CoreProgram, Literal};
-use crate::sema::effect::{EffectProperties, SortedEffectRow};
-use crate::sema::ownership::OwnershipClass;
-use crate::sema::ty::Persistability;
+use crate::sema::effect::SortedEffectRow;
+pub use cielo_sema::facts::SemanticTables;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -109,33 +108,6 @@ pub struct HandlerDischarge {
 pub struct ClauseDischarge {
     pub dischargeable: bool,
     pub reason: Option<Reason>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct SemanticTables {
-    pub type_of_expr: Vec<Option<TypeId>>,
-    pub effects_of_expr: Vec<SortedEffectRow>,
-    pub effects_of_stmt: Vec<SortedEffectRow>,
-    pub ownership_of_expr: Vec<OwnershipClass>,
-    pub ownership_of_var: DenseMap<VarId, OwnershipClass>,
-    pub ownership_of_type: Vec<OwnershipClass>,
-    pub persistability_of_type: Vec<Persistability>,
-    pub effect_properties: HashMap<EffectLabelId, EffectProperties>,
-}
-
-impl SemanticTables {
-    pub fn with_counts(expr_count: usize, stmt_count: usize) -> Self {
-        Self {
-            type_of_expr: vec![None; expr_count],
-            effects_of_expr: vec![SortedEffectRow::empty(); expr_count],
-            effects_of_stmt: vec![SortedEffectRow::empty(); stmt_count],
-            ownership_of_expr: vec![OwnershipClass::BorrowedView; expr_count],
-            ownership_of_var: DenseMap::default(),
-            ownership_of_type: Vec::new(),
-            persistability_of_type: Vec::new(),
-            effect_properties: HashMap::new(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -413,7 +385,7 @@ macro_rules! define_phase_state_with_parts {
         define_phase_state!($name { $($field: $ty),+ });
 
         impl $name {
-            pub(crate) fn into_parts(self) -> ($($ty),+) {
+            pub fn into_parts(self) -> ($($ty),+) {
                 ($(self.$field),+)
             }
         }
@@ -522,11 +494,11 @@ define_phase_state_with_parts!(Residualized {
 });
 
 impl Residualized {
-    pub(crate) fn program_and_diagnostics_mut(&mut self) -> (&CoreProgram, &mut DiagnosticBag) {
+    pub fn program_and_diagnostics_mut(&mut self) -> (&CoreProgram, &mut DiagnosticBag) {
         (&self.program, &mut self.diagnostics)
     }
 
-    pub(crate) fn residual_mut(&mut self) -> &mut ResidualTables {
+    pub fn residual_mut(&mut self) -> &mut ResidualTables {
         &mut self.residual
     }
 }

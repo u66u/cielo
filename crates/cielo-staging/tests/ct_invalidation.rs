@@ -1,10 +1,10 @@
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cielo::pipeline::ct_invalidation::{
+use cielo_staging::pipeline::ct_invalidation::{
     CtDepSnapshot, CtInvalidationReason, diff, load_snapshot, save_snapshot, sidecar_path,
 };
-use cielo::pipeline::phases::{CtCacheKey, CtFileDep};
+use cielo_staging::pipeline::phases::{CtCacheKey, CtFileDep};
 
 fn key(word_size: u8, endianness: &str, alignment: u8, policy: &str, version: &str) -> CtCacheKey {
     CtCacheKey {

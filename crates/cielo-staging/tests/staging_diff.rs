@@ -1,15 +1,14 @@
-use cielo::common::ids::{ExprId, SourceId, SymbolId};
-use cielo::common::span::Span;
-use cielo::ir::core::{
+use cielo_base::{ExprId, SourceId, Span, SymbolId};
+use cielo_ir::core::{
     BinaryOp, CoreProgram, CoreTypeRef, ExprKind, ExprNode, FunctionDecl, Literal,
     PrimitiveTypeRef, StmtKind, StmtNode,
 };
-use cielo::pipeline::phases::{BtaTables, Stage};
-use cielo::pipeline::staging_diff::{
+use cielo_ir::effect::SortedEffectRow;
+use cielo_staging::pipeline::phases::{BtaTables, Stage};
+use cielo_staging::pipeline::staging_diff::{
     SnapshotStage, StageSnapshotEntry, collect_snapshot, diff_snapshots, load_snapshot,
     save_snapshot,
 };
-use cielo::sema::effect::SortedEffectRow;
 use std::collections::BTreeSet;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};

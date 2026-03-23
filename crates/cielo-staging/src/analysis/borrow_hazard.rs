@@ -158,10 +158,10 @@ fn collect_reachable(program: &CoreProgram) -> Vec<StmtId> {
         .collect::<Vec<_>>();
     let mut seen = std::collections::HashSet::new();
     while let Some(stmt) = stack.pop() {
-        if seen.insert(stmt) {
-            if let Some(node) = program.stmt(stmt) {
-                stack.extend(node.child_stmts());
-            }
+        if seen.insert(stmt)
+            && let Some(node) = program.stmt(stmt)
+        {
+            stack.extend(node.child_stmts());
         }
     }
     let mut result = seen.into_iter().collect::<Vec<_>>();

@@ -79,36 +79,34 @@ struct SpecializeCandidate {
     callee: FuncId,
 }
 
+#[derive(Default)]
+struct SpecializationState {
+    specialized: HashMap<(FuncId, HandlerShapeKey), FuncId>,
+    count_by_callee: HashMap<FuncId, usize>,
+    total: usize,
+    stats: SpecializationStats,
+}
+
 fn specialize_handle_wrapped_calls(
     program: &mut CoreProgram,
     bta: &mut BtaTables,
     sema: &mut SemanticTables,
 ) -> SpecializationStats {
     let candidates = collect_specialize_candidates(program);
-    let mut specialized: HashMap<(FuncId, HandlerShapeKey), FuncId> = HashMap::new();
-    let mut specialized_count_by_callee: HashMap<FuncId, usize> = HashMap::new();
-    let mut total_specialized = 0usize;
-    let mut stats = SpecializationStats::default();
+    let mut state = SpecializationState::default();
 
     for candidate in candidates {
-        stats.candidates_seen = stats.candidates_seen.saturating_add(1);
-        let Some(specialized_callee) = ensure_specialized(
-            program,
-            bta,
-            sema,
-            &candidate,
-            &mut specialized,
-            &mut specialized_count_by_callee,
-            &mut total_specialized,
-            &mut stats,
-        ) else {
+        state.stats.candidates_seen = state.stats.candidates_seen.saturating_add(1);
+        let Some(specialized_callee) =
+            ensure_specialized(program, bta, sema, &candidate, &mut state)
+        else {
             continue;
         };
         if rewrite_direct_handle_callsite(program, sema, &candidate, specialized_callee) {
-            stats.rewrites = stats.rewrites.saturating_add(1);
+            state.stats.rewrites = state.stats.rewrites.saturating_add(1);
         }
     }
-    stats
+    state.stats
 }
 
 fn collect_specialize_candidates(program: &CoreProgram) -> Vec<SpecializeCandidate> {
@@ -303,9 +301,9 @@ fn is_forwarding_tail_of_var(program: &CoreProgram, stmt_id: StmtId, source_var:
             }
             Some(StmtKind::Stage { body, next, .. }) => {
                 recurse(program, *body, source_var, visiting)
-                    && next.as_ref().map_or(true, |next_stmt| {
-                        recurse(program, *next_stmt, source_var, visiting)
-                    })
+                    && next
+                        .as_ref()
+                        .is_none_or(|next_stmt| recurse(program, *next_stmt, source_var, visiting))
             }
             _ => false,
         };
@@ -546,38 +544,34 @@ fn ensure_specialized(
     bta: &mut BtaTables,
     sema: &mut SemanticTables,
     candidate: &SpecializeCandidate,
-    specialized: &mut HashMap<(FuncId, HandlerShapeKey), FuncId>,
-    specialized_count_by_callee: &mut HashMap<FuncId, usize>,
-    total_specialized: &mut usize,
-    stats: &mut SpecializationStats,
+    state: &mut SpecializationState,
 ) -> Option<FuncId> {
     let key = (candidate.callee, candidate.shape.clone());
-    if let Some(existing) = specialized.get(&key).copied() {
-        stats.reused_existing = stats.reused_existing.saturating_add(1);
+    if let Some(existing) = state.specialized.get(&key).copied() {
+        state.stats.reused_existing = state.stats.reused_existing.saturating_add(1);
         return Some(existing);
     }
     // v1 guard: mixed recursive wrapper shapes stay unspecialized.
     if has_varying_recursive_wrapper_shapes(program, candidate.callee, &candidate.shape) {
-        stats.skipped_varying_shapes = stats.skipped_varying_shapes.saturating_add(1);
+        state.stats.skipped_varying_shapes = state.stats.skipped_varying_shapes.saturating_add(1);
         return None;
     }
-    if *total_specialized >= MAX_TOTAL_SPECIALIZATIONS {
-        stats.skipped_limits = stats.skipped_limits.saturating_add(1);
+    if state.total >= MAX_TOTAL_SPECIALIZATIONS {
+        state.stats.skipped_limits = state.stats.skipped_limits.saturating_add(1);
         return None;
     }
-    if specialized_count_by_callee
+    if state
+        .count_by_callee
         .get(&candidate.callee)
         .copied()
         .unwrap_or(0)
         >= MAX_SPECIALIZATIONS_PER_CALLEE
     {
-        stats.skipped_limits = stats.skipped_limits.saturating_add(1);
+        state.stats.skipped_limits = state.stats.skipped_limits.saturating_add(1);
         return None;
     }
 
-    let Some(source_decl) = program.function(candidate.callee).cloned() else {
-        return None;
-    };
+    let source_decl = program.function(candidate.callee).cloned()?;
 
     // Add a placeholder copy first to obtain the stable specialized FuncId.
     let placeholder = FunctionDecl {
@@ -614,13 +608,14 @@ fn ensure_specialized(
         function.body = wrapped_body;
     }
 
-    specialized.insert(key, specialized_id);
-    *total_specialized += 1;
-    specialized_count_by_callee
+    state.specialized.insert(key, specialized_id);
+    state.total += 1;
+    state
+        .count_by_callee
         .entry(candidate.callee)
         .and_modify(|count| *count += 1)
         .or_insert(1);
-    stats.created = stats.created.saturating_add(1);
+    state.stats.created = state.stats.created.saturating_add(1);
     Some(specialized_id)
 }
 

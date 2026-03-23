@@ -1,4 +1,4 @@
-use cielo::{GcConfig, GcPreset};
+use cielo_staging::{GcConfig, GcPreset};
 
 #[test]
 fn gc_preset_off_disables_arc_pipeline() {

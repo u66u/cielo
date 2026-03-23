@@ -325,7 +325,7 @@ fn eval_float_arith(op: BinaryOp, left: f64, right: f64) -> Option<(Literal, boo
         BinaryOp::Mod if right != 0.0 => left % right,
         _ => return None,
     };
-    value.is_finite().then(|| (Literal::Float(value), true))
+    value.is_finite().then_some((Literal::Float(value), true))
 }
 
 pub(super) fn normalize_int(value: i64, target: TargetSpec) -> i64 {
