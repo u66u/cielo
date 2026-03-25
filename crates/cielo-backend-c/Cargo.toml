@@ -1,0 +1,10 @@
+[package]
+name = "cielo-backend-c"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cielo-backend-api = { path = "../cielo-backend-api" }
+cielo-base = { path = "../cielo-base" }
+cielo-ir = { path = "../cielo-ir" }
+cielo-staging = { path = "../cielo-staging" }

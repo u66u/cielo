@@ -13,7 +13,7 @@ use crate::ir::core::Literal;
 use crate::passes::c_constants::CConstantPools;
 use crate::pipeline::phases::{ConstantTable, CtorFieldKey, CtorLiteralKey, ScalarLiteralKey};
 
-const C_RUNTIME_HEADER: &str = include_str!("../backend/cielo_runtime.h");
+const C_RUNTIME_HEADER: &str = include_str!("cielo_runtime.h");
 const BUILTIN_PRINT_OP_NAME: &str = "print";
 
 pub fn emit(
@@ -560,10 +560,10 @@ fn reachable_blocks(program: &CfgProgram, entry: CfgBlockId) -> Vec<CfgBlockId> 
     let mut stack = vec![entry];
     let mut seen = HashSet::new();
     while let Some(block) = stack.pop() {
-        if seen.insert(block) {
-            if let Some(block) = program.block(block) {
-                stack.extend(block.terminator.successors());
-            }
+        if seen.insert(block)
+            && let Some(block) = program.block(block)
+        {
+            stack.extend(block.terminator.successors());
         }
     }
     let mut blocks = seen.into_iter().collect::<Vec<_>>();
