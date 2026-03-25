@@ -43,7 +43,7 @@ pub fn run(cfg: &mut CfgProgram, sema: &SemanticTables, gc: &GcConfig) -> ArcSta
             value
                 .source_var
                 .and_then(|var| sema.ownership_of_var.get(&var).copied())
-                .map_or(true, |class| class == OwnershipClass::RcManaged)
+                .is_none_or(|class| class == OwnershipClass::RcManaged)
         })
         .collect::<Vec<_>>();
     infer_managed_values(cfg, &mut managed);
