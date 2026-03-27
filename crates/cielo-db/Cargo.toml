@@ -1,0 +1,14 @@
+[package]
+name = "cielo-db"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cielo-base = { path = "../cielo-base" }
+cielo-frontend = { path = "../cielo-frontend" }
+cielo-ir = { path = "../cielo-ir" }
+cielo-memory = { path = "../cielo-memory" }
+cielo-backend-api = { path = "../cielo-backend-api" }
+cielo-lowering = { path = "../cielo-lowering" }
+cielo-sema = { path = "../cielo-sema" }
+salsa = { version = "0.28.0", features = ["salsa_unstable"] }
