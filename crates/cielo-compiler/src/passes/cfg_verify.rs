@@ -53,23 +53,20 @@ pub fn verify(
             });
             for arm in arms {
                 for (binder, mode) in arm.binders.iter().zip(&arm.projections) {
-                    match mode {
-                        CfgProjectionMode::Move => {
-                            stats.checked_moves = stats.checked_moves.saturating_add(1);
-                            if parent_live {
-                                report(
-                                    diagnostics,
-                                    &mut stats,
-                                    "CFG_ARC_VERIFY_LIVE_PARENT_MOVE",
-                                    format!(
-                                        "field v{} moves out of a match scrutinee that remains live after b{}",
-                                        binder.as_u32(),
-                                        block.id.as_u32()
-                                    ),
-                                );
-                            }
+                    if *mode == CfgProjectionMode::Move {
+                        stats.checked_moves = stats.checked_moves.saturating_add(1);
+                        if parent_live {
+                            report(
+                                diagnostics,
+                                &mut stats,
+                                "CFG_ARC_VERIFY_LIVE_PARENT_MOVE",
+                                format!(
+                                    "field v{} moves out of a match scrutinee that remains live after b{}",
+                                    binder.as_u32(),
+                                    block.id.as_u32()
+                                ),
+                            );
                         }
-                        _ => {}
                     }
                 }
             }

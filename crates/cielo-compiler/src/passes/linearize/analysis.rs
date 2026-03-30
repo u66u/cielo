@@ -220,7 +220,7 @@ fn is_tail_resumptive_stmt(
                 && arms.iter().all(|arm| {
                     is_tail_resumptive_stmt(program, arm.body, resume_var, memo, visiting)
                 })
-                && default.map_or(true, |stmt| {
+                && default.is_none_or(|stmt| {
                     is_tail_resumptive_stmt(program, stmt, resume_var, memo, visiting)
                 })
         }

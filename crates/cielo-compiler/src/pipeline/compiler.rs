@@ -22,49 +22,21 @@ use crate::pipeline::phases::{
     BtaClassified, CoreBuilt, CtPropagated, Monomorphized, Parsed, Residualized, Typed,
 };
 use crate::sema::typecheck::typecheck_core;
+use cielo_db::{
+    CieloDatabase, CompileProfiles, ControlProfile, SemanticsProfile, SourceFile, StagingProfile,
+    TargetProfile, checked_core, parsed_module,
+};
+pub use cielo_ir::target::{Endianness, TargetSpec};
+use cielo_memory::MemoryProfile;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Endianness {
-    Little,
-    Big,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct TargetSpec {
-    pub word_size_bits: u8,
-    pub endianness: Endianness,
-    pub pointer_alignment: u8,
-}
-
-impl Default for TargetSpec {
-    fn default() -> Self {
-        Self {
-            word_size_bits: 64,
-            endianness: if cfg!(target_endian = "little") {
-                Endianness::Little
-            } else {
-                Endianness::Big
-            },
-            pointer_alignment: 8,
-        }
-    }
-}
-
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct CompilerConfig {
     pub target: TargetSpec,
     pub ct_query_cache_path: Option<PathBuf>,
     pub gc: GcConfig,
-}
-
-impl Default for CompilerConfig {
-    fn default() -> Self {
-        Self {
-            target: TargetSpec::default(),
-            ct_query_cache_path: None,
-            gc: GcConfig::default(),
-        }
-    }
+    /// The strategy selected for the database/runtime boundary.  `gc` remains
+    /// as a compatibility setting for the old ARC passes during migration.
+    pub memory: MemoryProfile,
 }
 
 impl CompilerConfig {
@@ -72,11 +44,25 @@ impl CompilerConfig {
         self.gc = GcConfig::from_preset(preset);
         self
     }
+
+    pub fn with_memory_model(mut self, model: cielo_memory::MemoryModel) -> Self {
+        self.memory.model = model;
+        self
+    }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Compiler {
     config: CompilerConfig,
+    db: CieloDatabase,
+}
+
+impl std::fmt::Debug for Compiler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Compiler")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -137,11 +123,104 @@ pub struct CompiledC {
 
 impl Compiler {
     pub fn new(config: CompilerConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            db: CieloDatabase::default(),
+        }
     }
 
     pub fn config(&self) -> CompilerConfig {
         self.config.clone()
+    }
+
+    pub fn database(&self) -> &CieloDatabase {
+        &self.db
+    }
+
+    fn database_profiles(&self) -> CompileProfiles {
+        CompileProfiles {
+            semantics: SemanticsProfile {
+                effects: true,
+                staging: true,
+            },
+            staging: StagingProfile { enabled: true },
+            control: ControlProfile::default(),
+            memory: self.config.memory,
+            target: TargetProfile::from(self.config.target),
+        }
+    }
+
+    pub fn database_source(&self, source: &str, source_id: SourceId) -> SourceFile {
+        SourceFile::new(
+            &self.db,
+            source_id.as_u32(),
+            "<memory>".to_owned(),
+            source.to_owned(),
+        )
+    }
+
+    pub fn database_parse_file(&self, file: SourceFile, interner: &mut Interner) -> Parsed {
+        let parsed = parsed_module(&self.db, file);
+        *interner = parsed.interner.clone();
+        Parsed::new(parsed.program.clone(), parsed.diagnostics.clone())
+    }
+
+    pub fn database_lower_file(&self, file: SourceFile, interner: &mut Interner) -> CoreBuilt {
+        let lowered =
+            cielo_db::lowered_core(&self.db, file, TargetProfile::from(self.config.target));
+        *interner = lowered.interner.clone();
+        CoreBuilt::new(lowered.program.clone(), lowered.diagnostics.clone())
+    }
+
+    pub fn database_type_file(&self, file: SourceFile, interner: &mut Interner) -> Typed {
+        let profiles = self.database_profiles();
+        let checked = checked_core(&self.db, file, profiles.semantics, profiles.target);
+        *interner = checked.core.interner.clone();
+        Typed::new(
+            checked.core.program.clone(),
+            checked.diagnostics.clone(),
+            checked.facts.clone(),
+        )
+    }
+
+    /// Parse through the Salsa boundary and return the ordinary phase product
+    /// expected by the legacy pipeline.  The conversion is deliberately at the
+    /// edge: passes never receive `&dyn Db`.
+    pub fn parse_with_database(
+        &self,
+        source: &str,
+        source_id: SourceId,
+        interner: &mut Interner,
+    ) -> Parsed {
+        if !interner.is_empty() {
+            return self.parse_direct(source, source_id, interner);
+        }
+
+        let file = self.database_source(source, source_id);
+        self.database_parse_file(file, interner)
+    }
+
+    pub fn database_compile(
+        &self,
+        source: &str,
+        source_id: SourceId,
+    ) -> std::sync::Arc<cielo_backend_api::MachineModule> {
+        let file = self.database_source(source, source_id);
+        self.database_compile_file(file)
+    }
+
+    pub fn database_compile_file(
+        &self,
+        file: SourceFile,
+    ) -> std::sync::Arc<cielo_backend_api::MachineModule> {
+        cielo_db::compile(&self.db, file, self.database_profiles())
+    }
+
+    pub fn database_memory_file(
+        &self,
+        file: SourceFile,
+    ) -> std::sync::Arc<cielo_memory::MemoryModule> {
+        cielo_db::compile_memory(&self.db, file, self.database_profiles())
     }
 
     pub fn bootstrap_core(&self, program: CoreProgram) -> CoreBuilt {
@@ -149,6 +228,10 @@ impl Compiler {
     }
 
     pub fn parse(&self, source: &str, source_id: SourceId, interner: &mut Interner) -> Parsed {
+        self.parse_with_database(source, source_id, interner)
+    }
+
+    fn parse_direct(&self, source: &str, source_id: SourceId, interner: &mut Interner) -> Parsed {
         let parsed = parse_source(source, source_id, interner);
         Parsed::new(parsed.program, parsed.diagnostics)
     }
@@ -173,6 +256,10 @@ impl Compiler {
         source_id: SourceId,
         interner: &mut Interner,
     ) -> CoreBuilt {
+        if interner.is_empty() {
+            let file = self.database_source(source, source_id);
+            return self.database_lower_file(file, interner);
+        }
         let parsed = self.parse(source, source_id, interner);
         let main_symbol = interner.intern("main");
         let target_builtins = TargetBuiltinSymbols::intern(interner);
@@ -207,6 +294,12 @@ impl Compiler {
         source_id: SourceId,
         interner: &mut Interner,
     ) -> Residualized {
+        if interner.is_empty() {
+            let file = self.database_source(source, source_id);
+            let typed = self.database_type_file(file, interner);
+            return self.run_v1_typed_pipeline(typed);
+        }
+
         let core = self.parse_and_lower_to_core(source, source_id, interner);
         self.run_v1_core_pipeline(core)
     }
@@ -314,6 +407,12 @@ impl Compiler {
     pub fn run_v1_core_pipeline(&self, built: CoreBuilt) -> Residualized {
         let classified = self.run_v1_evaluate_classify(built);
         self.run_v1_residualize_specialize(classified)
+    }
+
+    pub fn run_v1_typed_pipeline(&self, typed: Typed) -> Residualized {
+        let mono = self.monomorphize(typed);
+        let classified = self.evaluate_classify(mono);
+        self.residualize_specialize(classified)
     }
 
     pub fn run_v0_core_pipeline(&self, built: CoreBuilt) -> Residualized {

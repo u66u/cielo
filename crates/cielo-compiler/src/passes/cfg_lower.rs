@@ -16,7 +16,7 @@ use crate::ir::cfg::{
     CfgProjectionMode, CfgTerminator,
 };
 use crate::ir::core::Literal;
-use crate::ir::linear::{CallConvention, LinearExpr, LinearProgram, LinearStmt};
+use crate::ir::linear::{LinearExpr, LinearProgram, LinearStmt};
 use crate::passes::linearize::Linearized;
 
 #[derive(Clone, Debug)]
@@ -550,15 +550,5 @@ impl<'a> Lowerer<'a> {
             }
         };
         self.cfg.set_terminator(block, terminator);
-    }
-}
-
-impl From<CallConvention> for CfgCallConvention {
-    fn from(value: CallConvention) -> Self {
-        match value {
-            CallConvention::Pure => Self::Pure,
-            CallConvention::Direct => Self::Direct,
-            CallConvention::Control => Self::Control,
-        }
     }
 }

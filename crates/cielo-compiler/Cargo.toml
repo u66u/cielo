@@ -1,0 +1,40 @@
+[package]
+name = "cielo-compiler"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "cielo"
+path = "src/lib.rs"
+
+[dependencies]
+blake3 = "1.8.2"
+indexmap = "2.13.0"
+lasso = "0.7.3"
+miette = { version = "7.6.0", features = ["fancy"] }
+rustc-hash = "2.1.1"
+serde = { version = "1.0.228", features = ["derive"] }
+smallvec = "1.15.1"
+thiserror = "2.0.18"
+cielo-base = { path = "../cielo-base" }
+cielo-frontend = { path = "../cielo-frontend" }
+cielo-ir = { path = "../cielo-ir" }
+cielo-sema = { path = "../cielo-sema" }
+cielo-staging = { path = "../cielo-staging" }
+cielo-lowering = { path = "../cielo-lowering" }
+cielo-db = { path = "../cielo-db" }
+cielo-memory = { path = "../cielo-memory" }
+cielo-backend-api = { path = "../cielo-backend-api" }
+cielo-backend-c = { path = "../cielo-backend-c" }
+
+[[bench]]
+name = "v1_pipeline"
+harness = false
+
+[[bench]]
+name = "v1_runtime"
+harness = false
+
+[[bench]]
+name = "v1_gc_overhead"
+harness = false

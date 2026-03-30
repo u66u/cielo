@@ -473,8 +473,11 @@ fn scoped_perform_does_not_dispatch_to_wrong_capability() {
         return;
     }
 
-    let runtime_header =
-        format!("{}/src/backend/cielo_runtime.h", env!("CARGO_MANIFEST_DIR")).replace('\\', "\\\\");
+    let runtime_header = format!(
+        "{}/../cielo-backend-c/src/cielo_runtime.h",
+        env!("CARGO_MANIFEST_DIR")
+    )
+    .replace('\\', "\\\\");
     let c_source = format!(
         r#"
 #include <stdint.h>
@@ -557,8 +560,11 @@ fn callback_scoped_capability_avoids_wrong_handler_interception() {
         return;
     }
 
-    let runtime_header =
-        format!("{}/src/backend/cielo_runtime.h", env!("CARGO_MANIFEST_DIR")).replace('\\', "\\\\");
+    let runtime_header = format!(
+        "{}/../cielo-backend-c/src/cielo_runtime.h",
+        env!("CARGO_MANIFEST_DIR")
+    )
+    .replace('\\', "\\\\");
     let c_source = format!(
         r#"
 #include <stdint.h>
@@ -644,8 +650,11 @@ fn arc_runtime_release_frees_nested_ctor_graph() {
         return;
     }
 
-    let runtime_header =
-        format!("{}/src/backend/cielo_runtime.h", env!("CARGO_MANIFEST_DIR")).replace('\\', "\\\\");
+    let runtime_header = format!(
+        "{}/../cielo-backend-c/src/cielo_runtime.h",
+        env!("CARGO_MANIFEST_DIR")
+    )
+    .replace('\\', "\\\\");
     let c_source = format!(
         r#"
 #include <stdint.h>
@@ -689,8 +698,11 @@ fn arc_runtime_dec_is_last_and_immortal_ctor_are_safe() {
         return;
     }
 
-    let runtime_header =
-        format!("{}/src/backend/cielo_runtime.h", env!("CARGO_MANIFEST_DIR")).replace('\\', "\\\\");
+    let runtime_header = format!(
+        "{}/../cielo-backend-c/src/cielo_runtime.h",
+        env!("CARGO_MANIFEST_DIR")
+    )
+    .replace('\\', "\\\\");
     let c_source = format!(
         r#"
 #include <stdint.h>
