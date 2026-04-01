@@ -9,7 +9,6 @@ use cielo::common::reporting::render_diagnostic;
 use cielo::common::symbols::Interner;
 use cielo::frontend::ast::{Item, Program};
 use cielo::ir::core::CoreProgram;
-use cielo::passes::lowering::{LowerConfig, TargetBuiltinSymbols};
 use cielo::passes::{c_emit, cfg_lower, linearize};
 use cielo::pipeline::ct_invalidation::{
     CtDepSnapshot, CtInvalidationReason, diff as diff_ct_invalidation,
@@ -24,9 +23,11 @@ use cielo::pipeline::staging_diff::{
     SnapshotStage, collect_snapshot, diff_snapshots, load_snapshot as load_stage_snapshot,
     save_snapshot as save_stage_snapshot,
 };
-use cielo::{Compiler, CompilerConfig};
+use cielo::{
+    Compiler, CompilerConfig, MemoryModel, RefcountAlgorithm, RegionAlgorithm, TracingCollector,
+};
 
-const RUNTIME_HEADER: &str = include_str!("backend/cielo_runtime.h");
+const RUNTIME_HEADER: &str = cielo::RUNTIME_HEADER;
 
 #[derive(Parser, Debug)]
 #[command(name = "cielo", about = "cielo v0 compiler driver")]
@@ -52,6 +53,18 @@ struct Cli {
     #[arg(long, default_value = "gcc")]
     cc: String,
 
+    #[arg(long, value_enum, default_value = "reference-counting")]
+    memory: MemoryChoice,
+
+    #[arg(long, value_enum, default_value = "last-use")]
+    refcount_algorithm: RefcountChoice,
+
+    #[arg(long, value_enum, default_value = "mark-sweep")]
+    tracing_collector: TracingChoice,
+
+    #[arg(long, value_enum, default_value = "constraint-based")]
+    region_algorithm: RegionChoice,
+
     #[arg(long, help = "Persist and diff staging snapshots across rebuilds")]
     staging_diff: bool,
 
@@ -71,11 +84,56 @@ enum DumpKind {
     Cfg,
     Anf,
     C,
+    Memory,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum, Debug)]
+enum MemoryChoice {
+    ReferenceCounting,
+    Tracing,
+    Regions,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum, Debug)]
+enum RefcountChoice {
+    Baseline,
+    LastUse,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum, Debug)]
+enum TracingChoice {
+    MarkSweep,
+    SemiSpace,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum, Debug)]
+enum RegionChoice {
+    Lexical,
+    ConstraintBased,
+    FlowSensitive,
 }
 
 fn main() {
     let cli = Cli::parse();
     let mut config = CompilerConfig::default();
+    config.memory.model = match cli.memory {
+        MemoryChoice::ReferenceCounting => MemoryModel::ReferenceCounting,
+        MemoryChoice::Tracing => MemoryModel::Tracing,
+        MemoryChoice::Regions => MemoryModel::Regions,
+    };
+    config.memory.refcount.algorithm = match cli.refcount_algorithm {
+        RefcountChoice::Baseline => RefcountAlgorithm::Baseline,
+        RefcountChoice::LastUse => RefcountAlgorithm::LastUse,
+    };
+    config.memory.tracing.collector = match cli.tracing_collector {
+        TracingChoice::MarkSweep => TracingCollector::MarkSweep,
+        TracingChoice::SemiSpace => TracingCollector::SemiSpace,
+    };
+    config.memory.regions.algorithm = match cli.region_algorithm {
+        RegionChoice::Lexical => RegionAlgorithm::Lexical,
+        RegionChoice::ConstraintBased => RegionAlgorithm::ConstraintBased,
+        RegionChoice::FlowSensitive => RegionAlgorithm::FlowSensitive,
+    };
     if cli.staging_diff {
         config.ct_query_cache_path = Some(query_cache_sidecar_path(cli.staging_snapshot.as_path()));
     }
@@ -108,31 +166,32 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
     };
 
     let mut interner = Interner::new();
-    let parsed = compiler.parse(&source, SourceId::from_u32(0), &mut interner);
+    let source_id = SourceId::from_u32(0);
+    let db_source = compiler.database_source(&source, source_id);
+    if should_dump(cli, DumpKind::Memory) {
+        let db_memory = compiler.database_memory_file(db_source);
+        println!("=== Database Memory Plan ===\n{db_memory:#?}");
+    }
+    let parsed = compiler.database_parse_file(db_source, &mut interner);
 
     if should_dump(cli, DumpKind::Ast) {
         println!("=== AST ===\n{:#?}", parsed.ast());
     }
     if should_dump(cli, DumpKind::Effects) {
-        dump_effects_from_ast(&parsed.ast(), &interner);
+        dump_effects_from_ast(parsed.ast(), &interner);
     }
 
-    let main_symbol = interner.intern("main");
-    let target_builtins = TargetBuiltinSymbols::intern(&mut interner);
-    let core = compiler.lower_parsed_to_core_with_config(
-        parsed,
-        LowerConfig::with_entrypoint(main_symbol)
-            .with_target_builtins(compiler.config().target, target_builtins),
-    );
+    let core = compiler.database_lower_file(db_source, &mut interner);
 
     if should_dump(cli, DumpKind::Core) {
         println!("=== Core IR ===\n{:#?}", core.program());
     }
     if should_dump(cli, DumpKind::Functions) {
-        dump_functions_from_core(&core.program(), &interner);
+        dump_functions_from_core(core.program(), &interner);
     }
 
-    let residual = compiler.run_v1_core_pipeline(core);
+    let typed = compiler.database_type_file(db_source, &mut interner);
+    let residual = compiler.run_v1_typed_pipeline(typed);
     if should_dump(cli, DumpKind::Sema) {
         dump_sema_summary(&residual);
     }
@@ -152,6 +211,15 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
         || should_dump(cli, DumpKind::Linear)
         || should_dump(cli, DumpKind::Cfg)
         || should_dump(cli, DumpKind::C);
+
+    if need_c_backend {
+        let memory = compiler.database_memory_file(db_source);
+        let missing = cielo::c_backend_capabilities().missing(memory.manifest());
+        if !missing.is_empty() {
+            eprintln!("C backend lacks runtime support for: {missing:?}");
+            std::process::exit(1);
+        }
+    }
 
     if residual.diagnostics().has_errors() {
         if need_c_backend {
