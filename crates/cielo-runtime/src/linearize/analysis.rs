@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::common::ids::{EffectLabelId, ExprId, LinearStmtId, StmtId, VarId};
-use crate::ir::core::{CoreProgram, ExprKind, HandlerClause, HandlerDef, StmtKind};
-use crate::ir::linear::{LinearProgram, LinearStmt};
-use crate::pipeline::phases::SemanticTables;
+use cielo_base::ids::{EffectLabelId, ExprId, LinearStmtId, StmtId, VarId};
+use cielo_ir::core::{CoreProgram, ExprKind, HandlerClause, HandlerDef, StmtKind};
+use cielo_ir::linear::{LinearProgram, LinearStmt};
+use cielo_sema::SemanticTables;
 
 use super::types::{
     ClauseConvention, ClauseResumeAnalysis, ResumeQualifier, ResumeUseBound, ResumeUseRange,

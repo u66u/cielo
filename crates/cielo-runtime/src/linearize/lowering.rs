@@ -1,16 +1,16 @@
 use std::collections::HashMap;
 
-use crate::analysis::function_graph::collect_reachable_functions;
-use crate::common::diagnostics::DiagnosticBag;
-use crate::common::ids::{
+use cielo_base::diagnostics::DiagnosticBag;
+use cielo_base::ids::{
     ExprId, FuncId, LinearExprId, LinearFuncId, LinearStmtId, StmtId, SymbolId, VarId,
 };
-use crate::ir::core::{CoreProgram, ExprKind, HandlerClause, HandlerDef, StmtKind};
-use crate::ir::linear::{
+use cielo_ir::core::{CoreProgram, ExprKind, HandlerClause, HandlerDef, StmtKind};
+use cielo_ir::effect::{SortedEffectRow, is_thunkable};
+use cielo_ir::linear::{
     CallConvention, LinearExpr, LinearFunction, LinearMatchArm, LinearProgram, LinearStmt,
 };
-use crate::pipeline::phases::SemanticTables;
-use crate::sema::effect::is_thunkable;
+use cielo_sema::SemanticTables;
+use cielo_staging::analysis::function_graph::collect_reachable_functions;
 
 use super::analysis::{
     analyze_clause_resume, classify_clause_convention, is_identity_handler_return_clause,
@@ -382,7 +382,7 @@ fn lower_stmt(
                     "Could not resolve handler id while lowering to linear IR",
                     stmt.span,
                 );
-                let effect = crate::common::ids::EffectLabelId::INVALID;
+                let effect = cielo_base::ids::EffectLabelId::INVALID;
                 LinearStmt::Handle {
                     effect,
                     body: lower_stmt(
@@ -1021,7 +1021,7 @@ fn lower_expr(
 }
 
 fn classify_call_convention(
-    effects: &crate::sema::effect::SortedEffectRow,
+    effects: &SortedEffectRow,
     sema: &SemanticTables,
 ) -> CallConvention {
     if effects.is_empty() {

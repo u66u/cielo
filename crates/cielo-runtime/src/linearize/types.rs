@@ -1,4 +1,4 @@
-use crate::common::ids::{StmtId, VarId};
+use cielo_base::ids::{StmtId, VarId};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct ResumeContext {

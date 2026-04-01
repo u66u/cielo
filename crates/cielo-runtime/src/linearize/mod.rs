@@ -22,8 +22,8 @@ mod analysis;
 mod lowering;
 mod types;
 
-use crate::ir::linear::LinearProgram;
-use crate::pipeline::phases::Residualized;
+use cielo_ir::linear::LinearProgram;
+use cielo_staging::pipeline::phases::Residualized;
 
 pub fn run(mut residual: Residualized) -> Linearized {
     let sema = residual.sema().clone();

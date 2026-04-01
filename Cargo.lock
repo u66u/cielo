@@ -212,6 +212,7 @@ dependencies = [
  "cielo-ir",
  "cielo-lowering",
  "cielo-memory",
+ "cielo-runtime",
  "cielo-sema",
  "cielo-staging",
  "indexmap",
@@ -279,6 +280,16 @@ dependencies = [
  "cielo-ir",
  "cielo-staging",
  "smallvec",
+]
+
+[[package]]
+name = "cielo-runtime"
+version = "0.1.0"
+dependencies = [
+ "cielo-base",
+ "cielo-ir",
+ "cielo-sema",
+ "cielo-staging",
 ]
 
 [[package]]

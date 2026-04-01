@@ -7,6 +7,7 @@ members = [
     "crates/cielo-sema",
     "crates/cielo-staging",
     "crates/cielo-lowering",
+    "crates/cielo-runtime",
     "crates/cielo-db",
     "crates/cielo-memory",
     "crates/cielo-backend-api",

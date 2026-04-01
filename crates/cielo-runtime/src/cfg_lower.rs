@@ -7,17 +7,18 @@
 
 use std::collections::HashMap;
 
-use crate::common::ids::{
+use cielo_base::ids::{
     CfgBlockId, CfgExprId, CfgFuncId, CfgHandlerId, CfgValueId, LinearExprId, LinearFuncId,
     LinearStmtId, VarId,
 };
-use crate::ir::cfg::{
+use cielo_ir::cfg::{
     CfgCallConvention, CfgExpr, CfgFunction, CfgInstruction, CfgMatchArm, CfgProgram,
     CfgProjectionMode, CfgTerminator,
 };
-use crate::ir::core::Literal;
-use crate::ir::linear::{LinearExpr, LinearProgram, LinearStmt};
-use crate::passes::linearize::Linearized;
+use cielo_ir::core::Literal;
+use cielo_ir::linear::{LinearExpr, LinearProgram, LinearStmt};
+
+use crate::linearize::Linearized;
 
 #[derive(Clone, Debug)]
 pub struct CfgLowered {
@@ -493,7 +494,7 @@ impl<'a> Lowerer<'a> {
         &mut self,
         id: LinearStmtId,
         result: VarId,
-        callee: crate::common::ids::SymbolId,
+        callee: cielo_base::ids::SymbolId,
         args: Vec<LinearExprId>,
         next: LinearStmtId,
         exit: Exit,
