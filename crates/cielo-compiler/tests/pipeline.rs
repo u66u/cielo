@@ -2222,8 +2222,14 @@ fn main() -> Int {
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut fused_interner);
     let staged = compiler.run_v1_evaluate_classify(core);
     let residual = compiler.run_v1_residualize_specialize(staged);
-    let normalized = compiler.run_v1_normalize(residual);
-    let fused_emitted = c_emit::run(cfg_lower::run(linearize::run(normalized)), &fused_interner);
+    let mut normalized = compiler.run_v1_normalize(residual);
+    let sema = normalized.sema().clone();
+    let linear = {
+        let (program, diagnostics) = normalized.program_and_diagnostics_mut();
+        linearize::run(program, &sema, diagnostics)
+    };
+    let cfg = cfg_lower::run(&linear);
+    let fused_emitted = c_emit::run(normalized, linear, cfg, &fused_interner);
 
     let mut split_interner = Interner::new();
     let split_emitted =

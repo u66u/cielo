@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 
-use crate::common::ids::{ExprId, FuncId, StmtId};
-use crate::ir::core::{CoreProgram, ExprKind, StmtKind};
+use cielo_base::ids::{ExprId, FuncId, StmtId};
+
+use crate::core::{CoreProgram, ExprKind, StmtKind};
 
 pub fn collect_reachable_functions(program: &CoreProgram) -> Vec<FuncId> {
     let mut seen = HashSet::new();

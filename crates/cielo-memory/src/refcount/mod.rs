@@ -4,6 +4,7 @@ use crate::{MemoryInput, RefcountAlgorithm, RefcountProfile, RuntimeManifest, Ru
 
 pub mod analysis;
 pub mod passes;
+pub mod verify;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RefcountModule {

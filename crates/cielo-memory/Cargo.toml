@@ -7,5 +7,6 @@ edition = "2024"
 cielo-backend-api = { path = "../cielo-backend-api" }
 cielo-base = { path = "../cielo-base" }
 cielo-ir = { path = "../cielo-ir" }
+cielo-runtime = { path = "../cielo-runtime" }
 cielo-staging = { path = "../cielo-staging" }
 smallvec = "1.15.1"

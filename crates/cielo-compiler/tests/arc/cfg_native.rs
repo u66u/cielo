@@ -26,11 +26,17 @@ fn compile_without_normalize(source: &str) -> cielo::CompiledC {
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
     let core = compiler.parse_and_lower_to_core(source, SourceId::from_u32(0), &mut interner);
-    let residual = compiler.run_v1_core_pipeline(core);
-    let emitted = c_emit::run(cfg_lower::run(linearize::run(residual)), &interner);
+    let mut residual = compiler.run_v1_core_pipeline(core);
+    let sema = residual.sema().clone();
+    let linear = {
+        let (program, diagnostics) = residual.program_and_diagnostics_mut();
+        linearize::run(program, &sema, diagnostics)
+    };
+    let cfg = cfg_lower::run(&linear);
+    let emitted = c_emit::run(residual, linear, cfg, &interner);
     cielo::CompiledC {
-        residual: emitted.linearized.residual,
-        linear: emitted.linearized.linear,
+        residual: emitted.residual,
+        linear: emitted.linear,
         cfg: emitted.cfg,
         c_source: emitted.c_source,
     }

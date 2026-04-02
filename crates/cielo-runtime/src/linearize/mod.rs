@@ -22,20 +22,15 @@ mod analysis;
 mod lowering;
 mod types;
 
+use cielo_base::diagnostics::DiagnosticBag;
+use cielo_ir::core::CoreProgram;
 use cielo_ir::linear::LinearProgram;
-use cielo_staging::pipeline::phases::Residualized;
+use cielo_sema::SemanticTables;
 
-pub fn run(mut residual: Residualized) -> Linearized {
-    let sema = residual.sema().clone();
-    let linear = {
-        let (program, diagnostics) = residual.program_and_diagnostics_mut();
-        lowering::lower_program(program, &sema, diagnostics)
-    };
-    Linearized { residual, linear }
-}
-
-#[derive(Clone, Debug)]
-pub struct Linearized {
-    pub residual: Residualized,
-    pub linear: LinearProgram,
+pub fn run(
+    program: &CoreProgram,
+    sema: &SemanticTables,
+    diagnostics: &mut DiagnosticBag,
+) -> LinearProgram {
+    lowering::lower_program(program, sema, diagnostics)
 }

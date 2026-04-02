@@ -312,12 +312,12 @@ impl Compiler {
     ) -> CompiledC {
         let residual = self.compile_source_v1(source, source_id, interner);
         let normalized = normalize::run_with_gc_config(residual, &self.config.gc);
-        let linearized = linearize::run(normalized);
-        let cfg_lowered = cfg_lower::run(linearized);
-        let emitted = c_emit::run_with_gc_config(cfg_lowered, interner, &self.config.gc);
+        let (normalized, linear, cfg) = lower_runtime(normalized);
+        let emitted =
+            c_emit::run_with_gc_config(normalized, linear, cfg, interner, &self.config.gc);
         CompiledC {
-            residual: emitted.linearized.residual,
-            linear: emitted.linearized.linear,
+            residual: emitted.residual,
+            linear: emitted.linear,
             cfg: emitted.cfg,
             c_source: emitted.c_source,
         }
@@ -369,12 +369,12 @@ impl Compiler {
         let residual = self.compile_source_v0(source, source_id, interner);
         let specialized = handler_specialize::run_with_gc_config(residual, &self.config.gc);
         let normalized = normalize::run_with_gc_config(specialized, &self.config.gc);
-        let linearized = linearize::run(normalized);
-        let cfg_lowered = cfg_lower::run(linearized);
-        let emitted = c_emit::run_with_gc_config(cfg_lowered, interner, &self.config.gc);
+        let (normalized, linear, cfg) = lower_runtime(normalized);
+        let emitted =
+            c_emit::run_with_gc_config(normalized, linear, cfg, interner, &self.config.gc);
         CompiledC {
-            residual: emitted.linearized.residual,
-            linear: emitted.linearized.linear,
+            residual: emitted.residual,
+            linear: emitted.linear,
             cfg: emitted.cfg,
             c_source: emitted.c_source,
         }
@@ -489,4 +489,20 @@ impl Compiler {
     fn normalize(&self, residual: Residualized) -> Residualized {
         normalize::run_with_gc_config(residual, &self.config.gc)
     }
+}
+
+fn lower_runtime(
+    mut residual: Residualized,
+) -> (
+    Residualized,
+    crate::ir::linear::LinearProgram,
+    crate::ir::cfg::CfgProgram,
+) {
+    let sema = residual.sema().clone();
+    let linear = {
+        let (program, diagnostics) = residual.program_and_diagnostics_mut();
+        linearize::run(program, &sema, diagnostics)
+    };
+    let cfg = cfg_lower::run(&linear);
+    (residual, linear, cfg)
 }

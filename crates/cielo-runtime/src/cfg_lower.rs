@@ -18,21 +18,13 @@ use cielo_ir::cfg::{
 use cielo_ir::core::Literal;
 use cielo_ir::linear::{LinearExpr, LinearProgram, LinearStmt};
 
-use crate::linearize::Linearized;
-
-#[derive(Clone, Debug)]
-pub struct CfgLowered {
-    pub linearized: Linearized,
-    pub cfg: CfgProgram,
-}
-
-pub fn run(linearized: Linearized) -> CfgLowered {
-    let cfg = lower_program(&linearized.linear);
+pub fn run(linear: &LinearProgram) -> CfgProgram {
+    let cfg = lower_program(linear);
     debug_assert!(
         cfg.validate().is_ok(),
         "cfg_lower produced an invalid control-flow graph"
     );
-    CfgLowered { linearized, cfg }
+    cfg
 }
 
 pub fn lower_program(linear: &LinearProgram) -> CfgProgram {

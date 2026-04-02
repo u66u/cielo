@@ -25,7 +25,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::analysis::borrow_hazard;
-use crate::analysis::function_graph::collect_reachable_functions;
+use cielo_ir::function_graph::collect_reachable_functions;
 use crate::common::gc::GcConfig;
 use crate::common::ids::{ExprId, FuncId, HandlerId, StmtId, VarId};
 use crate::common::span::Span;

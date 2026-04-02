@@ -232,17 +232,22 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
         return;
     }
 
-    let normalized = compiler.run_v1_normalize(residual.clone());
-    let linearized = linearize::run(normalized);
+    let mut normalized = compiler.run_v1_normalize(residual.clone());
+    let sema = normalized.sema().clone();
+    let linear = {
+        let (program, diagnostics) = normalized.program_and_diagnostics_mut();
+        linearize::run(program, &sema, diagnostics)
+    };
     if should_dump(cli, DumpKind::Linear) {
-        println!("=== Linear IR ===\n{:#?}", linearized.linear);
+        println!("=== Linear IR ===\n{linear:#?}");
     }
-    let cfg_lowered = cfg_lower::run(linearized);
+    let cfg = cfg_lower::run(&linear);
     if should_dump(cli, DumpKind::Cfg) {
-        println!("=== CFG IR ===\n{:#?}", cfg_lowered.cfg);
+        println!("=== CFG IR ===\n{cfg:#?}");
     }
 
-    let emitted = c_emit::run_with_gc_config(cfg_lowered, &interner, &compiler.config().gc);
+    let emitted =
+        c_emit::run_with_gc_config(normalized, linear, cfg, &interner, &compiler.config().gc);
     if should_dump(cli, DumpKind::C) || cli.emit_c || cli.run_c {
         println!("=== Emitted C ===\n{}", emitted.c_source);
     }

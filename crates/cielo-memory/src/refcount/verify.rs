@@ -1,13 +1,12 @@
 use std::collections::HashSet;
 
-use crate::analysis::cfg_liveness::{CfgLiveness, CfgUseSite};
-use crate::common::diagnostics::DiagnosticBag;
-use crate::common::ids::CfgValueId;
-use crate::common::span::Span;
-use crate::ir::cfg::{
+use cielo_base::diagnostics::DiagnosticBag;
+use cielo_base::ids::{CfgExprId, CfgValueId};
+use cielo_base::span::Span;
+use cielo_ir::cfg::{
     CfgArcOp, CfgArcOpKind, CfgExpr, CfgProgram, CfgProjectionMode, CfgTerminator,
 };
-use crate::pipeline::phases::SemanticTables;
+use crate::refcount::analysis::cfg_liveness::{CfgLiveness, CfgUseSite};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct CfgArcVerifyStats {
@@ -19,7 +18,6 @@ pub struct CfgArcVerifyStats {
 
 pub fn verify(
     cfg: &CfgProgram,
-    _sema: &SemanticTables,
     diagnostics: &mut DiagnosticBag,
 ) -> CfgArcVerifyStats {
     let mut stats = CfgArcVerifyStats::default();
@@ -109,7 +107,7 @@ fn verify_ops(
     }
 }
 
-fn direct_value(cfg: &CfgProgram, expression: crate::common::ids::CfgExprId) -> Option<CfgValueId> {
+fn direct_value(cfg: &CfgProgram, expression: CfgExprId) -> Option<CfgValueId> {
     match &cfg.expr(expression)?.kind {
         CfgExpr::Value(value) => Some(*value),
         _ => None,

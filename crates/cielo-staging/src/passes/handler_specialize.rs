@@ -17,7 +17,7 @@
 // - O(stmt_count + cloned_nodes + reachable_call_graph)
 
 use crate::analysis::borrow_hazard;
-use crate::analysis::function_graph::{collect_reachable_functions, prune_unreachable_functions};
+use cielo_ir::function_graph::{collect_reachable_functions, prune_unreachable_functions};
 use std::collections::{HashMap, HashSet};
 
 use crate::common::diagnostics::ErrorNode;

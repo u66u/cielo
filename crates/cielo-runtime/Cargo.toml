@@ -7,4 +7,3 @@ edition = "2024"
 cielo-base = { path = "../cielo-base" }
 cielo-ir = { path = "../cielo-ir" }
 cielo-sema = { path = "../cielo-sema" }
-cielo-staging = { path = "../cielo-staging" }

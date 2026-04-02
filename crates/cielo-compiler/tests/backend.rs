@@ -1679,12 +1679,17 @@ fn compile_source_to_c_without_normalize(
 ) -> cielo::CompiledC {
     let compiler = Compiler::new(CompilerConfig::default());
     let core = compiler.parse_and_lower_to_core(src, source_id, interner);
-    let residual = compiler.run_v1_core_pipeline(core);
-    let linearized = linearize::run(residual);
-    let emitted = c_emit::run(cfg_lower::run(linearized), interner);
+    let mut residual = compiler.run_v1_core_pipeline(core);
+    let sema = residual.sema().clone();
+    let linear = {
+        let (program, diagnostics) = residual.program_and_diagnostics_mut();
+        linearize::run(program, &sema, diagnostics)
+    };
+    let cfg = cfg_lower::run(&linear);
+    let emitted = c_emit::run(residual, linear, cfg, interner);
     cielo::CompiledC {
-        residual: emitted.linearized.residual,
-        linear: emitted.linearized.linear,
+        residual: emitted.residual,
+        linear: emitted.linear,
         cfg: emitted.cfg,
         c_source: emitted.c_source,
     }

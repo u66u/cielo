@@ -278,6 +278,7 @@ dependencies = [
  "cielo-backend-api",
  "cielo-base",
  "cielo-ir",
+ "cielo-runtime",
  "cielo-staging",
  "smallvec",
 ]
@@ -289,7 +290,6 @@ dependencies = [
  "cielo-base",
  "cielo-ir",
  "cielo-sema",
- "cielo-staging",
 ]
 
 [[package]]

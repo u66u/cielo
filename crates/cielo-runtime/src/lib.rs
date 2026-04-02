@@ -5,6 +5,3 @@
 
 pub mod cfg_lower;
 pub mod linearize;
-
-pub use cfg_lower::CfgLowered;
-pub use linearize::Linearized;

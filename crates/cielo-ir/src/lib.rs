@@ -4,6 +4,7 @@ pub mod boundary;
 pub mod cfg;
 pub mod core;
 pub mod effect;
+pub mod function_graph;
 pub mod linear;
 pub mod target;
 pub mod walk;
