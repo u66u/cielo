@@ -435,7 +435,7 @@ pub fn gc_overhead_case_arc_stats(case: &str, preset: &str) -> Option<GcBenchArc
 }
 
 fn extract_arc_stats(compiled: &cielo::CompiledC) -> GcBenchArcStats {
-    let arc_stats = compiled.residual.residual().arc_stats;
+    let arc_stats = compiled.memory.arc;
     GcBenchArcStats {
         planned_retain_ops: arc_stats.planned_retain_ops,
         planned_release_ops: arc_stats.planned_release_ops,

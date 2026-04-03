@@ -13,5 +13,3 @@ pub mod ids {
 pub mod span {
     pub use cielo_base::span::*;
 }
-
-pub mod gc;

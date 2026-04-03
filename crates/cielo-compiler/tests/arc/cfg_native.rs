@@ -38,6 +38,7 @@ fn compile_without_normalize(source: &str) -> cielo::CompiledC {
         residual: emitted.residual,
         linear: emitted.linear,
         cfg: emitted.cfg,
+        memory: emitted.memory,
         c_source: emitted.c_source,
     }
 }
@@ -81,7 +82,7 @@ fn main() -> Int { let value = Wrap(1); consume(value) }
         0,
         "a unique last-use argument should sink without a retain"
     );
-    assert!(compiled.residual.residual().arc_stats.eliminated_move_pairs > 0);
+    assert!(compiled.memory.arc.eliminated_move_pairs > 0);
 }
 
 #[test]
@@ -99,11 +100,10 @@ fn main() -> Int { let value = Wrap(1); consume(value) }
     assert_eq!(arc_op_count(&optimized, CfgArcOpKind::Retain), 0);
     assert!(
         optimized
-            .residual
-            .residual()
-            .arc_stats
+            .memory
+            .arc
             .eliminated_move_pairs
-            > raw.residual.residual().arc_stats.eliminated_move_pairs
+            > raw.memory.arc.eliminated_move_pairs
     );
 }
 

@@ -4,14 +4,16 @@ use crate::common::gc::GcConfig;
 use crate::common::symbols::Interner;
 use crate::ir::cfg::CfgProgram;
 use crate::ir::linear::LinearProgram;
-use crate::passes::{cfg_arc, cfg_codegen, cfg_lower, cfg_verify, constant_table};
+use crate::passes::{cfg_codegen, cfg_lower, constant_table};
 use crate::pipeline::phases::Residualized;
+use cielo_memory::{MemoryInput, MemoryReport};
 
 #[derive(Clone, Debug)]
 pub struct EmittedC {
     pub residual: Residualized,
     pub linear: LinearProgram,
     pub cfg: CfgProgram,
+    pub memory: MemoryReport,
     pub c_source: String,
 }
 
@@ -27,17 +29,21 @@ pub fn run(
 pub fn run_with_gc_config(
     mut residual: Residualized,
     linear: LinearProgram,
-    mut cfg: CfgProgram,
+    cfg: CfgProgram,
     interner: &Interner,
     gc: &GcConfig,
 ) -> EmittedC {
-    let sema = residual.sema().clone();
-    let arc_stats = cfg_arc::run(&mut cfg, &sema, gc);
-    residual.residual_mut().arc_stats = arc_stats;
-    if gc.arc_verify_enabled() {
-        let (_, diagnostics) = residual.program_and_diagnostics_mut();
-        let _ = cfg_verify::verify(&cfg, diagnostics);
-    }
+    let managed = cielo_memory::lower(
+        MemoryInput {
+            cfg: &cfg,
+            core: residual.program(),
+            sema: residual.sema(),
+            diagnostics: residual.diagnostics(),
+        },
+        *gc,
+    );
+    let cfg = managed.cfg;
+    *residual.diagnostics_mut() = managed.diagnostics;
     let c_source = cfg_codegen::emit(
         &cfg,
         interner,
@@ -48,6 +54,7 @@ pub fn run_with_gc_config(
         residual,
         linear,
         cfg,
+        memory: managed.report,
         c_source,
     }
 }

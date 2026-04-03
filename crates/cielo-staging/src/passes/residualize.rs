@@ -21,8 +21,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::analysis::borrow_hazard;
-use crate::common::gc::GcConfig;
 use crate::common::ids::{ExprId, FuncId, HandlerId, StmtId, VarId};
 use crate::common::span::Span;
 use crate::ir::core::{CoreProgram, ExprKind, Literal, MatchArm, StmtKind, StmtNode};
@@ -34,10 +32,7 @@ use crate::pipeline::phases::{
 use crate::sema::effect::SortedEffectRow;
 
 pub fn run(bta: BtaClassified) -> Residualized {
-    run_with_gc_config(bta, &GcConfig::default())
-}
-
-pub fn run_with_gc_config(mut bta: BtaClassified, _gc: &GcConfig) -> Residualized {
+    let mut bta = bta;
     let ct_tables = bta.ct().clone();
     let bta_tables = bta.bta().clone();
     let residualize_stats = apply_ct_residualization(bta.program_mut(), &ct_tables, &bta_tables);
@@ -46,14 +41,11 @@ pub fn run_with_gc_config(mut bta: BtaClassified, _gc: &GcConfig) -> Residualize
     rewrite_call_effect_rows(bta.program_mut(), &function_effect_summary);
     erase_function_effect_annotations(bta.program_mut());
     let constant_table = constant_table::build_for_core(bta.program());
-    let borrow_hazards = borrow_hazard::analyze(bta.program(), bta.sema());
     bta.into_residualized(ResidualTables {
         function_effect_summary,
         constant_table,
         residualize_stats,
         specialization_stats: Default::default(),
-        arc_stats: Default::default(),
-        borrow_hazards,
     })
 }
 

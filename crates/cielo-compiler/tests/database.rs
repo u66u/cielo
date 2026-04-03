@@ -1,7 +1,7 @@
 use cielo::common::ids::SourceId;
 use cielo::common::symbols::Interner;
 use cielo::{Compiler, CompilerConfig};
-use cielo_memory::{MemoryModel, MemoryModule};
+use cielo_memory::GcPreset;
 
 #[test]
 fn compiler_parse_uses_the_database_boundary() {
@@ -28,9 +28,13 @@ fn compiler_typechecks_through_the_database_boundary() {
 }
 
 #[test]
-fn compiler_profile_selects_a_strategy_specific_product() {
-    let compiler = Compiler::new(CompilerConfig::default().with_memory_model(MemoryModel::Tracing));
-    let source = compiler.database_source("fn main() {}", SourceId::from_u32(0));
-    let memory = compiler.database_memory_file(source);
-    assert!(matches!(memory.as_ref(), MemoryModule::Tracing(_)));
+fn compiler_uses_the_database_for_emission() {
+    let compiler = Compiler::new(CompilerConfig::default().with_gc_preset(GcPreset::Off));
+    let mut interner = Interner::new();
+    let compiled = compiler.compile_source_to_c(
+        "fn main() {}",
+        SourceId::from_u32(0),
+        &mut interner,
+    );
+    assert!(compiled.c_source.contains("int main(void)"));
 }

@@ -3,15 +3,15 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Write;
 
-use crate::common::ids::{CfgBlockId, CfgHandlerId, EffectLabelId, SymbolId};
-use crate::common::symbols::Interner;
-use crate::ir::cfg::{
+use cielo_base::ids::{CfgBlockId, CfgHandlerId, CfgExprId, CfgValueId, EffectLabelId, SymbolId};
+use cielo_base::symbols::Interner;
+use cielo_ir::cfg::{
     CfgArcOp, CfgArcOpKind, CfgCallConvention, CfgExpr, CfgFunction, CfgInstruction, CfgProgram,
     CfgProjectionMode, CfgTerminator,
 };
-use crate::ir::core::Literal;
-use crate::passes::c_constants::CConstantPools;
-use crate::pipeline::phases::{ConstantTable, CtorFieldKey, CtorLiteralKey, ScalarLiteralKey};
+use cielo_ir::constants::{ConstantTable, CtorFieldKey, CtorLiteralKey, ScalarLiteralKey};
+use cielo_ir::core::Literal;
+use crate::c_constants::CConstantPools;
 
 const C_RUNTIME_HEADER: &str = include_str!("cielo_runtime.h");
 const BUILTIN_PRINT_OP_NAME: &str = "print";
@@ -193,7 +193,7 @@ fn emit_terminator(
     out: &mut String,
     block: CfgBlockId,
     terminator: &CfgTerminator,
-    arc: &crate::ir::cfg::CfgArcOps,
+    arc: &cielo_ir::cfg::CfgArcOps,
     cx: &mut EmitCx<'_>,
 ) {
     emit_arc_ops(out, &arc.pre, 1, cx, "term-pre", block.as_u32());
@@ -354,7 +354,7 @@ fn emit_terminator(
 fn emit_edge_values(
     out: &mut String,
     target: CfgBlockId,
-    args: &[crate::common::ids::CfgExprId],
+    args: &[CfgExprId],
     cx: &mut EmitCx<'_>,
 ) {
     let params = &cx.program.block(target).expect("known target").params;
@@ -372,7 +372,7 @@ fn emit_edge_values(
 
 fn materialize_args(
     out: &mut String,
-    args: &[crate::common::ids::CfgExprId],
+    args: &[CfgExprId],
     cx: &mut EmitCx<'_>,
 ) -> Vec<String> {
     args.iter()
@@ -385,7 +385,7 @@ fn materialize_args(
         .collect()
 }
 
-fn emit_expr(expression: crate::common::ids::CfgExprId, cx: &mut EmitCx<'_>) -> String {
+fn emit_expr(expression: CfgExprId, cx: &mut EmitCx<'_>) -> String {
     match &cx.program.expr(expression).expect("known expression").kind {
         CfgExpr::Value(value) => format!("v{}", value.as_u32()),
         CfgExpr::Literal(literal) => emit_literal(literal, cx.pools),
@@ -421,7 +421,7 @@ fn emit_expr(expression: crate::common::ids::CfgExprId, cx: &mut EmitCx<'_>) -> 
 fn emit_ctor(
     ty: SymbolId,
     variant: SymbolId,
-    fields: &[crate::common::ids::CfgExprId],
+    fields: &[CfgExprId],
     cx: &mut EmitCx<'_>,
 ) -> String {
     if let Some(key) = ctor_key(cx.program, ty, variant, fields)
@@ -480,7 +480,7 @@ fn ctor_key(
     program: &CfgProgram,
     ty: SymbolId,
     variant: SymbolId,
-    fields: &[crate::common::ids::CfgExprId],
+    fields: &[CfgExprId],
 ) -> Option<CtorLiteralKey> {
     let fields = fields
         .iter()
@@ -495,7 +495,7 @@ fn ctor_key(
 
 fn ctor_field_key(
     program: &CfgProgram,
-    expression: crate::common::ids::CfgExprId,
+    expression: CfgExprId,
 ) -> Option<CtorFieldKey> {
     match &program.expr(expression)?.kind {
         CfgExpr::Literal(literal) => CtorFieldKey::from_literal(literal),
@@ -592,7 +592,7 @@ fn reachable_handlers(program: &CfgProgram, entry: CfgBlockId) -> Vec<CfgHandler
 fn reachable_values(
     program: &CfgProgram,
     entry: CfgBlockId,
-) -> Vec<crate::common::ids::CfgValueId> {
+) -> Vec<CfgValueId> {
     let mut values = HashSet::new();
     for block_id in reachable_blocks(program, entry) {
         let block = program.block(block_id).expect("known block");
@@ -652,8 +652,8 @@ fn reachable_values(
 
 fn collect_expr_values(
     program: &CfgProgram,
-    expression: crate::common::ids::CfgExprId,
-    values: &mut HashSet<crate::common::ids::CfgValueId>,
+    expression: CfgExprId,
+    values: &mut HashSet<CfgValueId>,
 ) {
     let Some(expression) = program.expr(expression) else {
         return;

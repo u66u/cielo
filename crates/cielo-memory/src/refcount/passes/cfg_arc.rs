@@ -8,14 +8,15 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use crate::analysis::cfg_liveness::{CfgLiveness, CfgUseSite};
-use crate::common::gc::GcConfig;
-use crate::common::ids::{CfgBlockId, CfgExprId, CfgValueId};
-use crate::ir::cfg::{
+use cielo_base::ids::{CfgBlockId, CfgExprId, CfgInstId, CfgValueId};
+use cielo_ir::cfg::{
     CfgArcOp, CfgArcOpKind, CfgExpr, CfgInstruction, CfgProgram, CfgProjectionMode, CfgTerminator,
 };
-use crate::pipeline::phases::{ArcStats, SemanticTables};
-use crate::sema::ownership::OwnershipClass;
+use cielo_sema::{OwnershipClass, SemanticTables};
+
+use crate::GcConfig;
+use crate::refcount::ArcStats;
+use crate::refcount::analysis::cfg_liveness::{CfgLiveness, CfgUseSite};
 
 #[derive(Clone, Copy, Default)]
 struct UseCount {
@@ -187,7 +188,7 @@ fn expr_may_be_managed(cfg: &CfgProgram, expression: CfgExprId, managed: &[bool]
 
 fn clear_annotations(cfg: &mut CfgProgram) {
     for instruction in 0..cfg.instructions().len() {
-        cfg.instruction_mut(crate::common::ids::CfgInstId::new(instruction))
+        cfg.instruction_mut(CfgInstId::new(instruction))
             .expect("known CFG instruction")
             .arc = Default::default();
     }

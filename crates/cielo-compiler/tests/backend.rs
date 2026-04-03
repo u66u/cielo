@@ -1691,6 +1691,7 @@ fn compile_source_to_c_without_normalize(
         residual: emitted.residual,
         linear: emitted.linear,
         cfg: emitted.cfg,
+        memory: emitted.memory,
         c_source: emitted.c_source,
     }
 }

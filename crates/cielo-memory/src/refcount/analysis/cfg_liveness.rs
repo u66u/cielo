@@ -2,8 +2,8 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use crate::common::ids::{CfgBlockId, CfgExprId, CfgInstId, CfgValueId};
-use crate::ir::cfg::{CfgExpr, CfgInstruction, CfgProgram, CfgTerminator};
+use cielo_base::ids::{CfgBlockId, CfgExprId, CfgInstId, CfgValueId};
+use cielo_ir::cfg::{CfgExpr, CfgInstruction, CfgProgram, CfgTerminator};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum CfgUseSite {

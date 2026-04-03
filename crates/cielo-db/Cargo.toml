@@ -5,10 +5,12 @@ edition = "2024"
 
 [dependencies]
 cielo-base = { path = "../cielo-base" }
+cielo-backend-c = { path = "../cielo-backend-c" }
 cielo-frontend = { path = "../cielo-frontend" }
 cielo-ir = { path = "../cielo-ir" }
 cielo-memory = { path = "../cielo-memory" }
-cielo-backend-api = { path = "../cielo-backend-api" }
 cielo-lowering = { path = "../cielo-lowering" }
+cielo-runtime = { path = "../cielo-runtime" }
 cielo-sema = { path = "../cielo-sema" }
+cielo-staging = { path = "../cielo-staging" }
 salsa = { version = "0.28.0", features = ["salsa_unstable"] }

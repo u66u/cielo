@@ -32,5 +32,5 @@ pub mod symbols {
 }
 
 pub mod gc {
-    pub use cielo_staging::common::gc::*;
+    pub use cielo_memory::config::*;
 }

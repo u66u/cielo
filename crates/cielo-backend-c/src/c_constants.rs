@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
-use crate::common::symbols::Interner;
-use crate::pipeline::phases::{
+use cielo_base::symbols::Interner;
+use cielo_ir::constants::{
     ConstantEmbedStrategy, ConstantKey, ConstantTable, CtorFieldKey, CtorLiteralKey,
     ScalarLiteralKey,
 };

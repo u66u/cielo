@@ -179,17 +179,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
-name = "cielo-backend-api"
-version = "0.1.0"
-
-[[package]]
 name = "cielo-backend-c"
 version = "0.1.0"
 dependencies = [
- "cielo-backend-api",
  "cielo-base",
  "cielo-ir",
- "cielo-staging",
 ]
 
 [[package]]
@@ -204,7 +198,6 @@ name = "cielo-compiler"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "cielo-backend-api",
  "cielo-backend-c",
  "cielo-base",
  "cielo-db",
@@ -228,13 +221,15 @@ dependencies = [
 name = "cielo-db"
 version = "0.1.0"
 dependencies = [
- "cielo-backend-api",
+ "cielo-backend-c",
  "cielo-base",
  "cielo-frontend",
  "cielo-ir",
  "cielo-lowering",
  "cielo-memory",
+ "cielo-runtime",
  "cielo-sema",
+ "cielo-staging",
  "salsa",
 ]
 
@@ -275,12 +270,10 @@ dependencies = [
 name = "cielo-memory"
 version = "0.1.0"
 dependencies = [
- "cielo-backend-api",
+ "bitflags",
  "cielo-base",
  "cielo-ir",
- "cielo-runtime",
- "cielo-staging",
- "smallvec",
+ "cielo-sema",
 ]
 
 [[package]]
@@ -307,7 +300,6 @@ name = "cielo-staging"
 version = "0.1.0"
 dependencies = [
  "bincode",
- "bitflags",
  "blake3",
  "cielo-base",
  "cielo-frontend",

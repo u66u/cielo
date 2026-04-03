@@ -25,7 +25,6 @@ cielo-lowering = { path = "../cielo-lowering" }
 cielo-runtime = { path = "../cielo-runtime" }
 cielo-db = { path = "../cielo-db" }
 cielo-memory = { path = "../cielo-memory" }
-cielo-backend-api = { path = "../cielo-backend-api" }
 cielo-backend-c = { path = "../cielo-backend-c" }
 
 [[bench]]

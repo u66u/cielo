@@ -1,6 +1,6 @@
 use bitflags::bitflags;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum GcMode {
     Off,
     Arc,
@@ -18,7 +18,7 @@ bitflags! {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum GcPreset {
     Off,
     ArcRaw,
@@ -28,7 +28,7 @@ pub enum GcPreset {
     ArcBenchOptimized,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct GcConfig {
     pub mode: GcMode,
     pub features: GcFeatureFlags,

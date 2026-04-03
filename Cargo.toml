@@ -10,7 +10,6 @@ members = [
     "crates/cielo-runtime",
     "crates/cielo-db",
     "crates/cielo-memory",
-    "crates/cielo-backend-api",
     "crates/cielo-backend-c",
     "crates/cielo-compiler",
     "crates/cielo-driver",

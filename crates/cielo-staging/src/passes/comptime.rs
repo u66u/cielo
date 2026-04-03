@@ -1,7 +1,4 @@
 use std::collections::HashSet;
-use std::path::Path;
-
-use crate::common::gc::GcConfig;
 use crate::passes::{bta, ct_eval, handler_specialize, residualize};
 use crate::pipeline::compiler::TargetSpec;
 use crate::pipeline::phases::{
@@ -12,9 +9,8 @@ use crate::pipeline::phases::{
 pub fn evaluate_classify(
     mono: Monomorphized,
     target: TargetSpec,
-    query_cache_path: Option<&Path>,
 ) -> BtaClassified {
-    let ct = ct_eval::run_with_query_cache(mono, target, query_cache_path);
+    let ct = ct_eval::run(mono, target);
     let classified = bta::run(ct);
     assert_evaluate_classify_invariants(&classified);
     classified
@@ -22,15 +18,8 @@ pub fn evaluate_classify(
 
 /// v1 fused stage B: Residualize+Specialize.
 pub fn residualize_specialize(classified: BtaClassified) -> Residualized {
-    residualize_specialize_with_gc_config(classified, &GcConfig::default())
-}
-
-pub fn residualize_specialize_with_gc_config(
-    classified: BtaClassified,
-    gc: &GcConfig,
-) -> Residualized {
-    let residual = residualize::run_with_gc_config(classified, gc);
-    let residual = handler_specialize::run_with_gc_config(residual, gc);
+    let residual = residualize::run(classified);
+    let residual = handler_specialize::run(residual);
     assert_residualize_specialize_invariants(&residual);
     residual
 }
@@ -330,61 +319,6 @@ fn assert_residualize_specialize_invariants(residual: &crate::pipeline::phases::
         "compiler bug: residual constant_table size accounting is inconsistent"
     );
 
-    let arc_stats = residual_tables.arc_stats;
-    assert!(
-        arc_stats.final_retain_ops <= arc_stats.planned_retain_ops,
-        "compiler bug: arc final retain count exceeds planned retain count"
-    );
-    assert!(
-        arc_stats.final_release_ops <= arc_stats.planned_release_ops,
-        "compiler bug: arc final release count exceeds planned release count"
-    );
-    assert_eq!(
-        arc_stats
-            .planned_retain_ops
-            .saturating_sub(arc_stats.removed_retain_ops),
-        arc_stats.final_retain_ops,
-        "compiler bug: arc retain accounting mismatch"
-    );
-    assert_eq!(
-        arc_stats
-            .planned_release_ops
-            .saturating_sub(arc_stats.removed_release_ops),
-        arc_stats.final_release_ops,
-        "compiler bug: arc release accounting mismatch"
-    );
-
-    let hazards = &residual_tables.borrow_hazards;
-    assert_eq!(
-        hazards.alias_fanout_count as usize,
-        hazards.alias_fanout_sites.len(),
-        "compiler bug: borrow hazard alias_fanout count mismatch"
-    );
-    assert_eq!(
-        hazards.projection_count as usize,
-        hazards.projection_sites.len(),
-        "compiler bug: borrow hazard projection count mismatch"
-    );
-    assert_eq!(
-        hazards.call_escape_count as usize,
-        hazards.call_escape_sites.len(),
-        "compiler bug: borrow hazard call_escape count mismatch"
-    );
-    assert_eq!(
-        hazards.hotspots.len(),
-        hazards.alias_fanout_sites.len()
-            + hazards.projection_sites.len()
-            + hazards.call_escape_sites.len(),
-        "compiler bug: borrow hazard hotspot inventory mismatch"
-    );
-    for pair in hazards.hotspots.windows(2) {
-        let lhs = pair[0];
-        let rhs = pair[1];
-        assert!(
-            (lhs.stmt.index(), lhs.kind) < (rhs.stmt.index(), rhs.kind),
-            "compiler bug: borrow hazard hotspots are not sorted/deduplicated"
-        );
-    }
 }
 
 fn assert_stage_reason_in_bounds(stage: Stage, function_count: usize, context: &str) {

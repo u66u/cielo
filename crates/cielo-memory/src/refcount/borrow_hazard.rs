@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 
-use crate::common::diagnostics::DiagnosticBag;
-use crate::common::ids::{ExprId, StmtId, VarId};
-use crate::common::span::Span;
-use crate::ir::core::{CoreProgram, ExprKind, StmtKind};
-use crate::pipeline::phases::SemanticTables;
-use crate::sema::ownership::OwnershipClass;
+use cielo_base::diagnostics::DiagnosticBag;
+use cielo_base::ids::{ExprId, StmtId, VarId};
+use cielo_base::span::Span;
+use cielo_ir::core::{CoreProgram, ExprKind, StmtKind};
+use cielo_sema::{OwnershipClass, SemanticTables};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum BorrowHazardKind {

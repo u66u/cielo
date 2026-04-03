@@ -12,7 +12,6 @@ pub mod passes;
 pub mod pipeline;
 pub mod sema;
 
-pub use common::gc::{GcConfig, GcFeatureFlags, GcMode, GcPreset};
 pub use pipeline::phases::*;
 
 pub const CIELO_VERSION: &str = env!("CARGO_PKG_VERSION");

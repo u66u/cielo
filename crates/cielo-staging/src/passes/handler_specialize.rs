@@ -16,12 +16,10 @@
 // Complexity:
 // - O(stmt_count + cloned_nodes + reachable_call_graph)
 
-use crate::analysis::borrow_hazard;
 use cielo_ir::function_graph::{collect_reachable_functions, prune_unreachable_functions};
 use std::collections::{HashMap, HashSet};
 
 use crate::common::diagnostics::ErrorNode;
-use crate::common::gc::GcConfig;
 use crate::common::ids::{
     DiagnosticId, EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, VarId,
 };
@@ -40,11 +38,7 @@ const MAX_SPECIALIZATIONS_PER_CALLEE: usize = 8;
 const MAX_TOTAL_SPECIALIZATIONS: usize = 256;
 
 pub fn run(residual: Residualized) -> Residualized {
-    run_with_gc_config(residual, &GcConfig::default())
-}
-
-pub fn run_with_gc_config(residual: Residualized, gc: &GcConfig) -> Residualized {
-    let (mut program, mut diagnostics, mut sema, mut mono, ct, mut bta, mut residual_tables) =
+    let (mut program, diagnostics, mut sema, mut mono, ct, mut bta, mut residual_tables) =
         residual.into_parts();
     synchronize_semantic_tables(&program, &mut sema);
 
@@ -56,15 +50,6 @@ pub fn run_with_gc_config(residual: Residualized, gc: &GcConfig) -> Residualized
     bta.remap_func_ids(&func_remap);
     residual_tables.remap_func_ids(&func_remap);
     residual_tables.constant_table = constant_table::build_for_core(&program);
-    residual_tables.arc_stats = Default::default();
-    residual_tables.borrow_hazards = borrow_hazard::analyze(&program, &sema);
-    if gc.borrow_hazard_diagnostics_enabled() {
-        borrow_hazard::emit_diagnostics(
-            &program,
-            &residual_tables.borrow_hazards,
-            &mut diagnostics,
-        );
-    }
     synchronize_semantic_tables(&program, &mut sema);
     assert_remap_integrity(&program, &sema, &mono, &ct, &bta, &residual_tables);
     Residualized::new(program, diagnostics, sema, mono, ct, bta, residual_tables)

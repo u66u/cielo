@@ -1,5 +1,5 @@
 pub use cielo_backend_c::{c_constants, cfg_codegen};
-pub use cielo_memory::passes::cfg_arc;
+pub use cielo_memory::refcount::passes::cfg_arc;
 pub use cielo_memory::refcount::verify as cfg_verify;
 pub use cielo_runtime::{cfg_lower, linearize};
 pub use cielo_staging::passes::normalize;

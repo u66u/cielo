@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
-use crate::analysis::borrow_hazard::BorrowHazardReport;
 use crate::common::densemap::DenseMap;
 use crate::common::diagnostics::DiagnosticBag;
-use crate::common::ids::{EffectLabelId, ExprId, FuncId, HandlerId, SymbolId, TypeId, VarId};
+use crate::common::ids::{EffectLabelId, ExprId, FuncId, HandlerId, TypeId, VarId};
 use crate::frontend::ast::Program as AstProgram;
 use crate::ir::core::{CoreProgram, Literal};
 use crate::sema::effect::SortedEffectRow;
+pub use cielo_ir::constants::*;
 pub use cielo_sema::facts::SemanticTables;
 use serde::{Deserialize, Serialize};
 
@@ -194,17 +194,6 @@ pub struct SpecializationStats {
     pub skipped_limits: u32,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub struct ArcStats {
-    pub planned_retain_ops: u32,
-    pub planned_release_ops: u32,
-    pub eliminated_move_pairs: u32,
-    pub removed_retain_ops: u32,
-    pub removed_release_ops: u32,
-    pub final_retain_ops: u32,
-    pub final_release_ops: u32,
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct CtPropagationTables {
     pub ct_cache: DenseMap<ExprId, Literal>,
@@ -246,94 +235,12 @@ impl BtaTables {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub enum ScalarLiteralKey {
-    Bool(bool),
-    Int(i64),
-    Char(char),
-    Float(u64),
-}
-
-impl ScalarLiteralKey {
-    pub fn from_literal(literal: &Literal) -> Option<Self> {
-        match literal {
-            Literal::Bool(value) => Some(Self::Bool(*value)),
-            Literal::Int(value) => Some(Self::Int(*value)),
-            Literal::Char(value) => Some(Self::Char(*value)),
-            Literal::Float(value) if value.is_finite() => Some(Self::Float(value.to_bits())),
-            Literal::Unit | Literal::Float(_) | Literal::String(_) => None,
-        }
-    }
-}
-
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub enum CtorFieldKey {
-    Unit,
-    Bool(bool),
-    Int(i64),
-    Char(char),
-    Float(u64),
-    String(String),
-    Ctor(Box<CtorLiteralKey>),
-}
-
-impl CtorFieldKey {
-    pub fn from_literal(literal: &Literal) -> Option<Self> {
-        match literal {
-            Literal::Unit => Some(Self::Unit),
-            Literal::Bool(value) => Some(Self::Bool(*value)),
-            Literal::Int(value) => Some(Self::Int(*value)),
-            Literal::Char(value) => Some(Self::Char(*value)),
-            Literal::Float(value) if value.is_finite() => Some(Self::Float(value.to_bits())),
-            Literal::String(value) => Some(Self::String(value.clone())),
-            Literal::Float(_) => None,
-        }
-    }
-}
-
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct CtorLiteralKey {
-    pub ty: SymbolId,
-    pub variant: SymbolId,
-    pub fields: Vec<CtorFieldKey>,
-}
-
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub enum ConstantKey {
-    Scalar(ScalarLiteralKey),
-    String(String),
-    Ctor(CtorLiteralKey),
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ConstantEmbedStrategy {
-    StaticConst,
-    Pooled,
-}
-
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct ConstantEntry {
-    pub key: ConstantKey,
-    pub strategy: ConstantEmbedStrategy,
-    pub estimated_size_bytes: usize,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct ConstantTable {
-    pub entries: Vec<ConstantEntry>,
-    pub entry_cap_bytes: usize,
-    pub unit_cap_bytes: usize,
-    pub total_size_bytes: usize,
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct ResidualTables {
     pub function_effect_summary: HashMap<FuncId, SortedEffectRow>,
     pub constant_table: ConstantTable,
     pub residualize_stats: ResidualizeStats,
     pub specialization_stats: SpecializationStats,
-    pub arc_stats: ArcStats,
-    pub borrow_hazards: BorrowHazardReport,
 }
 
 impl ResidualTables {
@@ -500,5 +407,9 @@ impl Residualized {
 
     pub fn residual_mut(&mut self) -> &mut ResidualTables {
         &mut self.residual
+    }
+
+    pub fn diagnostics_mut(&mut self) -> &mut DiagnosticBag {
+        &mut self.diagnostics
     }
 }

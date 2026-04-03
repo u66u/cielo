@@ -4,9 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-cielo-backend-api = { path = "../cielo-backend-api" }
+bitflags = "2.11.0"
 cielo-base = { path = "../cielo-base" }
 cielo-ir = { path = "../cielo-ir" }
-cielo-runtime = { path = "../cielo-runtime" }
-cielo-staging = { path = "../cielo-staging" }
-smallvec = "1.15.1"
+cielo-sema = { path = "../cielo-sema" }

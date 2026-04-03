@@ -9,13 +9,11 @@ use cielo::common::reporting::render_diagnostic;
 use cielo::common::symbols::Interner;
 use cielo::frontend::ast::{Item, Program};
 use cielo::ir::core::CoreProgram;
-use cielo::passes::{c_emit, cfg_lower, linearize};
 use cielo::pipeline::ct_invalidation::{
     CtDepSnapshot, CtInvalidationReason, diff as diff_ct_invalidation,
     load_snapshot as load_ct_snapshot, save_snapshot as save_ct_snapshot,
     sidecar_path as ct_sidecar_path,
 };
-use cielo::pipeline::ct_query_cache::sidecar_path as query_cache_sidecar_path;
 use cielo::pipeline::phases::{Residualized, Stage};
 use cielo::pipeline::provenance::runtime_provenance_lines;
 use cielo::pipeline::staging_diagnostics::{render_stage_b_counter_summary, staging_pass_counters};
@@ -23,9 +21,7 @@ use cielo::pipeline::staging_diff::{
     SnapshotStage, collect_snapshot, diff_snapshots, load_snapshot as load_stage_snapshot,
     save_snapshot as save_stage_snapshot,
 };
-use cielo::{
-    Compiler, CompilerConfig, MemoryModel, RefcountAlgorithm, RegionAlgorithm, TracingCollector,
-};
+use cielo::{Compiler, CompilerConfig};
 
 const RUNTIME_HEADER: &str = cielo::RUNTIME_HEADER;
 
@@ -53,18 +49,6 @@ struct Cli {
     #[arg(long, default_value = "gcc")]
     cc: String,
 
-    #[arg(long, value_enum, default_value = "reference-counting")]
-    memory: MemoryChoice,
-
-    #[arg(long, value_enum, default_value = "last-use")]
-    refcount_algorithm: RefcountChoice,
-
-    #[arg(long, value_enum, default_value = "mark-sweep")]
-    tracing_collector: TracingChoice,
-
-    #[arg(long, value_enum, default_value = "constraint-based")]
-    region_algorithm: RegionChoice,
-
     #[arg(long, help = "Persist and diff staging snapshots across rebuilds")]
     staging_diff: bool,
 
@@ -82,62 +66,13 @@ enum DumpKind {
     StagingReport,
     Linear,
     Cfg,
-    Anf,
     C,
     Memory,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, ValueEnum, Debug)]
-enum MemoryChoice {
-    ReferenceCounting,
-    Tracing,
-    Regions,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, ValueEnum, Debug)]
-enum RefcountChoice {
-    Baseline,
-    LastUse,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, ValueEnum, Debug)]
-enum TracingChoice {
-    MarkSweep,
-    SemiSpace,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, ValueEnum, Debug)]
-enum RegionChoice {
-    Lexical,
-    ConstraintBased,
-    FlowSensitive,
-}
-
 fn main() {
     let cli = Cli::parse();
-    let mut config = CompilerConfig::default();
-    config.memory.model = match cli.memory {
-        MemoryChoice::ReferenceCounting => MemoryModel::ReferenceCounting,
-        MemoryChoice::Tracing => MemoryModel::Tracing,
-        MemoryChoice::Regions => MemoryModel::Regions,
-    };
-    config.memory.refcount.algorithm = match cli.refcount_algorithm {
-        RefcountChoice::Baseline => RefcountAlgorithm::Baseline,
-        RefcountChoice::LastUse => RefcountAlgorithm::LastUse,
-    };
-    config.memory.tracing.collector = match cli.tracing_collector {
-        TracingChoice::MarkSweep => TracingCollector::MarkSweep,
-        TracingChoice::SemiSpace => TracingCollector::SemiSpace,
-    };
-    config.memory.regions.algorithm = match cli.region_algorithm {
-        RegionChoice::Lexical => RegionAlgorithm::Lexical,
-        RegionChoice::ConstraintBased => RegionAlgorithm::ConstraintBased,
-        RegionChoice::FlowSensitive => RegionAlgorithm::FlowSensitive,
-    };
-    if cli.staging_diff {
-        config.ct_query_cache_path = Some(query_cache_sidecar_path(cli.staging_snapshot.as_path()));
-    }
-    let compiler = Compiler::new(config);
+    let compiler = Compiler::new(CompilerConfig::default());
     let target = compiler.config().target;
     println!(
         "cielo bootstrap ready (target: {}-bit {:?})",
@@ -165,14 +100,12 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
         }
     };
 
-    let mut interner = Interner::new();
     let source_id = SourceId::from_u32(0);
     let db_source = compiler.database_source(&source, source_id);
-    if should_dump(cli, DumpKind::Memory) {
-        let db_memory = compiler.database_memory_file(db_source);
-        println!("=== Database Memory Plan ===\n{db_memory:#?}");
-    }
+
+    let mut interner = Interner::new();
     let parsed = compiler.database_parse_file(db_source, &mut interner);
+    let core = compiler.database_lower_file(db_source, &mut interner);
 
     if should_dump(cli, DumpKind::Ast) {
         println!("=== AST ===\n{:#?}", parsed.ast());
@@ -180,9 +113,6 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
     if should_dump(cli, DumpKind::Effects) {
         dump_effects_from_ast(parsed.ast(), &interner);
     }
-
-    let core = compiler.database_lower_file(db_source, &mut interner);
-
     if should_dump(cli, DumpKind::Core) {
         println!("=== Core IR ===\n{:#?}", core.program());
     }
@@ -190,107 +120,95 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
         dump_functions_from_core(core.program(), &interner);
     }
 
-    let typed = compiler.database_type_file(db_source, &mut interner);
-    let residual = compiler.run_v1_typed_pipeline(typed);
+    let staged = compiler.database_staged_file(db_source);
+    let residual = &staged.residual;
     if should_dump(cli, DumpKind::Sema) {
-        dump_sema_summary(&residual);
+        dump_sema_summary(residual);
     }
     if cli.staging_diff {
-        emit_staging_diff(cli.staging_snapshot.as_path(), &residual);
+        emit_staging_diff(cli.staging_snapshot.as_path(), residual);
     }
-    if should_dump(cli, DumpKind::Anf) {
-        println!("=== ANF ===");
-        println!("not implemented in v0 yet");
-    }
-
     let source_name = path.display().to_string();
-    print_case_summary("file", &source_name, &source, &residual);
+    print_case_summary("file", &source_name, &source, residual);
 
-    let need_c_backend = cli.emit_c
-        || cli.run_c
-        || should_dump(cli, DumpKind::Linear)
-        || should_dump(cli, DumpKind::Cfg)
-        || should_dump(cli, DumpKind::C);
-
-    if need_c_backend {
-        let memory = compiler.database_memory_file(db_source);
-        let missing = cielo::c_backend_capabilities().missing(memory.manifest());
-        if !missing.is_empty() {
-            eprintln!("C backend lacks runtime support for: {missing:?}");
-            std::process::exit(1);
-        }
+    if should_dump(cli, DumpKind::StagingReport) {
+        print_staging_report(residual);
     }
 
+    let need_runtime = should_dump(cli, DumpKind::Linear)
+        || should_dump(cli, DumpKind::Cfg)
+        || cli.emit_c
+        || cli.run_c
+        || should_dump(cli, DumpKind::C);
     if residual.diagnostics().has_errors() {
-        if need_c_backend {
-            eprintln!("skipping C backend because diagnostics contain errors");
+        if need_runtime {
+            eprintln!("skipping runtime lowering because diagnostics contain errors");
         }
         std::process::exit(1);
     }
-
-    if !need_c_backend {
+    if !need_runtime {
+        if should_dump(cli, DumpKind::Memory) {
+            let memory = compiler.database_memory_file(db_source);
+            println!("=== Memory ===\n{memory:#?}");
+        }
         return;
     }
 
-    let mut normalized = compiler.run_v1_normalize(residual.clone());
-    let sema = normalized.sema().clone();
-    let linear = {
-        let (program, diagnostics) = normalized.program_and_diagnostics_mut();
-        linearize::run(program, &sema, diagnostics)
-    };
+    let runtime = compiler.database_runtime_file(db_source);
     if should_dump(cli, DumpKind::Linear) {
-        println!("=== Linear IR ===\n{linear:#?}");
+        println!("=== Linear IR ===\n{:#?}", runtime.linear);
     }
-    let cfg = cfg_lower::run(&linear);
     if should_dump(cli, DumpKind::Cfg) {
-        println!("=== CFG IR ===\n{cfg:#?}");
+        println!("=== CFG IR ===\n{:#?}", runtime.cfg);
     }
 
-    let emitted =
-        c_emit::run_with_gc_config(normalized, linear, cfg, &interner, &compiler.config().gc);
-    if should_dump(cli, DumpKind::C) || cli.emit_c || cli.run_c {
-        println!("=== Emitted C ===\n{}", emitted.c_source);
+    if should_dump(cli, DumpKind::Memory) {
+        let memory = compiler.database_memory_file(db_source);
+        println!("=== Memory ===\n{memory:#?}");
     }
 
-    if should_dump(cli, DumpKind::StagingReport) {
-        println!("=== Staging Report ===");
-        let rollups =
-            cielo::pipeline::provenance::staging_root_causes(residual.program(), residual.bta());
-
-        let ct_count = residual
-            .bta()
-            .stage_of_expr
-            .values()
-            .filter(|s| matches!(s, Stage::Ct))
-            .count();
-        let total = residual.program().exprs().len();
-        println!(
-            "{}/{} expressions evaluated at compile time ({:.1}%)\n",
-            ct_count,
-            total,
-            (ct_count as f64 / total as f64) * 100.0
-        );
-        println!(
-            "{}\n",
-            render_stage_b_counter_summary(staging_pass_counters(&residual))
-        );
-
-        println!("Top RT root causes:");
-        for (i, rollup) in rollups.iter().enumerate().take(10) {
-            println!(
-                "  {}. `{}` → taints {} expressions",
-                i + 1,
-                rollup.description,
-                rollup.taint_count
-            );
+    if cli.emit_c || cli.run_c || should_dump(cli, DumpKind::C) {
+        let emitted = compiler.database_emitted_file(db_source);
+        if should_dump(cli, DumpKind::C) || cli.emit_c || cli.run_c {
+            println!("=== Emitted C ===\n{}", emitted.c_source);
+        }
+        if cli.emit_c || cli.run_c {
+            save_emitted_c(cli, &emitted.c_source);
+        }
+        if cli.run_c {
+            compile_and_run_c(cli);
         }
     }
+}
 
-    if cli.emit_c || cli.run_c {
-        save_emitted_c(cli, &emitted.c_source);
-    }
-    if cli.run_c {
-        compile_and_run_c(cli);
+fn print_staging_report(residual: &Residualized) {
+    println!("=== Staging Report ===");
+    let rollups = cielo::pipeline::provenance::staging_root_causes(residual.program(), residual.bta());
+    let ct_count = residual
+        .bta()
+        .stage_of_expr
+        .values()
+        .filter(|stage| matches!(stage, Stage::Ct))
+        .count();
+    let total = residual.program().exprs().len();
+    println!(
+        "{}/{} expressions evaluated at compile time ({:.1}%)\n",
+        ct_count,
+        total,
+        (ct_count as f64 / total as f64) * 100.0
+    );
+    println!(
+        "{}\n",
+        render_stage_b_counter_summary(staging_pass_counters(residual))
+    );
+    println!("Top RT root causes:");
+    for (index, rollup) in rollups.iter().enumerate().take(10) {
+        println!(
+            "  {}. `{}` → taints {} expressions",
+            index + 1,
+            rollup.description,
+            rollup.taint_count
+        );
     }
 }
 
