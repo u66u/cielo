@@ -10,11 +10,12 @@ use cielo::passes::{bta, c_emit, cfg_lower, ct_propagate, linearize, residualize
 use cielo::pipeline::compiler::TargetSpec;
 use cielo::pipeline::phases::{
     BranchDecision, BtaClassified, BtaTables, CtPropagationTables, Knownness,
-    MonomorphizationSummary, Reason, SemanticTables, Stage, Typed,
+    MonomorphizationSummary, Monomorphized, Reason, SemanticTables, Stage,
 };
 use cielo::sema::effect::SortedEffectRow;
 use cielo::sema::ty::Persistability;
 use cielo::{Compiler, CompilerConfig};
+use cielo_sema::TypedCore;
 
 #[test]
 fn compiles_source_through_default_pipeline() {
@@ -66,10 +67,11 @@ fn staging_boundary_rejects_non_concrete_effect_rows() {
     program.set_entrypoints([main]);
 
     let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
-    let typed = Typed::new(program, DiagnosticBag::default(), sema);
+    let typed = TypedCore::new(program, DiagnosticBag::default(), sema);
     let mut mono_summary = MonomorphizationSummary::default();
     mono_summary.source_to_mono.insert(main, vec![main]);
-    let mono = typed.into_monomorphized(mono_summary);
+    let (program, diagnostics, sema) = typed.into_parts();
+    let mono = Monomorphized::new(program, diagnostics, sema, mono_summary);
 
     let panic = std::panic::catch_unwind(|| {
         let _ = ct_propagate::run(mono, TargetSpec::default());

@@ -1,28 +1,24 @@
 use std::time::{Duration, Instant};
 
-use crate::common::diagnostics::DiagnosticBag;
-use crate::common::gc::{GcConfig, GcPreset};
-use crate::common::ids::SourceId;
-use crate::common::symbols::Interner;
-use crate::ir::core::CoreProgram;
-use crate::passes::bta;
-use crate::passes::c_emit;
-use crate::passes::cfg_lower;
-use crate::passes::comptime;
-use crate::passes::ct_eval;
-use crate::passes::handler_specialize;
-use crate::passes::linearize;
-use crate::passes::lowering::{LowerConfig, TargetBuiltinSymbols, lower_program};
-use crate::passes::monomorphize;
-use crate::passes::normalize;
-use crate::passes::residualize;
-use crate::pipeline::phases::{
-    BtaClassified, CoreBuilt, CtPropagated, Monomorphized, Parsed, Residualized, Typed,
-};
-use crate::sema::typecheck::typecheck_core;
+use cielo_base::{DiagnosticBag, Interner, SourceId};
 use cielo_db::{
     CieloDatabase, CompileProfile, SourceFile, TargetProfile, core_file, parsed_file, typed_file,
 };
+use cielo_frontend::ParseOutput;
+use cielo_ir::core::CoreProgram;
+use cielo_lowering::{LowerConfig, LowerOutput, TargetBuiltinSymbols, lower_program};
+use cielo_memory::{GcConfig, GcPreset};
+use cielo_runtime::{cfg_lower, linearize};
+use cielo_sema::{TypedCore, check_core};
+use cielo_staging::{
+    passes::{
+        bta, comptime, ct_eval, handler_specialize, monomorphize, normalize, residualize,
+    },
+    pipeline::phases::{BtaClassified, CtPropagated, Monomorphized, Residualized},
+};
+
+use crate::passes::c_emit;
+
 pub use cielo_ir::target::{Endianness, TargetSpec};
 
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -103,8 +99,8 @@ impl V0PipelineTimings {
 #[derive(Clone, Debug)]
 pub struct CompiledC {
     pub residual: Residualized,
-    pub linear: crate::ir::linear::LinearProgram,
-    pub cfg: crate::ir::cfg::CfgProgram,
+    pub linear: cielo_ir::linear::LinearProgram,
+    pub cfg: cielo_ir::cfg::CfgProgram,
     pub memory: cielo_memory::MemoryReport,
     pub c_source: String,
 }
@@ -141,19 +137,19 @@ impl Compiler {
         )
     }
 
-    pub fn database_parse_file(&self, file: SourceFile, interner: &mut Interner) -> Parsed {
+    pub fn database_parse_file(&self, file: SourceFile, interner: &mut Interner) -> ParseOutput {
         let parsed = parsed_file(&self.db, file);
         *interner = parsed.interner.clone();
-        Parsed::new(parsed.ast.clone(), parsed.diagnostics.clone())
+        ParseOutput::new(parsed.ast.clone(), parsed.diagnostics.clone())
     }
 
-    pub fn database_lower_file(&self, file: SourceFile, interner: &mut Interner) -> CoreBuilt {
+    pub fn database_lower_file(&self, file: SourceFile, interner: &mut Interner) -> LowerOutput {
         let lowered = core_file(&self.db, file, TargetProfile::from(self.config.target));
         *interner = lowered.interner.clone();
         lowered.core.clone()
     }
 
-    pub fn database_type_file(&self, file: SourceFile, interner: &mut Interner) -> Typed {
+    pub fn database_type_file(&self, file: SourceFile, interner: &mut Interner) -> TypedCore {
         let typed = typed_file(&self.db, file, TargetProfile::from(self.config.target));
         *interner = typed.interner.clone();
         typed.typed.clone()
@@ -166,7 +162,7 @@ impl Compiler {
         source: &str,
         source_id: SourceId,
         interner: &mut Interner,
-    ) -> Parsed {
+    ) -> ParseOutput {
         let file = self.database_source(source, source_id);
         self.database_parse_file(file, interner)
     }
@@ -215,26 +211,27 @@ impl Compiler {
         cielo_db::compile(&self.db, file, self.database_profile())
     }
 
-    pub fn bootstrap_core(&self, program: CoreProgram) -> CoreBuilt {
-        CoreBuilt::new(program, DiagnosticBag::default())
+    pub fn bootstrap_core(&self, program: CoreProgram) -> LowerOutput {
+        LowerOutput::new(program, DiagnosticBag::default())
     }
 
-    pub fn parse(&self, source: &str, source_id: SourceId, interner: &mut Interner) -> Parsed {
+    pub fn parse(&self, source: &str, source_id: SourceId, interner: &mut Interner) -> ParseOutput {
         self.parse_with_database(source, source_id, interner)
     }
 
-    pub fn lower_parsed_to_core(&self, parsed: Parsed) -> CoreBuilt {
-        let lowered = lower_program(parsed.ast(), LowerConfig::default());
-        parsed.into_core_built(lowered.program, lowered.diagnostics)
+    pub fn lower_parsed_to_core(&self, parsed: ParseOutput) -> LowerOutput {
+        self.lower_parsed_to_core_with_config(parsed, LowerConfig::default())
     }
 
     pub fn lower_parsed_to_core_with_config(
         &self,
-        parsed: Parsed,
+        parsed: ParseOutput,
         config: LowerConfig,
-    ) -> CoreBuilt {
-        let lowered = lower_program(parsed.ast(), config);
-        parsed.into_core_built(lowered.program, lowered.diagnostics)
+    ) -> LowerOutput {
+        let (ast, mut diagnostics) = parsed.into_parts();
+        let lowered = lower_program(&ast, config);
+        diagnostics.extend(lowered.diagnostics);
+        LowerOutput::new(lowered.program, diagnostics)
     }
 
     pub fn parse_and_lower_to_core(
@@ -242,7 +239,7 @@ impl Compiler {
         source: &str,
         source_id: SourceId,
         interner: &mut Interner,
-    ) -> CoreBuilt {
+    ) -> LowerOutput {
         let file = self.database_source(source, source_id);
         self.database_lower_file(file, interner)
     }
@@ -364,13 +361,13 @@ impl Compiler {
         }
     }
 
-    pub fn run_v1_evaluate_classify(&self, built: CoreBuilt) -> BtaClassified {
+    pub fn run_v1_evaluate_classify(&self, built: LowerOutput) -> BtaClassified {
         let typed = self.typecheck(built);
         let mono = self.monomorphize(typed);
         self.evaluate_classify(mono)
     }
 
-    pub fn run_v1_ct_eval(&self, built: CoreBuilt) -> CtPropagated {
+    pub fn run_v1_ct_eval(&self, built: LowerOutput) -> CtPropagated {
         let typed = self.typecheck(built);
         let mono = self.monomorphize(typed);
         ct_eval::run(mono, self.config.target)
@@ -384,24 +381,24 @@ impl Compiler {
         self.normalize(residual)
     }
 
-    pub fn run_v1_core_pipeline(&self, built: CoreBuilt) -> Residualized {
+    pub fn run_v1_core_pipeline(&self, built: LowerOutput) -> Residualized {
         let classified = self.run_v1_evaluate_classify(built);
         self.run_v1_residualize_specialize(classified)
     }
 
-    pub fn run_v1_typed_pipeline(&self, typed: Typed) -> Residualized {
+    pub fn run_v1_typed_pipeline(&self, typed: TypedCore) -> Residualized {
         let mono = self.monomorphize(typed);
         let classified = self.evaluate_classify(mono);
         self.residualize_specialize(classified)
     }
 
-    pub fn run_v0_core_pipeline(&self, built: CoreBuilt) -> Residualized {
+    pub fn run_v0_core_pipeline(&self, built: LowerOutput) -> Residualized {
         self.run_v0_core_pipeline_profiled(built).0
     }
 
     pub fn run_v0_core_pipeline_profiled(
         &self,
-        built: CoreBuilt,
+        built: LowerOutput,
     ) -> (Residualized, V0PipelineTimings) {
         let mut timings = V0PipelineTimings::default();
 
@@ -428,13 +425,12 @@ impl Compiler {
         (residual, timings)
     }
 
-    fn typecheck(&self, built: CoreBuilt) -> Typed {
-        let (program, mut diagnostics) = built.into_parts();
-        let sema = typecheck_core(&program, &mut diagnostics);
-        Typed::new(program, diagnostics, sema)
+    fn typecheck(&self, built: LowerOutput) -> TypedCore {
+        let (program, diagnostics) = built.into_parts();
+        check_core(program, diagnostics)
     }
 
-    fn monomorphize(&self, typed: Typed) -> Monomorphized {
+    fn monomorphize(&self, typed: TypedCore) -> Monomorphized {
         monomorphize::run(typed)
     }
 
@@ -467,8 +463,8 @@ fn lower_runtime(
     mut residual: Residualized,
 ) -> (
     Residualized,
-    crate::ir::linear::LinearProgram,
-    crate::ir::cfg::CfgProgram,
+    cielo_ir::linear::LinearProgram,
+    cielo_ir::cfg::CfgProgram,
 ) {
     let sema = residual.sema().clone();
     let linear = {

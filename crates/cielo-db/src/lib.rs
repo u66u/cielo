@@ -13,13 +13,13 @@ use cielo_ir::{
     linear::LinearProgram,
     target::{Endianness, TargetSpec},
 };
-use cielo_lowering::{LowerConfig, TargetBuiltinSymbols, lower_program};
+use cielo_lowering::{LowerConfig, LowerOutput, TargetBuiltinSymbols, lower_program};
 use cielo_memory::{GcConfig, MemoryInput, MemoryProgram};
 use cielo_runtime::{cfg_lower, linearize};
-use cielo_sema::typecheck::typecheck_core;
+use cielo_sema::{TypedCore, check_core};
 use cielo_staging::{
     passes::{comptime, monomorphize, normalize},
-    pipeline::phases::{CoreBuilt, Residualized, Typed},
+    pipeline::phases::Residualized,
 };
 
 #[salsa::db]
@@ -167,14 +167,14 @@ pub struct ParsedFile {
 #[derive(Clone, Debug)]
 pub struct CoreFile {
     pub source: SourceId,
-    pub core: CoreBuilt,
+    pub core: LowerOutput,
     pub interner: Interner,
 }
 
 #[derive(Clone, Debug)]
 pub struct TypedFile {
     pub source: SourceId,
-    pub typed: Typed,
+    pub typed: TypedCore,
     pub interner: Interner,
 }
 
@@ -239,7 +239,7 @@ pub fn core_file(
     diagnostics.extend(lowered.diagnostics);
     Arc::new(CoreFile {
         source: parsed.source,
-        core: CoreBuilt::new(lowered.program, diagnostics),
+        core: LowerOutput::new(lowered.program, diagnostics),
         interner,
     })
 }
@@ -251,11 +251,10 @@ pub fn typed_file(
     target: TargetProfile,
 ) -> Arc<TypedFile> {
     let core = core_file(db, source, target);
-    let (program, mut diagnostics) = core.core.clone().into_parts();
-    let sema = typecheck_core(&program, &mut diagnostics);
+    let (program, diagnostics) = core.core.clone().into_parts();
     Arc::new(TypedFile {
         source: core.source,
-        typed: Typed::new(program, diagnostics, sema),
+        typed: check_core(program, diagnostics),
         interner: core.interner.clone(),
     })
 }

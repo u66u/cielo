@@ -9,7 +9,7 @@ fn compiler_parse_uses_the_database_boundary() {
     let source = compiler.database_source("fn main() {}", SourceId::from_u32(0));
     let mut interner = Interner::new();
     let parsed = compiler.database_parse_file(source, &mut interner);
-    assert_eq!(parsed.ast().items.len(), 1);
+    assert_eq!(parsed.program().items.len(), 1);
     assert!(!parsed.diagnostics().has_errors());
 }
 
@@ -22,7 +22,7 @@ fn compiler_typechecks_through_the_database_boundary() {
     assert_eq!(typed.program().functions().len(), 1);
     assert!(!typed.diagnostics().has_errors());
     assert_eq!(
-        typed.sema().type_of_expr.len(),
+        typed.facts().type_of_expr.len(),
         typed.program().exprs().len()
     );
 }

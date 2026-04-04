@@ -23,6 +23,27 @@ pub struct ParseOutput {
     pub diagnostics: DiagnosticBag,
 }
 
+impl ParseOutput {
+    pub fn new(program: Program, diagnostics: DiagnosticBag) -> Self {
+        Self {
+            program,
+            diagnostics,
+        }
+    }
+
+    pub fn program(&self) -> &Program {
+        &self.program
+    }
+
+    pub fn diagnostics(&self) -> &DiagnosticBag {
+        &self.diagnostics
+    }
+
+    pub fn into_parts(self) -> (Program, DiagnosticBag) {
+        (self.program, self.diagnostics)
+    }
+}
+
 pub fn parse_source(source: &str, source_id: SourceId, interner: &mut Interner) -> ParseOutput {
     let builtins = BuiltinTypeSymbols::intern(interner);
     let effect_builtins = BuiltinEffectSymbols::intern(interner);

@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use cielo_base::densemap::DenseMap;
 use cielo_base::diagnostics::DiagnosticBag;
 use cielo_base::{EffectLabelId, ExprId, FuncId, HandlerId, TypeId, VarId};
-use cielo_frontend::ast::Program as AstProgram;
 use cielo_ir::core::{CoreProgram, Literal};
 use cielo_ir::effect::SortedEffectRow;
 pub use cielo_ir::constants::*;
@@ -297,48 +296,6 @@ macro_rules! define_phase_state_with_parts {
             }
         }
     };
-}
-
-define_phase_state!(Parsed {
-    ast: AstProgram,
-    diagnostics: DiagnosticBag,
-});
-
-impl Parsed {
-    pub fn into_core_built(
-        self,
-        program: CoreProgram,
-        extra_diagnostics: DiagnosticBag,
-    ) -> CoreBuilt {
-        let mut diagnostics = self.diagnostics;
-        diagnostics.extend(extra_diagnostics);
-        CoreBuilt::new(program, diagnostics)
-    }
-}
-
-define_phase_state_with_parts!(CoreBuilt {
-    program: CoreProgram,
-    diagnostics: DiagnosticBag,
-});
-
-impl CoreBuilt {
-    pub fn into_typed(self, sema: SemanticTables) -> Typed {
-        let (program, diagnostics) = self.into_parts();
-        Typed::new(program, diagnostics, sema)
-    }
-}
-
-define_phase_state_with_parts!(Typed {
-    program: CoreProgram,
-    diagnostics: DiagnosticBag,
-    sema: SemanticTables,
-});
-
-impl Typed {
-    pub fn into_monomorphized(self, mono: MonomorphizationSummary) -> Monomorphized {
-        let (program, diagnostics, sema) = self.into_parts();
-        Monomorphized::new(program, diagnostics, sema, mono)
-    }
 }
 
 define_phase_state_with_parts!(Monomorphized {

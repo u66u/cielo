@@ -19,9 +19,11 @@ use std::collections::HashMap;
 // - O(function_count)
 
 use cielo_base::FuncId;
-use crate::pipeline::phases::{MonomorphizationSummary, Monomorphized, Typed};
+use cielo_sema::TypedCore;
 
-pub fn run(typed: Typed) -> Monomorphized {
+use crate::pipeline::phases::{MonomorphizationSummary, Monomorphized};
+
+pub fn run(typed: TypedCore) -> Monomorphized {
     // v0: no generic instantiation yet. We still build an explicit summary table
     // so downstream passes can depend on a stable monomorphization interface.
     let mut source_to_mono: HashMap<FuncId, Vec<FuncId>> = HashMap::new();
@@ -30,5 +32,11 @@ pub fn run(typed: Typed) -> Monomorphized {
         source_to_mono.insert(id, vec![id]);
     }
 
-    typed.into_monomorphized(MonomorphizationSummary { source_to_mono })
+    let (program, diagnostics, sema) = typed.into_parts();
+    Monomorphized::new(
+        program,
+        diagnostics,
+        sema,
+        MonomorphizationSummary { source_to_mono },
+    )
 }

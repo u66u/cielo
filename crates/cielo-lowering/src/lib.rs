@@ -42,6 +42,27 @@ pub struct LowerOutput {
     pub diagnostics: DiagnosticBag,
 }
 
+impl LowerOutput {
+    pub fn new(program: CoreProgram, diagnostics: DiagnosticBag) -> Self {
+        Self {
+            program,
+            diagnostics,
+        }
+    }
+
+    pub fn program(&self) -> &CoreProgram {
+        &self.program
+    }
+
+    pub fn diagnostics(&self) -> &DiagnosticBag {
+        &self.diagnostics
+    }
+
+    pub fn into_parts(self) -> (CoreProgram, DiagnosticBag) {
+        (self.program, self.diagnostics)
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct LowerConfig {
     pub entrypoints: Vec<SymbolId>,

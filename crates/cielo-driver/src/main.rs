@@ -108,10 +108,10 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
     let core = compiler.database_lower_file(db_source, &mut interner);
 
     if should_dump(cli, DumpKind::Ast) {
-        println!("=== AST ===\n{:#?}", parsed.ast());
+        println!("=== AST ===\n{:#?}", parsed.program());
     }
     if should_dump(cli, DumpKind::Effects) {
-        dump_effects_from_ast(parsed.ast(), &interner);
+        dump_effects_from_ast(parsed.program(), &interner);
     }
     if should_dump(cli, DumpKind::Core) {
         println!("=== Core IR ===\n{:#?}", core.program());
