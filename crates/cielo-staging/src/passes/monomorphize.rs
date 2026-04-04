@@ -18,7 +18,7 @@ use std::collections::HashMap;
 // Complexity:
 // - O(function_count)
 
-use crate::common::ids::FuncId;
+use cielo_base::FuncId;
 use crate::pipeline::phases::{MonomorphizationSummary, Monomorphized, Typed};
 
 pub fn run(typed: Typed) -> Monomorphized {

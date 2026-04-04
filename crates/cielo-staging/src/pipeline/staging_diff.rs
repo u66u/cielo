@@ -4,8 +4,8 @@ use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::Path;
 
-use crate::common::ids::ExprId;
-use crate::ir::core::{CoreProgram, ExprKind};
+use cielo_base::ExprId;
+use cielo_ir::core::{CoreProgram, ExprKind};
 use crate::pipeline::phases::{BtaTables, Stage};
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -284,26 +284,26 @@ fn expr_fingerprint(
     value
 }
 
-fn hash_literal<H: Hasher>(literal: &crate::ir::core::Literal, hasher: &mut H) {
+fn hash_literal<H: Hasher>(literal: &cielo_ir::core::Literal, hasher: &mut H) {
     match literal {
-        crate::ir::core::Literal::Unit => 0u8.hash(hasher),
-        crate::ir::core::Literal::Bool(value) => {
+        cielo_ir::core::Literal::Unit => 0u8.hash(hasher),
+        cielo_ir::core::Literal::Bool(value) => {
             1u8.hash(hasher);
             value.hash(hasher);
         }
-        crate::ir::core::Literal::Int(value) => {
+        cielo_ir::core::Literal::Int(value) => {
             2u8.hash(hasher);
             value.hash(hasher);
         }
-        crate::ir::core::Literal::Float(value) => {
+        cielo_ir::core::Literal::Float(value) => {
             3u8.hash(hasher);
             value.to_bits().hash(hasher);
         }
-        crate::ir::core::Literal::Char(value) => {
+        cielo_ir::core::Literal::Char(value) => {
             4u8.hash(hasher);
             value.hash(hasher);
         }
-        crate::ir::core::Literal::String(value) => {
+        cielo_ir::core::Literal::String(value) => {
             5u8.hash(hasher);
             value.hash(hasher);
         }

@@ -19,12 +19,12 @@
 use cielo_ir::function_graph::{collect_reachable_functions, prune_unreachable_functions};
 use std::collections::{HashMap, HashSet};
 
-use crate::common::diagnostics::ErrorNode;
-use crate::common::ids::{
+use cielo_base::diagnostics::ErrorNode;
+use cielo_base::{
     DiagnosticId, EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, VarId,
 };
-use crate::common::span::Span;
-use crate::ir::core::{
+use cielo_base::span::Span;
+use cielo_ir::core::{
     CoreProgram, ExprKind, ExprNode, FunctionDecl, HandlerDef, StmtKind, StmtNode,
 };
 use crate::passes::constant_table;
@@ -32,7 +32,7 @@ use crate::pipeline::phases::{
     BtaTables, CtPropagationTables, Reason, Residualized, SemanticTables, SpecializationStats,
     Stage,
 };
-use crate::sema::effect::SortedEffectRow;
+use cielo_ir::effect::SortedEffectRow;
 
 const MAX_SPECIALIZATIONS_PER_CALLEE: usize = 8;
 const MAX_TOTAL_SPECIALIZATIONS: usize = 256;
@@ -426,7 +426,7 @@ fn build_rewritten_body(
         } => {
             let mut rewritten_arms = Vec::with_capacity(arms.len());
             for arm in arms {
-                rewritten_arms.push(crate::ir::core::MatchArm {
+                rewritten_arms.push(cielo_ir::core::MatchArm {
                     tag: arm.tag,
                     binders: arm.binders,
                     body: build_rewritten_stmt(
@@ -814,7 +814,7 @@ fn synchronize_semantic_tables(program: &CoreProgram, sema: &mut SemanticTables)
     if sema.ownership_of_expr.len() < expr_count {
         sema.ownership_of_expr.resize(
             expr_count,
-            crate::sema::ownership::OwnershipClass::BorrowedView,
+            cielo_sema::ownership::OwnershipClass::BorrowedView,
         );
     }
     if sema.effects_of_stmt.len() < stmt_count {
@@ -1003,7 +1003,7 @@ impl<'a> NormalizedGraphBuilder<'a> {
                             .iter()
                             .map(|binder| arm_scope.canonical_var(*binder))
                             .collect();
-                        crate::ir::core::MatchArm {
+                        cielo_ir::core::MatchArm {
                             tag: arm.tag,
                             binders,
                             body: self.normalize_stmt(arm.body, &mut arm_scope),
@@ -1264,7 +1264,7 @@ impl<'a> GraphCloner<'a> {
                 scrutinee: self.clone_expr(scrutinee),
                 arms: arms
                     .into_iter()
-                    .map(|arm| crate::ir::core::MatchArm {
+                    .map(|arm| cielo_ir::core::MatchArm {
                         tag: arm.tag,
                         binders: arm.binders,
                         body: self.clone_stmt(arm.body),
@@ -1419,11 +1419,11 @@ impl<'a> GraphCloner<'a> {
             .ownership_of_expr
             .get(source.index())
             .copied()
-            .unwrap_or(crate::sema::ownership::OwnershipClass::BorrowedView);
+            .unwrap_or(cielo_sema::ownership::OwnershipClass::BorrowedView);
         if self.sema.ownership_of_expr.len() <= cloned.index() {
             self.sema.ownership_of_expr.resize(
                 cloned.index() + 1,
-                crate::sema::ownership::OwnershipClass::BorrowedView,
+                cielo_sema::ownership::OwnershipClass::BorrowedView,
             );
         }
         self.sema.ownership_of_expr[cloned.index()] = ownership;

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use crate::passes::{bta, ct_eval, handler_specialize, residualize};
-use crate::pipeline::compiler::TargetSpec;
+use cielo_ir::target::TargetSpec;
 use crate::pipeline::phases::{
     BranchDecision, BtaClassified, Monomorphized, Reason, Residualized, Stage,
 };
@@ -100,8 +100,8 @@ fn assert_evaluate_classify_invariants(classified: &BtaClassified) {
             panic!("compiler bug: branch decision without ct literal for e{expr_id}")
         });
         match (decision, literal) {
-            (BranchDecision::LiveTrue, crate::ir::core::Literal::Bool(true))
-            | (BranchDecision::LiveFalse, crate::ir::core::Literal::Bool(false)) => {}
+            (BranchDecision::LiveTrue, cielo_ir::core::Literal::Bool(true))
+            | (BranchDecision::LiveFalse, cielo_ir::core::Literal::Bool(false)) => {}
             (BranchDecision::Unknown, _) => {}
             _ => panic!(
                 "compiler bug: inconsistent branch decision at e{}: {:?} vs {:?}",
@@ -132,7 +132,7 @@ fn assert_evaluate_classify_invariants(classified: &BtaClassified) {
         );
     }
     for (idx, handler) in program.handlers().iter().enumerate() {
-        let handler_id = crate::common::ids::HandlerId::new(idx);
+        let handler_id = cielo_base::HandlerId::new(idx);
         let clauses = bta.clause_discharge.get(&handler_id).unwrap_or_else(|| {
             panic!(
                 "compiler bug: missing clause discharge for handler h{}",

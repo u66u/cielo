@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::common::ids::{LinearExprId, SymbolId};
-use crate::ir::core::CoreProgram;
-use crate::ir::linear::LinearProgram;
-use crate::ir::walk::{IrExprNode, IrProgram};
+use cielo_base::{LinearExprId, SymbolId};
+use cielo_ir::core::CoreProgram;
+use cielo_ir::linear::LinearProgram;
+use cielo_ir::walk::{IrExprNode, IrProgram};
 use crate::pipeline::phases::{
     ConstantEmbedStrategy, ConstantEntry, ConstantKey, ConstantTable, CtorFieldKey, CtorLiteralKey,
     ScalarLiteralKey,
@@ -37,7 +37,7 @@ pub fn build_constant_table<P: IrProgram>(program: &P) -> ConstantTable {
             if let Some(key) = ScalarLiteralKey::from_literal(literal) {
                 *counts.scalars.entry(key).or_default() += 1;
             }
-            if let crate::ir::core::Literal::String(value) = literal
+            if let cielo_ir::core::Literal::String(value) = literal
                 && seen_strings.insert(value.clone())
             {
                 counts.strings.push(value.clone());

@@ -25,12 +25,12 @@
 use std::collections::{HashMap, HashSet};
 
 use cielo_ir::function_graph::collect_reachable_functions;
-use crate::common::ids::{ExprId, FuncId, HandlerId, StmtId, VarId};
-use crate::common::span::Span;
-use crate::ir::core::{CoreProgram, ExprKind, ExprNode, MatchArm, StmtKind, StmtNode};
+use cielo_base::{ExprId, FuncId, HandlerId, StmtId, VarId};
+use cielo_base::span::Span;
+use cielo_ir::core::{CoreProgram, ExprKind, ExprNode, MatchArm, StmtKind, StmtNode};
 use crate::passes::constant_table;
 use crate::pipeline::phases::Residualized;
-use crate::sema::typecheck::typecheck_core;
+use cielo_sema::typecheck::typecheck_core;
 
 const MAX_SHRINK_ITERS: usize = 16;
 const MAX_SPEC_INLINE_STMTS: usize = 6;
@@ -691,7 +691,7 @@ impl<'a> Rewriter<'a> {
     fn resolve_bool(&self, expr_id: ExprId) -> Option<bool> {
         let kind = self.resolve_expr_kind(expr_id)?;
         match kind {
-            ExprKind::Literal(crate::ir::core::Literal::Bool(value)) => Some(value),
+            ExprKind::Literal(cielo_ir::core::Literal::Bool(value)) => Some(value),
             _ => None,
         }
     }

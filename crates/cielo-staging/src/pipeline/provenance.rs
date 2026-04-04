@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::common::densemap::DenseId;
-use crate::common::ids::{ExprId, FuncId, StmtId, VarId};
-use crate::ir::core::{CoreProgram, ExprKind, StmtKind};
+use cielo_base::densemap::DenseId;
+use cielo_base::{ExprId, FuncId, StmtId, VarId};
+use cielo_ir::core::{CoreProgram, ExprKind, StmtKind};
 use crate::pipeline::phases::{BtaTables, Reason, Stage};
 
 pub fn runtime_provenance_lines(

@@ -1,7 +1,3 @@
-pub mod compiler {
-    pub use cielo_ir::target::{Endianness, TargetSpec};
-}
-
 pub mod ct_invalidation;
 pub mod phases;
 pub mod provenance;

@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
-use crate::common::densemap::DenseMap;
-use crate::common::ids::{ExprId, FuncId, StmtId, VarId};
-use crate::ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, StageDirective, UnaryOp};
+use cielo_base::densemap::DenseMap;
+use cielo_base::{ExprId, FuncId, StmtId, VarId};
+use cielo_ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, StageDirective, UnaryOp};
 use crate::passes::ct_common;
-use crate::pipeline::compiler::TargetSpec;
+use cielo_ir::target::TargetSpec;
 use crate::pipeline::phases::{CtPropagated, CtPropagationTables, Monomorphized};
 
 const MAX_CALL_EVAL_DEPTH: usize = 32;
@@ -129,8 +129,8 @@ impl CallEvaluator<'_> {
     fn eval_stmt(&mut self, stmt_id: StmtId, env: &mut HashMap<VarId, Literal>) -> Option<Literal> {
         let stmt = self.program.stmt(stmt_id)?;
         match &stmt.kind {
-            crate::ir::core::StmtKind::Return(expr) => self.eval_expr(*expr, env),
-            crate::ir::core::StmtKind::Let {
+            cielo_ir::core::StmtKind::Return(expr) => self.eval_expr(*expr, env),
+            cielo_ir::core::StmtKind::Let {
                 binding,
                 value,
                 next,
@@ -139,7 +139,7 @@ impl CallEvaluator<'_> {
                 env.insert(*binding, lit);
                 self.eval_stmt(*next, env)
             }
-            crate::ir::core::StmtKind::Val {
+            cielo_ir::core::StmtKind::Val {
                 binding,
                 value,
                 next,
@@ -148,7 +148,7 @@ impl CallEvaluator<'_> {
                 env.insert(*binding, lit);
                 self.eval_stmt(*next, env)
             }
-            crate::ir::core::StmtKind::If {
+            cielo_ir::core::StmtKind::If {
                 cond,
                 then_branch,
                 else_branch,
@@ -163,7 +163,7 @@ impl CallEvaluator<'_> {
                 }
                 _ => None,
             },
-            crate::ir::core::StmtKind::Stage { stage, body, next } => {
+            cielo_ir::core::StmtKind::Stage { stage, body, next } => {
                 if !matches!(stage, StageDirective::Comptime) {
                     return None;
                 }
@@ -175,13 +175,13 @@ impl CallEvaluator<'_> {
                     Some(value)
                 }
             }
-            crate::ir::core::StmtKind::Match { .. }
-            | crate::ir::core::StmtKind::Call { .. }
-            | crate::ir::core::StmtKind::Perform { .. }
-            | crate::ir::core::StmtKind::Resume { .. }
-            | crate::ir::core::StmtKind::Handle { .. }
-            | crate::ir::core::StmtKind::Hole { .. }
-            | crate::ir::core::StmtKind::Error(_) => None,
+            cielo_ir::core::StmtKind::Match { .. }
+            | cielo_ir::core::StmtKind::Call { .. }
+            | cielo_ir::core::StmtKind::Perform { .. }
+            | cielo_ir::core::StmtKind::Resume { .. }
+            | cielo_ir::core::StmtKind::Handle { .. }
+            | cielo_ir::core::StmtKind::Hole { .. }
+            | cielo_ir::core::StmtKind::Error(_) => None,
         }
     }
 

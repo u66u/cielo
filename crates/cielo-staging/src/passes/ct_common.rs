@@ -3,12 +3,12 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
-use crate::common::densemap::DenseMap;
-use crate::common::ids::{EffectLabelId, ExprId};
-use crate::ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, OpCategory, UnaryOp};
-use crate::pipeline::compiler::{Endianness, TargetSpec};
+use cielo_base::densemap::DenseMap;
+use cielo_base::{EffectLabelId, ExprId};
+use cielo_ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, OpCategory, UnaryOp};
+use cielo_ir::target::{Endianness, TargetSpec};
 use crate::pipeline::phases::{BranchDecision, CtCacheKey, CtEvalStats, CtFileDep, SemanticTables};
-use crate::sema::effect::EffectFlags;
+use cielo_ir::effect::EffectFlags;
 
 pub(super) const EVALUATOR_POLICY: &str = "v1-int-wrap-litnorm";
 
@@ -40,12 +40,12 @@ pub(super) fn assert_pre_staging_effects_concrete(program: &CoreProgram) {
 
     for (stmt_idx, stmt) in program.stmts().iter().enumerate() {
         match &stmt.kind {
-            crate::ir::core::StmtKind::Call { effects, .. } => {
+            cielo_ir::core::StmtKind::Call { effects, .. } => {
                 for effect in effects.iter() {
                     assert_effect(effect, format!("stmt s{stmt_idx} call effect row").as_str());
                 }
             }
-            crate::ir::core::StmtKind::Perform { effect, .. } => {
+            cielo_ir::core::StmtKind::Perform { effect, .. } => {
                 assert_effect(*effect, format!("stmt s{stmt_idx} perform effect").as_str());
             }
             _ => {}
@@ -143,7 +143,7 @@ pub(super) fn compute_ct_cache(
 }
 
 fn eval_expr(
-    expr: &crate::ir::core::ExprNode,
+    expr: &cielo_ir::core::ExprNode,
     cache: &DenseMap<ExprId, Literal>,
     target: TargetSpec,
 ) -> EvalOutcome {
@@ -360,7 +360,7 @@ pub(super) fn collect_file_deps(program: &CoreProgram, sema: &SemanticTables) ->
     let mut seen = HashSet::new();
 
     for stmt in program.stmts() {
-        let crate::ir::core::StmtKind::Perform { effect, args, .. } = &stmt.kind else {
+        let cielo_ir::core::StmtKind::Perform { effect, args, .. } = &stmt.kind else {
             continue;
         };
         let is_ct_only = sema

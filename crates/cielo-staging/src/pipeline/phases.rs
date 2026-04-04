@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
-use crate::common::densemap::DenseMap;
-use crate::common::diagnostics::DiagnosticBag;
-use crate::common::ids::{EffectLabelId, ExprId, FuncId, HandlerId, TypeId, VarId};
-use crate::frontend::ast::Program as AstProgram;
-use crate::ir::core::{CoreProgram, Literal};
-use crate::sema::effect::SortedEffectRow;
+use cielo_base::densemap::DenseMap;
+use cielo_base::diagnostics::DiagnosticBag;
+use cielo_base::{EffectLabelId, ExprId, FuncId, HandlerId, TypeId, VarId};
+use cielo_frontend::ast::Program as AstProgram;
+use cielo_ir::core::{CoreProgram, Literal};
+use cielo_ir::effect::SortedEffectRow;
 pub use cielo_ir::constants::*;
 pub use cielo_sema::facts::SemanticTables;
 use serde::{Deserialize, Serialize};

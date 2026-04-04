@@ -18,7 +18,7 @@
 // - O(expr_count * fixpoint_iters), with small bounded iter count in practice
 
 use crate::passes::ct_common;
-use crate::pipeline::compiler::TargetSpec;
+use cielo_ir::target::TargetSpec;
 use crate::pipeline::phases::{CtPropagated, CtPropagationTables, Monomorphized};
 
 pub fn run(mono: Monomorphized, target: TargetSpec) -> CtPropagated {

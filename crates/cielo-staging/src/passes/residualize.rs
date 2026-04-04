@@ -21,15 +21,15 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::common::ids::{ExprId, FuncId, HandlerId, StmtId, VarId};
-use crate::common::span::Span;
-use crate::ir::core::{CoreProgram, ExprKind, Literal, MatchArm, StmtKind, StmtNode};
+use cielo_base::{ExprId, FuncId, HandlerId, StmtId, VarId};
+use cielo_base::span::Span;
+use cielo_ir::core::{CoreProgram, ExprKind, Literal, MatchArm, StmtKind, StmtNode};
 use crate::passes::constant_table;
 use crate::pipeline::phases::{
     BranchDecision, BtaClassified, BtaTables, CtPropagationTables, Knownness, ResidualTables,
     ResidualizeStats, Residualized, Stage,
 };
-use crate::sema::effect::SortedEffectRow;
+use cielo_ir::effect::SortedEffectRow;
 
 pub fn run(bta: BtaClassified) -> Residualized {
     let mut bta = bta;
@@ -263,7 +263,7 @@ struct StmtRewriter<'a> {
 #[derive(Clone)]
 struct MatchSelection {
     body: StmtId,
-    bindings: Vec<(crate::common::ids::VarId, ExprId)>,
+    bindings: Vec<(cielo_base::VarId, ExprId)>,
 }
 
 impl StmtRewriter<'_> {

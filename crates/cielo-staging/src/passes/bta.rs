@@ -18,16 +18,16 @@
 
 use std::collections::HashSet;
 
-use crate::common::ids::{EffectLabelId, ExprId, HandlerId, StmtId};
-use crate::ir::core::{CoreProgram, ExprKind, StageDirective, StmtKind};
+use cielo_base::{EffectLabelId, ExprId, HandlerId, StmtId};
+use cielo_ir::core::{CoreProgram, ExprKind, StageDirective, StmtKind};
 use crate::pipeline::phases::{
     BtaClassified, BtaTables, ClauseDischarge, CtPropagated, HandlerDischarge, Knownness, Reason,
     SemanticTables, Stage,
 };
-use crate::sema::effect::{
+use cielo_ir::effect::{
     EffectFlags, EffectProperties, SortedEffectRow, first_non_thunkable_effect, is_thunkable,
 };
-use crate::sema::ty::Persistability;
+use cielo_sema::ty::Persistability;
 
 pub fn run(ct: CtPropagated) -> BtaClassified {
     let (program, mut diagnostics, sema, mono, ct_tables) = ct.into_parts();
@@ -62,7 +62,7 @@ fn enforce_persistability_boundaries(
     program: &CoreProgram,
     sema: &SemanticTables,
     bta: &mut BtaTables,
-    diagnostics: &mut crate::common::diagnostics::DiagnosticBag,
+    diagnostics: &mut cielo_base::diagnostics::DiagnosticBag,
 ) {
     let uses = ExprUseIndex::build(program);
     for (idx, expr) in program.exprs().iter().enumerate() {
@@ -767,7 +767,7 @@ fn refine_expr_stage(expr_id: ExprId, reason: Reason, bta: &mut BtaTables) -> bo
 }
 
 fn refine_var_stage(
-    var_id: crate::common::ids::VarId,
+    var_id: cielo_base::VarId,
     reason: Reason,
     bta: &mut BtaTables,
 ) -> bool {
@@ -793,7 +793,7 @@ fn enforce_ct_only_calls(
     program: &CoreProgram,
     sema: &SemanticTables,
     bta: &mut BtaTables,
-    diagnostics: &mut crate::common::diagnostics::DiagnosticBag,
+    diagnostics: &mut cielo_base::diagnostics::DiagnosticBag,
 ) {
     let uses = ExprUseIndex::build(program);
 
@@ -870,7 +870,7 @@ fn enforce_ct_only_calls(
     }
 }
 
-fn is_ct_only_function(function: &crate::ir::core::FunctionDecl, sema: &SemanticTables) -> bool {
+fn is_ct_only_function(function: &cielo_ir::core::FunctionDecl, sema: &SemanticTables) -> bool {
     function.ct_only
         || function.declared_effects.iter().any(|effect| {
             sema.effect_properties
@@ -990,14 +990,14 @@ fn classify_knownness(
     }
 }
 
-fn is_trivially_persistable_literal(literal: &crate::ir::core::Literal) -> bool {
+fn is_trivially_persistable_literal(literal: &cielo_ir::core::Literal) -> bool {
     matches!(
         literal,
-        crate::ir::core::Literal::Unit
-            | crate::ir::core::Literal::Bool(_)
-            | crate::ir::core::Literal::Int(_)
-            | crate::ir::core::Literal::Float(_)
-            | crate::ir::core::Literal::Char(_)
-            | crate::ir::core::Literal::String(_)
+        cielo_ir::core::Literal::Unit
+            | cielo_ir::core::Literal::Bool(_)
+            | cielo_ir::core::Literal::Int(_)
+            | cielo_ir::core::Literal::Float(_)
+            | cielo_ir::core::Literal::Char(_)
+            | cielo_ir::core::Literal::String(_)
     )
 }
