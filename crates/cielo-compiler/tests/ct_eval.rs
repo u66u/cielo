@@ -1,18 +1,17 @@
-use cielo::common::diagnostics::DiagnosticBag;
-use cielo::common::ids::{EffectLabelId, ExprId, FuncId, HandlerId, SourceId, SymbolId, VarId};
-use cielo::common::span::Span;
-use cielo::common::symbols::Interner;
-use cielo::ir::core::{
+use cielo_base::diagnostics::DiagnosticBag;
+use cielo_base::{EffectLabelId, ExprId, FuncId, HandlerId, SourceId, SymbolId, VarId};
+use cielo_base::span::Span;
+use cielo_base::Interner;
+use cielo_ir::core::{
     CoreProgram, CoreTypeRef, EffectDecl, ExprKind, ExprNode, FunctionDecl, HandlerDef, Literal,
     PrimitiveTypeRef, StmtKind, StmtNode,
 };
-use cielo::passes::bta;
-use cielo::passes::ct_eval;
-use cielo::pipeline::compiler::TargetSpec;
-use cielo::pipeline::phases::{
+use cielo_staging::passes::{bta, ct_eval};
+use cielo_ir::target::TargetSpec;
+use cielo_staging::pipeline::phases::{
     BranchDecision, CtPropagated, MonomorphizationSummary, Monomorphized, SemanticTables,
 };
-use cielo::sema::effect::{EffectProperties, SortedEffectRow};
+use cielo_ir::effect::{EffectProperties, SortedEffectRow};
 use cielo::{Compiler, CompilerConfig};
 
 #[test]
@@ -519,13 +518,13 @@ fn main() -> Int {
     let base_classified = compiler.run_v1_evaluate_classify(core_base);
 
     for (expr_id, baseline_stage) in base_classified.bta().stage_of_expr.iter() {
-        if !matches!(baseline_stage, cielo::pipeline::phases::Stage::Ct) {
+        if !matches!(baseline_stage, cielo_staging::pipeline::phases::Stage::Ct) {
             continue;
         }
         assert!(
             matches!(
                 eval_classified.bta().stage_of_expr.get(&expr_id),
-                Some(cielo::pipeline::phases::Stage::Ct)
+                Some(cielo_staging::pipeline::phases::Stage::Ct)
             ),
             "ct_eval+bta must not demote baseline Ct expression e{}",
             expr_id.as_u32()
@@ -547,7 +546,7 @@ fn run_ct_eval_on_program(program: CoreProgram, target: TargetSpec) -> CtPropaga
 fn add_pure_int_function(
     program: &mut CoreProgram,
     name: SymbolId,
-    body: cielo::common::ids::StmtId,
+    body: cielo_base::StmtId,
     span: Span,
 ) -> FuncId {
     program.add_function(FunctionDecl {

@@ -3,10 +3,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use cielo::common::ids::{ExprId, FuncId, SourceId, StmtId, VarId};
-use cielo::common::symbols::Interner;
-use cielo::ir::core::{CoreProgram, ExprKind};
-use cielo::pipeline::phases::{BranchDecision, Knownness, Reason, Residualized, Stage};
+use cielo_base::{ExprId, FuncId, SourceId, StmtId, VarId};
+use cielo_base::Interner;
+use cielo_ir::core::{CoreProgram, ExprKind};
+use cielo_staging::pipeline::phases::{BranchDecision, Knownness, Reason, Residualized, Stage};
 use cielo::{Compiler, CompilerConfig};
 use helpers::ir::{first_return_expr, reachable_stmt_count_from_root};
 
@@ -322,7 +322,7 @@ fn resolved_main_return_int_literal(program: &CoreProgram, root: StmtId) -> Opti
         }
         let stmt = program.stmt(stmt_id)?;
         match stmt.kind {
-            cielo::ir::core::StmtKind::Let {
+            cielo_ir::core::StmtKind::Let {
                 binding,
                 value,
                 next,
@@ -330,7 +330,7 @@ fn resolved_main_return_int_literal(program: &CoreProgram, root: StmtId) -> Opti
                 let_defs.insert(binding, value);
                 stack.push(next);
             }
-            cielo::ir::core::StmtKind::Return(expr) => {
+            cielo_ir::core::StmtKind::Return(expr) => {
                 return resolve_int_literal(program, expr, &let_defs);
             }
             _ => stack.extend(stmt.child_stmts()),
@@ -349,7 +349,7 @@ fn resolve_int_literal(
     loop {
         let expr = program.expr(current)?;
         match expr.kind {
-            ExprKind::Literal(cielo::ir::core::Literal::Int(value)) => return Some(value),
+            ExprKind::Literal(cielo_ir::core::Literal::Int(value)) => return Some(value),
             ExprKind::Var(var) => {
                 if !seen_vars.insert(var) {
                     return None;

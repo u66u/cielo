@@ -1,6 +1,6 @@
-use cielo::common::ids::SourceId;
-use cielo::common::symbols::Interner;
-use cielo::pipeline::staging_diagnostics::{render_stage_b_counter_summary, staging_pass_counters};
+use cielo_base::SourceId;
+use cielo_base::Interner;
+use cielo_staging::pipeline::staging_diagnostics::{render_stage_b_counter_summary, staging_pass_counters};
 use cielo::{Compiler, CompilerConfig};
 
 #[test]

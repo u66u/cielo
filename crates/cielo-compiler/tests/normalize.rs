@@ -3,20 +3,20 @@ use std::collections::HashSet;
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use cielo::common::diagnostics::DiagnosticBag;
-use cielo::common::ids::{EffectLabelId, ExprId, SourceId, SymbolId, VarId};
-use cielo::common::span::Span;
-use cielo::common::symbols::Interner;
-use cielo::ir::core::{
+use cielo_base::diagnostics::DiagnosticBag;
+use cielo_base::{EffectLabelId, ExprId, SourceId, SymbolId, VarId};
+use cielo_base::span::Span;
+use cielo_base::Interner;
+use cielo_ir::core::{
     CoreProgram, CoreTypeRef, ExprKind, ExprNode, FunctionDecl, HandlerDef, Literal, MatchArm,
     PrimitiveTypeRef, StmtKind, StmtNode,
 };
-use cielo::passes::normalize;
-use cielo::pipeline::phases::{
+use cielo_staging::passes::normalize;
+use cielo_staging::pipeline::phases::{
     BtaTables, CtPropagationTables, MonomorphizationSummary, ResidualTables, Residualized,
     SemanticTables,
 };
-use cielo::sema::effect::SortedEffectRow;
+use cielo_ir::effect::SortedEffectRow;
 use cielo::{Compiler, CompilerConfig};
 use helpers::ir::{contains_call_to, contains_if_stmt, reachable_stmt_count};
 
@@ -369,7 +369,7 @@ fn normalize_inlines_once_used_parameterized_call() {
     let add = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Add,
+            op: cielo_ir::core::BinaryOp::Add,
             lhs: param_expr,
             rhs: one,
         },
@@ -565,7 +565,7 @@ fn normalize_speculatively_inlines_small_many_use_helper() {
     let inc = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Add,
+            op: cielo_ir::core::BinaryOp::Add,
             lhs: param_expr,
             rhs: one,
         },
@@ -606,7 +606,7 @@ fn normalize_speculatively_inlines_small_many_use_helper() {
     let sum_expr = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Add,
+            op: cielo_ir::core::BinaryOp::Add,
             lhs: left_expr,
             rhs: right_expr,
         },
@@ -677,7 +677,7 @@ fn normalize_respects_spec_inline_expr_size_budget() {
         body_expr = program.push_expr(ExprNode {
             span,
             kind: ExprKind::Binary {
-                op: cielo::ir::core::BinaryOp::Add,
+                op: cielo_ir::core::BinaryOp::Add,
                 lhs: body_expr,
                 rhs,
             },
@@ -719,7 +719,7 @@ fn normalize_respects_spec_inline_expr_size_budget() {
     let sum_expr = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Add,
+            op: cielo_ir::core::BinaryOp::Add,
             lhs: left_expr,
             rhs: right_expr,
         },

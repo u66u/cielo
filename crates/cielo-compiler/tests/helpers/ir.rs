@@ -2,8 +2,8 @@
 
 use std::collections::HashSet;
 
-use cielo::common::ids::{ExprId, FuncId, StmtId};
-use cielo::ir::core::{CoreProgram, StmtKind};
+use cielo_base::{ExprId, FuncId, StmtId};
+use cielo_ir::core::{CoreProgram, StmtKind};
 
 pub fn first_return_expr(program: &CoreProgram, root: StmtId) -> Option<ExprId> {
     let mut stack = vec![root];

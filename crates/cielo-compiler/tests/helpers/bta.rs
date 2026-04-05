@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use cielo::pipeline::phases::{Reason, Stage};
+use cielo_staging::pipeline::phases::{Reason, Stage};
 
 pub fn stage_has_valid_func_ids(stage: Stage, func_count: usize) -> bool {
     match stage {

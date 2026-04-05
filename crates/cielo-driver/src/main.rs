@@ -4,20 +4,21 @@ use std::process::Command;
 
 use clap::{Parser, ValueEnum};
 
-use cielo::common::ids::{ExprId, SourceId, SymbolId};
-use cielo::common::reporting::render_diagnostic;
-use cielo::common::symbols::Interner;
-use cielo::frontend::ast::{Item, Program};
-use cielo::ir::core::CoreProgram;
-use cielo::pipeline::ct_invalidation::{
+use cielo_base::reporting::render_diagnostic;
+use cielo_base::{ExprId, Interner, SourceId, SymbolId};
+use cielo_frontend::ast::{Item, Program};
+use cielo_ir::core::CoreProgram;
+use cielo_staging::pipeline::ct_invalidation::{
     CtDepSnapshot, CtInvalidationReason, diff as diff_ct_invalidation,
     load_snapshot as load_ct_snapshot, save_snapshot as save_ct_snapshot,
     sidecar_path as ct_sidecar_path,
 };
-use cielo::pipeline::phases::{Residualized, Stage};
-use cielo::pipeline::provenance::runtime_provenance_lines;
-use cielo::pipeline::staging_diagnostics::{render_stage_b_counter_summary, staging_pass_counters};
-use cielo::pipeline::staging_diff::{
+use cielo_staging::pipeline::phases::{Residualized, Stage};
+use cielo_staging::pipeline::provenance::runtime_provenance_lines;
+use cielo_staging::pipeline::staging_diagnostics::{
+    render_stage_b_counter_summary, staging_pass_counters,
+};
+use cielo_staging::pipeline::staging_diff::{
     SnapshotStage, collect_snapshot, diff_snapshots, load_snapshot as load_stage_snapshot,
     save_snapshot as save_stage_snapshot,
 };
@@ -183,7 +184,10 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
 
 fn print_staging_report(residual: &Residualized) {
     println!("=== Staging Report ===");
-    let rollups = cielo::pipeline::provenance::staging_root_causes(residual.program(), residual.bta());
+    let rollups = cielo_staging::pipeline::provenance::staging_root_causes(
+        residual.program(),
+        residual.bta(),
+    );
     let ct_count = residual
         .bta()
         .stage_of_expr
@@ -348,13 +352,20 @@ fn dump_sema_summary(residual: &Residualized) {
         .bta()
         .knownness_of_expr
         .values()
-        .filter(|known| matches!(known, cielo::pipeline::phases::Knownness::KnownLocal))
+        .filter(|known| {
+            matches!(known, cielo_staging::pipeline::phases::Knownness::KnownLocal)
+        })
         .count();
     let known_persistable = residual
         .bta()
         .knownness_of_expr
         .values()
-        .filter(|known| matches!(known, cielo::pipeline::phases::Knownness::KnownPersistable))
+        .filter(|known| {
+            matches!(
+                known,
+                cielo_staging::pipeline::phases::Knownness::KnownPersistable
+            )
+        })
         .count();
     let eval = residual.ct().eval_stats;
     println!("=== Sema/BTA Summary ===");

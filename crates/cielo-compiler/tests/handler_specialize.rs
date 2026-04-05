@@ -4,9 +4,9 @@ use std::fmt::Write;
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use cielo::common::ids::{ExprId, FuncId, HandlerId, SourceId, StmtId};
-use cielo::common::symbols::Interner;
-use cielo::ir::core::{CoreProgram, StmtKind};
+use cielo_base::{ExprId, FuncId, HandlerId, SourceId, StmtId};
+use cielo_base::Interner;
+use cielo_ir::core::{CoreProgram, StmtKind};
 use cielo::{Compiler, CompilerConfig};
 use helpers::bta::{reason_has_valid_func_ids, stage_has_valid_func_ids};
 
@@ -1245,7 +1245,7 @@ fn function_named<'a>(
     program: &'a CoreProgram,
     interner: &Interner,
     name: &str,
-) -> Option<&'a cielo::ir::core::FunctionDecl> {
+) -> Option<&'a cielo_ir::core::FunctionDecl> {
     program
         .functions()
         .iter()

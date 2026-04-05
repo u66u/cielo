@@ -1,21 +1,23 @@
-use cielo::common::diagnostics::DiagnosticBag;
-use cielo::common::ids::{EffectLabelId, FuncId, SourceId, SymbolId, TypeId, VarId};
-use cielo::common::span::Span;
-use cielo::common::symbols::Interner;
-use cielo::ir::core::{
+use cielo_base::diagnostics::DiagnosticBag;
+use cielo_base::{EffectLabelId, FuncId, SourceId, SymbolId, TypeId, VarId};
+use cielo_base::span::Span;
+use cielo_base::Interner;
+use cielo_ir::core::{
     CoreProgram, CoreTypeRef, ExprKind, ExprNode, FunctionDecl, Literal, MatchArm,
     PrimitiveTypeRef, StmtKind, StmtNode,
 };
-use cielo::passes::{bta, c_emit, cfg_lower, ct_propagate, linearize, residualize};
-use cielo::pipeline::compiler::TargetSpec;
-use cielo::pipeline::phases::{
+use cielo_runtime::{cfg_lower, linearize};
+use cielo_staging::passes::{bta, ct_propagate, residualize};
+use cielo_ir::target::TargetSpec;
+use cielo_staging::pipeline::phases::{
     BranchDecision, BtaClassified, BtaTables, CtPropagationTables, Knownness,
     MonomorphizationSummary, Monomorphized, Reason, SemanticTables, Stage,
 };
-use cielo::sema::effect::SortedEffectRow;
-use cielo::sema::ty::Persistability;
+use cielo_ir::effect::SortedEffectRow;
+use cielo_sema::ty::Persistability;
 use cielo::{Compiler, CompilerConfig};
 use cielo_sema::TypedCore;
+use helpers::core::emit_pipeline;
 
 #[test]
 fn compiles_source_through_default_pipeline() {
@@ -159,7 +161,7 @@ fn main() -> Int {
     let ping_effects = residual
         .residual()
         .function_effect_summary
-        .get(&cielo::common::ids::FuncId::new(ping_id))
+        .get(&cielo_base::FuncId::new(ping_id))
         .expect("ping summary must exist");
     assert!(ping_effects.contains(EffectLabelId::from_u32(0)));
 
@@ -230,7 +232,7 @@ fn residualize_replaces_cached_ct_expr_with_literal() {
     let sum = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Add,
+            op: cielo_ir::core::BinaryOp::Add,
             lhs: one,
             rhs: two,
         },
@@ -305,7 +307,7 @@ fn ct_propagate_collects_stable_eval_stats_oracle() {
     let folded_add = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Add,
+            op: cielo_ir::core::BinaryOp::Add,
             lhs: lit_one,
             rhs: lit_two,
         },
@@ -317,7 +319,7 @@ fn ct_propagate_collects_stable_eval_stats_oracle() {
     let missing_input_add = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Add,
+            op: cielo_ir::core::BinaryOp::Add,
             lhs: runtime_var,
             rhs: lit_two,
         },
@@ -332,7 +334,7 @@ fn ct_propagate_collects_stable_eval_stats_oracle() {
     let folded_neg = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Unary {
-            op: cielo::ir::core::UnaryOp::Neg,
+            op: cielo_ir::core::UnaryOp::Neg,
             expr: lit_two,
         },
     });
@@ -355,7 +357,7 @@ fn ct_propagate_collects_stable_eval_stats_oracle() {
     program.set_entrypoints([main_id]);
 
     let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
-    let mono = cielo::pipeline::phases::Monomorphized::new(
+    let mono = cielo_staging::pipeline::phases::Monomorphized::new(
         program,
         DiagnosticBag::default(),
         sema,
@@ -433,7 +435,7 @@ fn ct_propagate_tracks_host_float_folds_explicitly() {
     let neg_float = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Unary {
-            op: cielo::ir::core::UnaryOp::Neg,
+            op: cielo_ir::core::UnaryOp::Neg,
             expr: float_lit,
         },
     });
@@ -454,7 +456,7 @@ fn ct_propagate_tracks_host_float_folds_explicitly() {
     program.set_entrypoints([main_id]);
 
     let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
-    let mono = cielo::pipeline::phases::Monomorphized::new(
+    let mono = cielo_staging::pipeline::phases::Monomorphized::new(
         program,
         DiagnosticBag::default(),
         sema,
@@ -494,7 +496,7 @@ fn ct_propagate_folds_float_binary_surface_and_counts_host_float_folds() {
     let add = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Add,
+            op: cielo_ir::core::BinaryOp::Add,
             lhs,
             rhs,
         },
@@ -502,7 +504,7 @@ fn ct_propagate_folds_float_binary_surface_and_counts_host_float_folds() {
     let sub = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Sub,
+            op: cielo_ir::core::BinaryOp::Sub,
             lhs,
             rhs,
         },
@@ -510,7 +512,7 @@ fn ct_propagate_folds_float_binary_surface_and_counts_host_float_folds() {
     let mul = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Mul,
+            op: cielo_ir::core::BinaryOp::Mul,
             lhs,
             rhs,
         },
@@ -518,7 +520,7 @@ fn ct_propagate_folds_float_binary_surface_and_counts_host_float_folds() {
     let div = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Div,
+            op: cielo_ir::core::BinaryOp::Div,
             lhs,
             rhs,
         },
@@ -526,7 +528,7 @@ fn ct_propagate_folds_float_binary_surface_and_counts_host_float_folds() {
     let rem = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Mod,
+            op: cielo_ir::core::BinaryOp::Mod,
             lhs,
             rhs,
         },
@@ -534,7 +536,7 @@ fn ct_propagate_folds_float_binary_surface_and_counts_host_float_folds() {
     let lt = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Lt,
+            op: cielo_ir::core::BinaryOp::Lt,
             lhs,
             rhs,
         },
@@ -542,7 +544,7 @@ fn ct_propagate_folds_float_binary_surface_and_counts_host_float_folds() {
     let ge = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Ge,
+            op: cielo_ir::core::BinaryOp::Ge,
             lhs,
             rhs,
         },
@@ -550,7 +552,7 @@ fn ct_propagate_folds_float_binary_surface_and_counts_host_float_folds() {
     let eq = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Eq,
+            op: cielo_ir::core::BinaryOp::Eq,
             lhs,
             rhs,
         },
@@ -558,7 +560,7 @@ fn ct_propagate_folds_float_binary_surface_and_counts_host_float_folds() {
     let ne = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Ne,
+            op: cielo_ir::core::BinaryOp::Ne,
             lhs,
             rhs,
         },
@@ -580,7 +582,7 @@ fn ct_propagate_folds_float_binary_surface_and_counts_host_float_folds() {
     program.set_entrypoints([main_id]);
 
     let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
-    let mono = cielo::pipeline::phases::Monomorphized::new(
+    let mono = cielo_staging::pipeline::phases::Monomorphized::new(
         program,
         DiagnosticBag::default(),
         sema,
@@ -650,7 +652,7 @@ fn ct_propagate_folds_non_numeric_equality_and_leaves_mixed_types_unresolved() {
     let bool_eq = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Eq,
+            op: cielo_ir::core::BinaryOp::Eq,
             lhs: bool_true,
             rhs: bool_false,
         },
@@ -658,7 +660,7 @@ fn ct_propagate_folds_non_numeric_equality_and_leaves_mixed_types_unresolved() {
     let char_ge = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Ge,
+            op: cielo_ir::core::BinaryOp::Ge,
             lhs: char_b,
             rhs: char_a,
         },
@@ -666,7 +668,7 @@ fn ct_propagate_folds_non_numeric_equality_and_leaves_mixed_types_unresolved() {
     let string_ne = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Ne,
+            op: cielo_ir::core::BinaryOp::Ne,
             lhs: string_x,
             rhs: string_y,
         },
@@ -674,7 +676,7 @@ fn ct_propagate_folds_non_numeric_equality_and_leaves_mixed_types_unresolved() {
     let unit_eq = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Eq,
+            op: cielo_ir::core::BinaryOp::Eq,
             lhs: unit_lhs,
             rhs: unit_rhs,
         },
@@ -682,7 +684,7 @@ fn ct_propagate_folds_non_numeric_equality_and_leaves_mixed_types_unresolved() {
     let mixed_eq = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Eq,
+            op: cielo_ir::core::BinaryOp::Eq,
             lhs: int_one,
             rhs: bool_true,
         },
@@ -704,7 +706,7 @@ fn ct_propagate_folds_non_numeric_equality_and_leaves_mixed_types_unresolved() {
     program.set_entrypoints([main_id]);
 
     let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
-    let mono = cielo::pipeline::phases::Monomorphized::new(
+    let mono = cielo_staging::pipeline::phases::Monomorphized::new(
         program,
         DiagnosticBag::default(),
         sema,
@@ -747,7 +749,7 @@ fn ct_propagate_skips_non_finite_host_float_folds() {
     let finite_add = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Add,
+            op: cielo_ir::core::BinaryOp::Add,
             lhs: finite_lhs,
             rhs: finite_rhs,
         },
@@ -760,7 +762,7 @@ fn ct_propagate_skips_non_finite_host_float_folds() {
     let overflow_mul = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Mul,
+            op: cielo_ir::core::BinaryOp::Mul,
             lhs: huge,
             rhs: huge,
         },
@@ -772,7 +774,7 @@ fn ct_propagate_skips_non_finite_host_float_folds() {
     let neg_inf = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Unary {
-            op: cielo::ir::core::UnaryOp::Neg,
+            op: cielo_ir::core::UnaryOp::Neg,
             expr: inf,
         },
     });
@@ -783,7 +785,7 @@ fn ct_propagate_skips_non_finite_host_float_folds() {
     let nan_eq = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Eq,
+            op: cielo_ir::core::BinaryOp::Eq,
             lhs: nan,
             rhs: nan,
         },
@@ -805,7 +807,7 @@ fn ct_propagate_skips_non_finite_host_float_folds() {
     program.set_entrypoints([main_id]);
 
     let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
-    let mono = cielo::pipeline::phases::Monomorphized::new(
+    let mono = cielo_staging::pipeline::phases::Monomorphized::new(
         program,
         DiagnosticBag::default(),
         sema,
@@ -856,7 +858,7 @@ fn residualize_skips_runtime_forced_cached_expr_even_when_literal_is_available()
     let sum = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Add,
+            op: cielo_ir::core::BinaryOp::Add,
             lhs: one,
             rhs: two,
         },
@@ -1046,7 +1048,7 @@ fn bta_marks_ct_expr_runtime_when_type_is_non_persistable() {
     let fake_ct_expr = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Add,
+            op: cielo_ir::core::BinaryOp::Add,
             lhs: one,
             rhs: two,
         },
@@ -1074,7 +1076,7 @@ fn bta_marks_ct_expr_runtime_when_type_is_non_persistable() {
 
     let mut ct = CtPropagationTables::default();
     let _ = ct.ct_cache.insert(fake_ct_expr, Literal::Int(7));
-    let ct_state = cielo::pipeline::phases::CtPropagated::new(
+    let ct_state = cielo_staging::pipeline::phases::CtPropagated::new(
         program,
         DiagnosticBag::default(),
         sema,
@@ -1085,7 +1087,7 @@ fn bta_marks_ct_expr_runtime_when_type_is_non_persistable() {
 
     assert!(matches!(
         classified.bta().stage_of_expr.get(&fake_ct_expr),
-        Some(Stage::Rt(cielo::pipeline::phases::Reason::NotPersistable(ty)))
+        Some(Stage::Rt(cielo_staging::pipeline::phases::Reason::NotPersistable(ty)))
             if *ty == TypeId::new(0)
     ));
     assert!(matches!(
@@ -1127,7 +1129,7 @@ fn bta_not_persistable_diagnostic_points_to_boundary_stmt_span() {
     let fake_ct_expr = program.push_expr(ExprNode {
         span: expr_span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Add,
+            op: cielo_ir::core::BinaryOp::Add,
             lhs: one,
             rhs: two,
         },
@@ -1154,7 +1156,7 @@ fn bta_not_persistable_diagnostic_points_to_boundary_stmt_span() {
 
     let mut ct = CtPropagationTables::default();
     let _ = ct.ct_cache.insert(fake_ct_expr, Literal::Int(7));
-    let ct_state = cielo::pipeline::phases::CtPropagated::new(
+    let ct_state = cielo_staging::pipeline::phases::CtPropagated::new(
         program,
         DiagnosticBag::default(),
         sema,
@@ -1200,7 +1202,7 @@ fn bta_not_persistable_diagnostic_reports_call_arg_boundary_role() {
     let non_persistable_ct_expr = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Add,
+            op: cielo_ir::core::BinaryOp::Add,
             lhs: one,
             rhs: two,
         },
@@ -1263,7 +1265,7 @@ fn bta_not_persistable_diagnostic_reports_call_arg_boundary_role() {
 
     let mut ct = CtPropagationTables::default();
     let _ = ct.ct_cache.insert(non_persistable_ct_expr, Literal::Int(3));
-    let classified = bta::run(cielo::pipeline::phases::CtPropagated::new(
+    let classified = bta::run(cielo_staging::pipeline::phases::CtPropagated::new(
         program,
         DiagnosticBag::default(),
         sema,
@@ -1300,7 +1302,7 @@ fn bta_does_not_flag_non_persistable_ct_expr_used_only_inside_comptime_stage() {
     let non_persistable_ct_expr = program.push_expr(ExprNode {
         span,
         kind: ExprKind::Binary {
-            op: cielo::ir::core::BinaryOp::Add,
+            op: cielo_ir::core::BinaryOp::Add,
             lhs: one,
             rhs: two,
         },
@@ -1335,7 +1337,7 @@ fn bta_does_not_flag_non_persistable_ct_expr_used_only_inside_comptime_stage() {
     let root = program.push_stmt(StmtNode {
         span,
         kind: StmtKind::Stage {
-            stage: cielo::ir::core::StageDirective::Comptime,
+            stage: cielo_ir::core::StageDirective::Comptime,
             body: stage_let,
             next: Some(outer_ret),
         },
@@ -1358,7 +1360,7 @@ fn bta_does_not_flag_non_persistable_ct_expr_used_only_inside_comptime_stage() {
 
     let mut ct = CtPropagationTables::default();
     let _ = ct.ct_cache.insert(non_persistable_ct_expr, Literal::Int(3));
-    let classified = bta::run(cielo::pipeline::phases::CtPropagated::new(
+    let classified = bta::run(cielo_staging::pipeline::phases::CtPropagated::new(
         program,
         DiagnosticBag::default(),
         sema,
@@ -2231,7 +2233,13 @@ fn main() -> Int {
         linearize::run(program, &sema, diagnostics)
     };
     let cfg = cfg_lower::run(&linear);
-    let fused_emitted = c_emit::run(normalized, linear, cfg, &fused_interner);
+    let fused_emitted = emit_pipeline(
+        normalized,
+        linear,
+        cfg,
+        &fused_interner,
+        Default::default(),
+    );
 
     let mut split_interner = Interner::new();
     let split_emitted =
@@ -2379,3 +2387,4 @@ fn main() -> Int {
         "known-match pruning should increment residualize branch-prune counters"
     );
 }
+mod helpers;

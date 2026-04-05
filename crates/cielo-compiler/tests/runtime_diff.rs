@@ -1,7 +1,7 @@
-use cielo::common::ids::{ExprId, HandlerId, SourceId, StmtId, SymbolId, VarId};
-use cielo::common::symbols::Interner;
-use cielo::ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, StmtKind, UnaryOp};
-use cielo::pipeline::phases::CtPropagationTables;
+use cielo_base::{ExprId, HandlerId, SourceId, StmtId, SymbolId, VarId};
+use cielo_base::Interner;
+use cielo_ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, StmtKind, UnaryOp};
+use cielo_staging::pipeline::phases::CtPropagationTables;
 use cielo::{CompiledC, Compiler, CompilerConfig};
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -927,7 +927,7 @@ fn eval_stmt(
 fn eval_perform(
     program: &CoreProgram,
     ct: &CtPropagationTables,
-    effect: cielo::common::ids::EffectLabelId,
+    effect: cielo_base::EffectLabelId,
     operation: SymbolId,
     args: &[ExprId],
     result: Option<VarId>,

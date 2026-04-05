@@ -6,8 +6,8 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-use cielo::common::ids::SourceId;
-use cielo::common::symbols::Interner;
+use cielo_base::SourceId;
+use cielo_base::Interner;
 use cielo::{Compiler, CompilerConfig, GcPreset};
 
 const SOURCE_CTOR_CHURN: &str = r#"

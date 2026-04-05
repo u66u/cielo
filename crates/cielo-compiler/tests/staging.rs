@@ -1,9 +1,9 @@
-use cielo::common::ids::{HandlerId, SourceId};
-use cielo::common::symbols::Interner;
-use cielo::ir::core::{ExprKind, Literal, StmtKind};
-use cielo::pipeline::compiler::Endianness;
-use cielo::pipeline::phases::{Knownness, Stage};
-use cielo::sema::effect::SortedEffectRow;
+use cielo_base::{HandlerId, SourceId};
+use cielo_base::Interner;
+use cielo_ir::core::{ExprKind, Literal, StmtKind};
+use cielo_ir::target::Endianness;
+use cielo_staging::pipeline::phases::{Knownness, Stage};
+use cielo_ir::effect::SortedEffectRow;
 use cielo::{Compiler, CompilerConfig};
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -368,7 +368,7 @@ fn main() -> Int {
 
     assert!(residual.bta().stage_of_var.values().any(|stage| matches!(
         stage,
-        Stage::Rt(cielo::pipeline::phases::Reason::EffectNotDischarged(_))
+        Stage::Rt(cielo_staging::pipeline::phases::Reason::EffectNotDischarged(_))
     )));
 }
 
@@ -395,7 +395,7 @@ fn main() -> Int {
         .expect("handler discharge entry");
     assert!(matches!(
         handler_status.reason,
-        Some(cielo::pipeline::phases::Reason::EffectNotDischarged(_))
+        Some(cielo_staging::pipeline::phases::Reason::EffectNotDischarged(_))
     ));
     assert!(!handler_status.dischargeable);
 
@@ -407,7 +407,7 @@ fn main() -> Int {
     assert_eq!(clause_statuses.len(), 1, "single-clause handler expected");
     assert!(matches!(
         clause_statuses[0].reason,
-        Some(cielo::pipeline::phases::Reason::EffectNotDischarged(_))
+        Some(cielo_staging::pipeline::phases::Reason::EffectNotDischarged(_))
     ));
     assert!(!clause_statuses[0].dischargeable);
 }

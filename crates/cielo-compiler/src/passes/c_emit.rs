@@ -1,12 +1,14 @@
 //! Final backend: ownership-annotated CFG to C.
 
-use crate::common::gc::GcConfig;
-use crate::common::symbols::Interner;
-use crate::ir::cfg::CfgProgram;
-use crate::ir::linear::LinearProgram;
-use crate::passes::{cfg_codegen, cfg_lower, constant_table};
-use crate::pipeline::phases::Residualized;
+use cielo_backend_c as cfg_codegen;
+use cielo_base::Interner;
+use cielo_ir::cfg::CfgProgram;
+use cielo_ir::linear::LinearProgram;
 use cielo_memory::{MemoryInput, MemoryReport};
+use cielo_memory::GcConfig;
+use cielo_runtime::cfg_lower;
+use cielo_staging::passes::constant_table;
+use cielo_staging::pipeline::phases::Residualized;
 
 #[derive(Clone, Debug)]
 pub struct EmittedC {

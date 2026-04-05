@@ -1,9 +1,9 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use cielo::common::ids::SourceId;
-use cielo::common::symbols::Interner;
-use cielo::pipeline::compiler::V0PipelineTimings;
+use cielo_base::SourceId;
+use cielo_base::Interner;
+use cielo::V0PipelineTimings;
 use cielo::{Compiler, CompilerConfig};
 
 const SOURCE_EXAMPLE: &str = include_str!("../examples/v1_test.cielo");

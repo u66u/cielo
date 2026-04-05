@@ -3,10 +3,10 @@ use std::collections::HashSet;
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use cielo::common::ids::{FuncId, HandlerId, SourceId};
-use cielo::common::symbols::Interner;
-use cielo::ir::core::Literal;
-use cielo::ir::core::{ExprKind, StmtKind};
+use cielo_base::{FuncId, HandlerId, SourceId};
+use cielo_base::Interner;
+use cielo_ir::core::Literal;
+use cielo_ir::core::{ExprKind, StmtKind};
 use cielo::{Compiler, CompilerConfig};
 use helpers::bta::{reason_has_valid_func_ids, stage_has_valid_func_ids};
 use helpers::ir::reachable_stmt_count;
@@ -162,17 +162,17 @@ fn main() -> Int {
 
     for (expr_id, decision) in staged.ct().branch_decisions.iter() {
         match decision {
-            cielo::pipeline::phases::BranchDecision::LiveTrue => assert_eq!(
+            cielo_staging::pipeline::phases::BranchDecision::LiveTrue => assert_eq!(
                 staged.ct().ct_cache.get(&expr_id),
                 Some(&Literal::Bool(true)),
                 "LiveTrue branch decisions must correspond to known true condition literals"
             ),
-            cielo::pipeline::phases::BranchDecision::LiveFalse => assert_eq!(
+            cielo_staging::pipeline::phases::BranchDecision::LiveFalse => assert_eq!(
                 staged.ct().ct_cache.get(&expr_id),
                 Some(&Literal::Bool(false)),
                 "LiveFalse branch decisions must correspond to known false condition literals"
             ),
-            cielo::pipeline::phases::BranchDecision::Unknown => {}
+            cielo_staging::pipeline::phases::BranchDecision::Unknown => {}
         }
     }
 
@@ -441,7 +441,7 @@ fn main() -> Int {
     );
 }
 
-fn collect_direct_recursive_funcs(program: &cielo::ir::core::CoreProgram) -> HashSet<FuncId> {
+fn collect_direct_recursive_funcs(program: &cielo_ir::core::CoreProgram) -> HashSet<FuncId> {
     let mut recursive = HashSet::new();
     for (idx, function) in program.functions().iter().enumerate() {
         let func_id = FuncId::new(idx);
@@ -452,7 +452,7 @@ fn collect_direct_recursive_funcs(program: &cielo::ir::core::CoreProgram) -> Has
     recursive
 }
 
-fn collect_stmt_call_targets(program: &cielo::ir::core::CoreProgram) -> HashSet<FuncId> {
+fn collect_stmt_call_targets(program: &cielo_ir::core::CoreProgram) -> HashSet<FuncId> {
     let mut callees = HashSet::new();
     for function in program.functions() {
         collect_stmt_callees(program, function.body, &mut callees);
@@ -461,8 +461,8 @@ fn collect_stmt_call_targets(program: &cielo::ir::core::CoreProgram) -> HashSet<
 }
 
 fn collect_stmt_callees(
-    program: &cielo::ir::core::CoreProgram,
-    root: cielo::common::ids::StmtId,
+    program: &cielo_ir::core::CoreProgram,
+    root: cielo_base::StmtId,
     out: &mut HashSet<FuncId>,
 ) {
     let mut stack = vec![root];
@@ -486,10 +486,10 @@ fn collect_stmt_callees(
 }
 
 fn collect_expr_callees(
-    program: &cielo::ir::core::CoreProgram,
-    root: cielo::common::ids::ExprId,
+    program: &cielo_ir::core::CoreProgram,
+    root: cielo_base::ExprId,
     out: &mut HashSet<FuncId>,
-    seen: &mut HashSet<cielo::common::ids::ExprId>,
+    seen: &mut HashSet<cielo_base::ExprId>,
 ) {
     if !seen.insert(root) {
         return;
@@ -519,8 +519,8 @@ fn collect_expr_callees(
 }
 
 fn function_calls_target(
-    program: &cielo::ir::core::CoreProgram,
-    root: cielo::common::ids::StmtId,
+    program: &cielo_ir::core::CoreProgram,
+    root: cielo_base::StmtId,
     target: FuncId,
 ) -> bool {
     let mut stack = vec![root];
@@ -547,10 +547,10 @@ fn function_calls_target(
 }
 
 fn expr_calls_target(
-    program: &cielo::ir::core::CoreProgram,
-    root: cielo::common::ids::ExprId,
+    program: &cielo_ir::core::CoreProgram,
+    root: cielo_base::ExprId,
     target: FuncId,
-    seen: &mut HashSet<cielo::common::ids::ExprId>,
+    seen: &mut HashSet<cielo_base::ExprId>,
 ) -> bool {
     if !seen.insert(root) {
         return false;

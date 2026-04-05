@@ -1,13 +1,10 @@
-pub mod analysis;
-pub mod common;
-pub mod frontend;
-pub mod ir;
-pub mod passes;
-pub mod pipeline;
-pub mod sema;
+mod passes;
+mod pipeline;
 
 pub use cielo_memory::{GcConfig, GcFeatureFlags, GcMode, GcPreset};
-pub use pipeline::compiler::{CompiledC, Compiler, CompilerConfig, Endianness, TargetSpec};
+pub use pipeline::compiler::{
+    CompiledC, Compiler, CompilerConfig, Endianness, TargetSpec, V0PipelineTimings,
+};
 
 pub const RUNTIME_HEADER: &str = cielo_backend_c::RUNTIME_HEADER;
 

@@ -1,15 +1,16 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use cielo::common::ids::{EffectLabelId, LinearFuncId, SourceId, VarId};
-use cielo::common::symbols::Interner;
-use cielo::ir::core::Literal;
-use cielo::ir::linear::{
+use cielo_base::{EffectLabelId, LinearFuncId, SourceId, VarId};
+use cielo_base::Interner;
+use cielo_ir::core::Literal;
+use cielo_ir::linear::{
     CallConvention, LinearExpr, LinearFunction, LinearMatchArm, LinearProgram, LinearStmt,
 };
-use cielo::passes::{c_emit, c_emit::emit_c_program, cfg_lower, linearize};
-use cielo::pipeline::phases::{ConstantEmbedStrategy, ConstantKey, CtorFieldKey, ScalarLiteralKey};
+use cielo_runtime::{cfg_lower, linearize};
+use cielo_staging::pipeline::phases::{ConstantEmbedStrategy, ConstantKey, CtorFieldKey, ScalarLiteralKey};
 use cielo::{Compiler, CompilerConfig};
+use helpers::core::{emit_c_program, emit_pipeline};
 use std::collections::HashSet;
 use std::fmt::Write as _;
 
@@ -1686,7 +1687,7 @@ fn compile_source_to_c_without_normalize(
         linearize::run(program, &sema, diagnostics)
     };
     let cfg = cfg_lower::run(&linear);
-    let emitted = c_emit::run(residual, linear, cfg, interner);
+    let emitted = emit_pipeline(residual, linear, cfg, interner, Default::default());
     cielo::CompiledC {
         residual: emitted.residual,
         linear: emitted.linear,
@@ -1698,8 +1699,8 @@ fn compile_source_to_c_without_normalize(
 
 fn collect_call_conventions(
     program: &LinearProgram,
-    stmt_id: cielo::common::ids::LinearStmtId,
-    seen: &mut HashSet<cielo::common::ids::LinearStmtId>,
+    stmt_id: cielo_base::LinearStmtId,
+    seen: &mut HashSet<cielo_base::LinearStmtId>,
     out: &mut Vec<CallConvention>,
 ) {
     if !seen.insert(stmt_id) {
@@ -1756,7 +1757,7 @@ fn collect_call_conventions(
 
 fn linear_stmt_graph_contains_perform_effect(
     program: &LinearProgram,
-    root: cielo::common::ids::LinearStmtId,
+    root: cielo_base::LinearStmtId,
     effect: u32,
 ) -> bool {
     let mut stack = vec![root];
@@ -1780,7 +1781,7 @@ fn linear_stmt_graph_contains_perform_effect(
 
 fn linear_stmt_graph_contains_if(
     program: &LinearProgram,
-    root: cielo::common::ids::LinearStmtId,
+    root: cielo_base::LinearStmtId,
 ) -> bool {
     let mut stack = vec![root];
     let mut seen = HashSet::new();
@@ -1803,7 +1804,7 @@ fn linear_stmt_graph_contains_if(
 
 fn linear_stmt_graph_contains_match(
     program: &LinearProgram,
-    root: cielo::common::ids::LinearStmtId,
+    root: cielo_base::LinearStmtId,
 ) -> bool {
     let mut stack = vec![root];
     let mut seen = HashSet::new();
@@ -1826,7 +1827,7 @@ fn linear_stmt_graph_contains_match(
 
 fn linear_stmt_graph_contains_literal_int(
     program: &LinearProgram,
-    root: cielo::common::ids::LinearStmtId,
+    root: cielo_base::LinearStmtId,
     value: i64,
 ) -> bool {
     let mut stack = vec![root];
@@ -1852,7 +1853,7 @@ fn linear_stmt_graph_contains_literal_int(
 
 fn linear_stmt_graph_contains_add_rhs_int(
     program: &LinearProgram,
-    root: cielo::common::ids::LinearStmtId,
+    root: cielo_base::LinearStmtId,
     rhs: i64,
 ) -> bool {
     let mut stack = vec![root];
@@ -1875,7 +1876,7 @@ fn linear_stmt_graph_contains_add_rhs_int(
                 && let LinearExpr::Binary {
                     op, rhs: rhs_expr, ..
                 } = expr.kind
-                && op == cielo::ir::core::BinaryOp::Add
+                && op == cielo_ir::core::BinaryOp::Add
                 && linear_expr_is_int_literal(program, rhs_expr, rhs)
             {
                 return true;
@@ -1891,7 +1892,7 @@ fn linear_stmt_graph_contains_add_rhs_int(
 
 fn linear_stmt_graph_tail_resume_wrapper_count(
     program: &LinearProgram,
-    root: cielo::common::ids::LinearStmtId,
+    root: cielo_base::LinearStmtId,
 ) -> usize {
     let mut stack = vec![root];
     let mut seen = HashSet::new();
@@ -1926,7 +1927,7 @@ fn linear_stmt_graph_tail_resume_wrapper_count(
 
 fn linear_expr_is_var(
     program: &LinearProgram,
-    expr_id: cielo::common::ids::LinearExprId,
+    expr_id: cielo_base::LinearExprId,
     var: VarId,
 ) -> bool {
     program
@@ -1936,7 +1937,7 @@ fn linear_expr_is_var(
 
 fn linear_expr_is_int_literal(
     program: &LinearProgram,
-    expr_id: cielo::common::ids::LinearExprId,
+    expr_id: cielo_base::LinearExprId,
     value: i64,
 ) -> bool {
     program.expr(expr_id).is_some_and(

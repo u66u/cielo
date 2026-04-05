@@ -10,3 +10,7 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4.5.32", features = ["derive"] }
 cielo = { package = "cielo-compiler", path = "../cielo-compiler" }
+cielo-base = { path = "../cielo-base" }
+cielo-frontend = { path = "../cielo-frontend" }
+cielo-ir = { path = "../cielo-ir" }
+cielo-staging = { path = "../cielo-staging" }

@@ -237,7 +237,11 @@ dependencies = [
 name = "cielo-driver"
 version = "0.1.0"
 dependencies = [
+ "cielo-base",
  "cielo-compiler",
+ "cielo-frontend",
+ "cielo-ir",
+ "cielo-staging",
  "clap",
 ]
 

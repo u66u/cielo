@@ -1,8 +1,10 @@
-use cielo::common::ids::SourceId;
-use cielo::common::symbols::Interner;
-use cielo::ir::cfg::{CfgArcOpKind, CfgProjectionMode, CfgTerminator};
-use cielo::passes::{c_emit, cfg_lower, linearize};
+use cielo_base::SourceId;
+use cielo_base::Interner;
+use cielo_ir::cfg::{CfgArcOpKind, CfgProjectionMode, CfgTerminator};
+use cielo_runtime::{cfg_lower, linearize};
 use cielo::{Compiler, CompilerConfig, GcPreset};
+
+use crate::helpers::core::emit_pipeline;
 
 fn compile(source: &str) -> cielo::CompiledC {
     let mut interner = Interner::new();
@@ -33,7 +35,7 @@ fn compile_without_normalize(source: &str) -> cielo::CompiledC {
         linearize::run(program, &sema, diagnostics)
     };
     let cfg = cfg_lower::run(&linear);
-    let emitted = c_emit::run(residual, linear, cfg, &interner);
+    let emitted = emit_pipeline(residual, linear, cfg, &interner, Default::default());
     cielo::CompiledC {
         residual: emitted.residual,
         linear: emitted.linear,

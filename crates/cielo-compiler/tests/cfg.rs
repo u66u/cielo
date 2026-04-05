@@ -1,11 +1,11 @@
-use cielo::analysis::cfg_liveness::{CfgLiveness, CfgUseSite};
-use cielo::common::ids::{LinearFuncId, SymbolId, VarId};
-use cielo::ir::cfg::CfgTerminator;
-use cielo::ir::core::Literal;
-use cielo::ir::linear::{LinearExpr, LinearFunction, LinearProgram, LinearStmt};
-use cielo::passes::cfg_lower;
+use cielo_memory::refcount::analysis::cfg_liveness::{CfgLiveness, CfgUseSite};
+use cielo_base::{LinearFuncId, SymbolId, VarId};
+use cielo_ir::cfg::CfgTerminator;
+use cielo_ir::core::Literal;
+use cielo_ir::linear::{LinearExpr, LinearFunction, LinearProgram, LinearStmt};
+use cielo_runtime::cfg_lower;
 
-fn source_value(cfg: &cielo::ir::cfg::CfgProgram, source: VarId) -> cielo::common::ids::CfgValueId {
+fn source_value(cfg: &cielo_ir::cfg::CfgProgram, source: VarId) -> cielo_base::CfgValueId {
     cfg.values()
         .iter()
         .find(|value| value.source_var == Some(source))
