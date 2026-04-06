@@ -19,7 +19,7 @@ use cielo_runtime::{cfg_lower, linearize};
 use cielo_sema::{TypedCore, check_core};
 use cielo_staging::{
     passes::{comptime, monomorphize, normalize},
-    pipeline::phases::Residualized,
+    pipeline::phases::{BtaClassified, Monomorphized, Residualized},
 };
 
 #[salsa::db]
@@ -155,44 +155,43 @@ impl Default for CompileProfile {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct ParsedFile {
-    pub source: SourceId,
-    pub path: String,
-    pub ast: Program,
-    pub diagnostics: DiagnosticBag,
-    pub interner: Interner,
+macro_rules! file_artifact {
+    ($name:ident { $($field:ident: $ty:ty),+ $(,)? }) => {
+        #[derive(Clone, Debug)]
+        pub struct $name {
+            pub source: SourceId,
+            $(pub $field: $ty,)+
+            pub interner: Interner,
+        }
+    };
 }
 
-#[derive(Clone, Debug)]
-pub struct CoreFile {
-    pub source: SourceId,
-    pub core: LowerOutput,
-    pub interner: Interner,
-}
+file_artifact!(ParsedFile {
+    path: String,
+    ast: Program,
+    diagnostics: DiagnosticBag,
+});
 
-#[derive(Clone, Debug)]
-pub struct TypedFile {
-    pub source: SourceId,
-    pub typed: TypedCore,
-    pub interner: Interner,
-}
-
-#[derive(Clone, Debug)]
-pub struct StagedFile {
-    pub source: SourceId,
-    pub residual: Residualized,
-    pub interner: Interner,
-}
-
-#[derive(Clone, Debug)]
-pub struct RuntimeFile {
-    pub source: SourceId,
-    pub residual: Residualized,
-    pub linear: LinearProgram,
-    pub cfg: CfgProgram,
-    pub interner: Interner,
-}
+file_artifact!(CoreFile { core: LowerOutput });
+file_artifact!(TypedFile { typed: TypedCore });
+file_artifact!(MonomorphizedFile {
+    mono: Monomorphized
+});
+file_artifact!(ClassifiedFile {
+    classified: BtaClassified,
+});
+file_artifact!(StagedFile {
+    residual: Residualized,
+});
+file_artifact!(LinearFile {
+    residual: Residualized,
+    linear: LinearProgram,
+});
+file_artifact!(RuntimeFile {
+    residual: Residualized,
+    linear: LinearProgram,
+    cfg: CfgProgram,
+});
 
 #[derive(Clone, Debug)]
 pub struct MemoryFile {
@@ -221,19 +220,14 @@ pub fn parsed_file(db: &dyn Db, source: SourceFile) -> Arc<ParsedFile> {
 }
 
 #[salsa::tracked(no_eq, returns(clone))]
-pub fn core_file(
-    db: &dyn Db,
-    source: SourceFile,
-    target: TargetProfile,
-) -> Arc<CoreFile> {
+pub fn core_file(db: &dyn Db, source: SourceFile, target: TargetProfile) -> Arc<CoreFile> {
     let parsed = parsed_file(db, source);
     let mut interner = parsed.interner.clone();
     let main = interner.intern("main");
     let builtins = TargetBuiltinSymbols::intern(&mut interner);
     let lowered = lower_program(
         &parsed.ast,
-        LowerConfig::with_entrypoint(main)
-            .with_target_builtins(TargetSpec::from(target), builtins),
+        LowerConfig::with_entrypoint(main).with_target_builtins(TargetSpec::from(target), builtins),
     );
     let mut diagnostics = parsed.diagnostics.clone();
     diagnostics.extend(lowered.diagnostics);
@@ -245,11 +239,7 @@ pub fn core_file(
 }
 
 #[salsa::tracked(no_eq, returns(clone))]
-pub fn typed_file(
-    db: &dyn Db,
-    source: SourceFile,
-    target: TargetProfile,
-) -> Arc<TypedFile> {
+pub fn typed_file(db: &dyn Db, source: SourceFile, target: TargetProfile) -> Arc<TypedFile> {
     let core = core_file(db, source, target);
     let (program, diagnostics) = core.core.clone().into_parts();
     Arc::new(TypedFile {
@@ -260,28 +250,48 @@ pub fn typed_file(
 }
 
 #[salsa::tracked(no_eq, returns(clone))]
-pub fn staged_file(
+pub fn monomorphized_file(
     db: &dyn Db,
     source: SourceFile,
     target: TargetProfile,
-) -> Arc<StagedFile> {
+) -> Arc<MonomorphizedFile> {
     let typed = typed_file(db, source, target);
     let mono = monomorphize::run(typed.typed.clone());
-    let classified = comptime::evaluate_classify(mono, TargetSpec::from(target));
-    let residual = comptime::residualize_specialize(classified);
-    Arc::new(StagedFile {
+    Arc::new(MonomorphizedFile {
         source: typed.source,
-        residual,
+        mono,
         interner: typed.interner.clone(),
     })
 }
 
 #[salsa::tracked(no_eq, returns(clone))]
-pub fn runtime_file(
+pub fn classified_file(
     db: &dyn Db,
     source: SourceFile,
     target: TargetProfile,
-) -> Arc<RuntimeFile> {
+) -> Arc<ClassifiedFile> {
+    let mono = monomorphized_file(db, source, target);
+    let classified = comptime::evaluate_classify(mono.mono.clone(), TargetSpec::from(target));
+    Arc::new(ClassifiedFile {
+        source: mono.source,
+        classified,
+        interner: mono.interner.clone(),
+    })
+}
+
+#[salsa::tracked(no_eq, returns(clone))]
+pub fn staged_file(db: &dyn Db, source: SourceFile, target: TargetProfile) -> Arc<StagedFile> {
+    let classified = classified_file(db, source, target);
+    let residual = comptime::residualize_specialize(classified.classified.clone());
+    Arc::new(StagedFile {
+        source: classified.source,
+        residual,
+        interner: classified.interner.clone(),
+    })
+}
+
+#[salsa::tracked(no_eq, returns(clone))]
+pub fn linear_file(db: &dyn Db, source: SourceFile, target: TargetProfile) -> Arc<LinearFile> {
     let staged = staged_file(db, source, target);
     let mut residual = normalize::run(staged.residual.clone());
     let sema = residual.sema().clone();
@@ -289,13 +299,24 @@ pub fn runtime_file(
         let (program, diagnostics) = residual.program_and_diagnostics_mut();
         linearize::run(program, &sema, diagnostics)
     };
-    let cfg = cfg_lower::run(&linear);
-    Arc::new(RuntimeFile {
+    Arc::new(LinearFile {
         source: staged.source,
         residual,
         linear,
-        cfg,
         interner: staged.interner.clone(),
+    })
+}
+
+#[salsa::tracked(no_eq, returns(clone))]
+pub fn runtime_file(db: &dyn Db, source: SourceFile, target: TargetProfile) -> Arc<RuntimeFile> {
+    let linear = linear_file(db, source, target);
+    let cfg = cfg_lower::run(&linear.linear);
+    Arc::new(RuntimeFile {
+        source: linear.source,
+        residual: linear.residual.clone(),
+        linear: linear.linear.clone(),
+        cfg,
+        interner: linear.interner.clone(),
     })
 }
 
@@ -336,18 +357,10 @@ pub fn emitted_file(
     Arc::new(EmittedFile { memory, c_source })
 }
 
-pub fn compile(
-    db: &dyn Db,
-    source: SourceFile,
-    profile: CompileProfile,
-) -> Arc<EmittedFile> {
+pub fn compile(db: &dyn Db, source: SourceFile, profile: CompileProfile) -> Arc<EmittedFile> {
     emitted_file(db, source, profile.target, profile.gc)
 }
 
-pub fn compile_memory(
-    db: &dyn Db,
-    source: SourceFile,
-    profile: CompileProfile,
-) -> Arc<MemoryFile> {
+pub fn compile_memory(db: &dyn Db, source: SourceFile, profile: CompileProfile) -> Arc<MemoryFile> {
     memory_file(db, source, profile.target, profile.gc)
 }

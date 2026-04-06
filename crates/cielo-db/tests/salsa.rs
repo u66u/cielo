@@ -1,4 +1,6 @@
-use cielo_db::{CieloDatabase, CompileProfile, SourceFile, compile, compile_memory};
+use cielo_db::{
+    CieloDatabase, CompileProfile, SourceFile, compile, compile_memory, linear_file, staged_file,
+};
 use cielo_memory::GcConfig;
 use salsa::Setter;
 
@@ -61,5 +63,37 @@ fn query_memory_stats_include_real_products() {
         db.query_memory_stats()
             .iter()
             .any(|stats| stats.query.contains("EmittedFile"))
+    );
+}
+
+#[test]
+fn staging_and_runtime_have_separate_coarse_queries() {
+    let db = CieloDatabase::default();
+    let source = SourceFile::new(&db, 0, "memory.cielo".to_owned(), "fn main() {}".to_owned());
+
+    let _staged = staged_file(&db, source, CompileProfile::default().target);
+    let staged_events = db.take_query_events();
+    assert!(
+        staged_events
+            .iter()
+            .any(|event| event.description.contains("monomorphized_file"))
+    );
+    assert!(
+        staged_events
+            .iter()
+            .any(|event| event.description.contains("classified_file"))
+    );
+
+    let _linear = linear_file(&db, source, CompileProfile::default().target);
+    let linear_events = db.take_query_events();
+    assert!(
+        linear_events
+            .iter()
+            .any(|event| event.description.contains("linear_file"))
+    );
+    assert!(
+        !linear_events
+            .iter()
+            .any(|event| event.description.contains("staged_file"))
     );
 }
