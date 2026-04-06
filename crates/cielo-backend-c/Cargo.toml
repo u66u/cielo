@@ -6,3 +6,12 @@ edition = "2024"
 [dependencies]
 cielo-base = { path = "../cielo-base" }
 cielo-ir = { path = "../cielo-ir" }
+
+[dev-dependencies]
+cielo-frontend = { path = "../cielo-frontend" }
+cielo-lowering = { path = "../cielo-lowering" }
+cielo-memory = { path = "../cielo-memory" }
+cielo-runtime = { path = "../cielo-runtime" }
+cielo-sema = { path = "../cielo-sema" }
+cielo-staging = { path = "../cielo-staging" }
+cielo-test-support = { path = "../cielo-test-support" }

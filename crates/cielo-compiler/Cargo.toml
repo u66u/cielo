@@ -24,8 +24,11 @@ cielo-staging = { path = "../cielo-staging" }
 cielo-lowering = { path = "../cielo-lowering" }
 cielo-runtime = { path = "../cielo-runtime" }
 cielo-db = { path = "../cielo-db" }
-cielo-memory = { path = "../cielo-memory" }
 cielo-backend-c = { path = "../cielo-backend-c" }
+cielo-memory = { path = "../cielo-memory" }
+
+[dev-dependencies]
+cielo-test-support = { path = "../cielo-test-support" }
 
 [[bench]]
 name = "v1_pipeline"

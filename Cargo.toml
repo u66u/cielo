@@ -13,4 +13,5 @@ members = [
     "crates/cielo-backend-c",
     "crates/cielo-compiler",
     "crates/cielo-driver",
+    "crates/cielo-test-support",
 ]

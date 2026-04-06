@@ -10,3 +10,10 @@ serde = { version = "1.0.228", features = ["derive"] }
 cielo-base = { path = "../cielo-base" }
 cielo-ir = { path = "../cielo-ir" }
 cielo-sema = { path = "../cielo-sema" }
+
+[dev-dependencies]
+cielo-backend-c = { path = "../cielo-backend-c" }
+cielo-lowering = { path = "../cielo-lowering" }
+cielo-memory = { path = "../cielo-memory" }
+cielo-runtime = { path = "../cielo-runtime" }
+cielo-test-support = { path = "../cielo-test-support" }

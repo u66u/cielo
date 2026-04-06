@@ -1,17 +1,16 @@
 [package]
-name = "cielo-memory"
+name = "cielo-test-support"
 version = "0.1.0"
 edition = "2024"
+publish = false
 
 [dependencies]
-bitflags = "2.11.0"
-cielo-base = { path = "../cielo-base" }
-cielo-ir = { path = "../cielo-ir" }
-cielo-sema = { path = "../cielo-sema" }
-
-[dev-dependencies]
 cielo-backend-c = { path = "../cielo-backend-c" }
+cielo-base = { path = "../cielo-base" }
+cielo-frontend = { path = "../cielo-frontend" }
+cielo-ir = { path = "../cielo-ir" }
 cielo-lowering = { path = "../cielo-lowering" }
+cielo-memory = { path = "../cielo-memory" }
 cielo-runtime = { path = "../cielo-runtime" }
+cielo-sema = { path = "../cielo-sema" }
 cielo-staging = { path = "../cielo-staging" }
-cielo-test-support = { path = "../cielo-test-support" }
