@@ -3,11 +3,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use cielo_base::{ExprId, FuncId, SourceId, StmtId, VarId};
 use cielo_base::Interner;
+use cielo_base::{ExprId, FuncId, SourceId, StmtId, VarId};
 use cielo_ir::core::{CoreProgram, ExprKind};
 use cielo_staging::pipeline::phases::{BranchDecision, Knownness, Reason, Residualized, Stage};
-use cielo::{Compiler, CompilerConfig};
+use cielo_test_support::{Compiler, CompilerConfig};
 use helpers::ir::{first_return_expr, reachable_stmt_count_from_root};
 
 #[derive(Debug, PartialEq, Eq)]

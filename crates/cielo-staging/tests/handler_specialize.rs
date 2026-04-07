@@ -4,10 +4,10 @@ use std::fmt::Write;
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use cielo_base::{ExprId, FuncId, HandlerId, SourceId, StmtId};
 use cielo_base::Interner;
+use cielo_base::{ExprId, FuncId, HandlerId, SourceId, StmtId};
 use cielo_ir::core::{CoreProgram, StmtKind};
-use cielo::{Compiler, CompilerConfig};
+use cielo_test_support::{Compiler, CompilerConfig};
 use helpers::bta::{reason_has_valid_func_ids, stage_has_valid_func_ids};
 
 #[test]
@@ -1252,7 +1252,7 @@ fn function_named<'a>(
         .find(|function| interner.resolve(function.name) == Some(name))
 }
 
-fn assert_phase_func_ids_in_bounds(compiled: &cielo::CompiledC) {
+fn assert_phase_func_ids_in_bounds(compiled: &cielo_test_support::CompiledC) {
     let func_count = compiled.residual.program().functions().len();
     assert!(
         compiled

@@ -1,6 +1,6 @@
-use cielo_base::SourceId;
 use cielo_base::Interner;
-use cielo::{Compiler, CompilerConfig};
+use cielo_base::SourceId;
+use cielo_test_support::{Compiler, CompilerConfig};
 
 #[test]
 fn monomorphize_summary_tracks_identity_in_v0() {

@@ -3,21 +3,21 @@ use std::collections::HashSet;
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use cielo_base::diagnostics::DiagnosticBag;
-use cielo_base::{EffectLabelId, ExprId, SourceId, SymbolId, VarId};
-use cielo_base::span::Span;
 use cielo_base::Interner;
+use cielo_base::diagnostics::DiagnosticBag;
+use cielo_base::span::Span;
+use cielo_base::{EffectLabelId, ExprId, SourceId, SymbolId, VarId};
 use cielo_ir::core::{
     CoreProgram, CoreTypeRef, ExprKind, ExprNode, FunctionDecl, HandlerDef, Literal, MatchArm,
     PrimitiveTypeRef, StmtKind, StmtNode,
 };
+use cielo_ir::effect::SortedEffectRow;
 use cielo_staging::passes::normalize;
 use cielo_staging::pipeline::phases::{
     BtaTables, CtPropagationTables, MonomorphizationSummary, ResidualTables, Residualized,
     SemanticTables,
 };
-use cielo_ir::effect::SortedEffectRow;
-use cielo::{Compiler, CompilerConfig};
+use cielo_test_support::{Compiler, CompilerConfig};
 use helpers::ir::{contains_call_to, contains_if_stmt, reachable_stmt_count};
 
 #[test]

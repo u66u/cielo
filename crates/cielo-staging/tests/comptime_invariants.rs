@@ -3,11 +3,11 @@ use std::collections::HashSet;
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use cielo_base::{FuncId, HandlerId, SourceId};
 use cielo_base::Interner;
+use cielo_base::{FuncId, HandlerId, SourceId};
 use cielo_ir::core::Literal;
 use cielo_ir::core::{ExprKind, StmtKind};
-use cielo::{Compiler, CompilerConfig};
+use cielo_test_support::{Compiler, CompilerConfig};
 use helpers::bta::{reason_has_valid_func_ids, stage_has_valid_func_ids};
 use helpers::ir::reachable_stmt_count;
 

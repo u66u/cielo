@@ -1,18 +1,18 @@
-use cielo_base::diagnostics::DiagnosticBag;
-use cielo_base::{EffectLabelId, ExprId, FuncId, HandlerId, SourceId, SymbolId, VarId};
-use cielo_base::span::Span;
 use cielo_base::Interner;
+use cielo_base::diagnostics::DiagnosticBag;
+use cielo_base::span::Span;
+use cielo_base::{EffectLabelId, ExprId, FuncId, HandlerId, SourceId, SymbolId, VarId};
 use cielo_ir::core::{
     CoreProgram, CoreTypeRef, EffectDecl, ExprKind, ExprNode, FunctionDecl, HandlerDef, Literal,
     PrimitiveTypeRef, StmtKind, StmtNode,
 };
-use cielo_staging::passes::{bta, ct_eval};
+use cielo_ir::effect::{EffectProperties, SortedEffectRow};
 use cielo_ir::target::TargetSpec;
+use cielo_staging::passes::{bta, ct_eval};
 use cielo_staging::pipeline::phases::{
     BranchDecision, CtPropagated, MonomorphizationSummary, Monomorphized, SemanticTables,
 };
-use cielo_ir::effect::{EffectProperties, SortedEffectRow};
-use cielo::{Compiler, CompilerConfig};
+use cielo_test_support::{Compiler, CompilerConfig};
 
 #[test]
 fn cteval_folds_pure_call_with_literal_arguments() {

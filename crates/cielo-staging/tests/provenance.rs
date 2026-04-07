@@ -1,11 +1,11 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use cielo_base::SourceId;
 use cielo_base::Interner;
+use cielo_base::SourceId;
 use cielo_staging::pipeline::phases::Reason;
 use cielo_staging::pipeline::provenance::{runtime_provenance_lines, staging_root_causes};
-use cielo::{Compiler, CompilerConfig};
+use cielo_test_support::{Compiler, CompilerConfig};
 use helpers::ir::first_return_expr_linear;
 
 #[test]

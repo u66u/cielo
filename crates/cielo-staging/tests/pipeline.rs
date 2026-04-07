@@ -1,22 +1,22 @@
-use cielo_base::diagnostics::DiagnosticBag;
-use cielo_base::{EffectLabelId, FuncId, SourceId, SymbolId, TypeId, VarId};
-use cielo_base::span::Span;
 use cielo_base::Interner;
+use cielo_base::diagnostics::DiagnosticBag;
+use cielo_base::span::Span;
+use cielo_base::{EffectLabelId, FuncId, SourceId, SymbolId, TypeId, VarId};
 use cielo_ir::core::{
     CoreProgram, CoreTypeRef, ExprKind, ExprNode, FunctionDecl, Literal, MatchArm,
     PrimitiveTypeRef, StmtKind, StmtNode,
 };
-use cielo_runtime::{cfg_lower, linearize};
-use cielo_staging::passes::{bta, ct_propagate, residualize};
+use cielo_ir::effect::SortedEffectRow;
 use cielo_ir::target::TargetSpec;
+use cielo_runtime::{cfg_lower, linearize};
+use cielo_sema::TypedCore;
+use cielo_sema::ty::Persistability;
+use cielo_staging::passes::{bta, ct_propagate, residualize};
 use cielo_staging::pipeline::phases::{
     BranchDecision, BtaClassified, BtaTables, CtPropagationTables, Knownness,
     MonomorphizationSummary, Monomorphized, Reason, SemanticTables, Stage,
 };
-use cielo_ir::effect::SortedEffectRow;
-use cielo_sema::ty::Persistability;
-use cielo::{Compiler, CompilerConfig};
-use cielo_sema::TypedCore;
+use cielo_test_support::{Compiler, CompilerConfig};
 use helpers::core::emit_pipeline;
 
 #[test]
@@ -1991,7 +1991,7 @@ fn residualize_prunes_match_through_let_alias_chain_with_binder_materialization(
 
 #[test]
 fn v1_example_contract_oracle_matches_effect_and_staging_intent_split_pipeline() {
-    let src = include_str!("../examples/v1_test.cielo");
+    let src = include_str!("../../cielo-compiler/examples/v1_test.cielo");
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
 
@@ -2233,13 +2233,7 @@ fn main() -> Int {
         linearize::run(program, &sema, diagnostics)
     };
     let cfg = cfg_lower::run(&linear);
-    let fused_emitted = emit_pipeline(
-        normalized,
-        linear,
-        cfg,
-        &fused_interner,
-        Default::default(),
-    );
+    let fused_emitted = emit_pipeline(normalized, linear, cfg, &fused_interner, Default::default());
 
     let mut split_interner = Interner::new();
     let split_emitted =

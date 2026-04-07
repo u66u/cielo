@@ -1,10 +1,10 @@
-use cielo_base::{HandlerId, SourceId};
 use cielo_base::Interner;
+use cielo_base::{HandlerId, SourceId};
 use cielo_ir::core::{ExprKind, Literal, StmtKind};
+use cielo_ir::effect::SortedEffectRow;
 use cielo_ir::target::Endianness;
 use cielo_staging::pipeline::phases::{Knownness, Stage};
-use cielo_ir::effect::SortedEffectRow;
-use cielo::{Compiler, CompilerConfig};
+use cielo_test_support::{Compiler, CompilerConfig};
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 

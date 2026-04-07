@@ -1,7 +1,9 @@
-use cielo_base::SourceId;
 use cielo_base::Interner;
-use cielo_staging::pipeline::staging_diagnostics::{render_stage_b_counter_summary, staging_pass_counters};
-use cielo::{Compiler, CompilerConfig};
+use cielo_base::SourceId;
+use cielo_staging::pipeline::staging_diagnostics::{
+    render_stage_b_counter_summary, staging_pass_counters,
+};
+use cielo_test_support::{Compiler, CompilerConfig};
 
 #[test]
 fn staging_diagnostics_surface_residual_and_specialization_counters() {

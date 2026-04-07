@@ -1,15 +1,15 @@
 #![allow(dead_code)]
 
-use cielo_base::diagnostics::DiagnosticBag;
-use cielo_base::SourceId;
 use cielo_base::Interner;
+use cielo_base::SourceId;
+use cielo_base::diagnostics::DiagnosticBag;
 use cielo_ir::core::CoreProgram;
 use cielo_ir::{cfg::CfgProgram, linear::LinearProgram};
 use cielo_memory::{GcConfig, MemoryInput};
-use cielo_staging::pipeline::phases::SemanticTables;
-use cielo_staging::pipeline::phases::Residualized;
 use cielo_sema::typecheck::typecheck_core;
-use cielo::{CompiledC, Compiler, CompilerConfig};
+use cielo_staging::pipeline::phases::Residualized;
+use cielo_staging::pipeline::phases::SemanticTables;
+use cielo_test_support::{CompiledC, Compiler, CompilerConfig};
 
 pub fn lower_to_core(source: &str) -> CoreProgram {
     let compiler = Compiler::new(CompilerConfig::default());
