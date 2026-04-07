@@ -1,15 +1,17 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use cielo_base::{EffectLabelId, LinearFuncId, SourceId, VarId};
 use cielo_base::Interner;
+use cielo_base::{EffectLabelId, LinearFuncId, SourceId, VarId};
 use cielo_ir::core::Literal;
 use cielo_ir::linear::{
     CallConvention, LinearExpr, LinearFunction, LinearMatchArm, LinearProgram, LinearStmt,
 };
 use cielo_runtime::{cfg_lower, linearize};
-use cielo_staging::pipeline::phases::{ConstantEmbedStrategy, ConstantKey, CtorFieldKey, ScalarLiteralKey};
-use cielo::{Compiler, CompilerConfig};
+use cielo_staging::pipeline::phases::{
+    ConstantEmbedStrategy, ConstantKey, CtorFieldKey, ScalarLiteralKey,
+};
+use cielo_test_support::{Compiler, CompilerConfig};
 use helpers::core::{emit_c_program, emit_pipeline};
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -1677,7 +1679,7 @@ fn compile_source_to_c_without_normalize(
     src: &str,
     source_id: SourceId,
     interner: &mut Interner,
-) -> cielo::CompiledC {
+) -> cielo_test_support::CompiledC {
     let compiler = Compiler::new(CompilerConfig::default());
     let core = compiler.parse_and_lower_to_core(src, source_id, interner);
     let mut residual = compiler.run_v1_core_pipeline(core);
@@ -1688,7 +1690,7 @@ fn compile_source_to_c_without_normalize(
     };
     let cfg = cfg_lower::run(&linear);
     let emitted = emit_pipeline(residual, linear, cfg, interner, Default::default());
-    cielo::CompiledC {
+    cielo_test_support::CompiledC {
         residual: emitted.residual,
         linear: emitted.linear,
         cfg: emitted.cfg,
@@ -1779,10 +1781,7 @@ fn linear_stmt_graph_contains_perform_effect(
     false
 }
 
-fn linear_stmt_graph_contains_if(
-    program: &LinearProgram,
-    root: cielo_base::LinearStmtId,
-) -> bool {
+fn linear_stmt_graph_contains_if(program: &LinearProgram, root: cielo_base::LinearStmtId) -> bool {
     let mut stack = vec![root];
     let mut seen = HashSet::new();
     while let Some(stmt_id) = stack.pop() {
