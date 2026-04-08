@@ -1,6 +1,6 @@
-use cielo_base::SourceId;
 use cielo_base::Interner;
-use cielo::{Compiler, CompilerConfig};
+use cielo_base::SourceId;
+use cielo_test_support::{Compiler, CompilerConfig};
 
 #[test]
 fn v1_pipeline_tracks_arc_accounting_consistently() {

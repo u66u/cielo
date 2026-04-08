@@ -1,6 +1,7 @@
 use crate::helpers::c_emit::assert_arc_trace_comments_align;
 use crate::helpers::core::compile_source_to_c_with_config;
-use cielo::{CompilerConfig, GcFeatureFlags, GcPreset};
+use cielo_memory::{GcFeatureFlags, GcPreset};
+use cielo_test_support::CompilerConfig;
 
 #[test]
 fn arc_c_emitter_trace_comments_align_with_runtime_calls() {

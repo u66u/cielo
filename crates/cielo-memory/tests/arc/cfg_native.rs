@@ -1,12 +1,13 @@
-use cielo_base::SourceId;
 use cielo_base::Interner;
+use cielo_base::SourceId;
 use cielo_ir::cfg::{CfgArcOpKind, CfgProjectionMode, CfgTerminator};
+use cielo_memory::GcPreset;
 use cielo_runtime::{cfg_lower, linearize};
-use cielo::{Compiler, CompilerConfig, GcPreset};
+use cielo_test_support::{Compiler, CompilerConfig};
 
 use crate::helpers::core::emit_pipeline;
 
-fn compile(source: &str) -> cielo::CompiledC {
+fn compile(source: &str) -> cielo_test_support::CompiledC {
     let mut interner = Interner::new();
     Compiler::new(CompilerConfig::default()).compile_source_to_c(
         source,
@@ -15,7 +16,7 @@ fn compile(source: &str) -> cielo::CompiledC {
     )
 }
 
-fn compile_with_preset(source: &str, preset: GcPreset) -> cielo::CompiledC {
+fn compile_with_preset(source: &str, preset: GcPreset) -> cielo_test_support::CompiledC {
     let mut interner = Interner::new();
     Compiler::new(CompilerConfig::default().with_gc_preset(preset)).compile_source_to_c(
         source,
@@ -24,7 +25,7 @@ fn compile_with_preset(source: &str, preset: GcPreset) -> cielo::CompiledC {
     )
 }
 
-fn compile_without_normalize(source: &str) -> cielo::CompiledC {
+fn compile_without_normalize(source: &str) -> cielo_test_support::CompiledC {
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
     let core = compiler.parse_and_lower_to_core(source, SourceId::from_u32(0), &mut interner);
@@ -36,7 +37,7 @@ fn compile_without_normalize(source: &str) -> cielo::CompiledC {
     };
     let cfg = cfg_lower::run(&linear);
     let emitted = emit_pipeline(residual, linear, cfg, &interner, Default::default());
-    cielo::CompiledC {
+    cielo_test_support::CompiledC {
         residual: emitted.residual,
         linear: emitted.linear,
         cfg: emitted.cfg,
@@ -45,7 +46,7 @@ fn compile_without_normalize(source: &str) -> cielo::CompiledC {
     }
 }
 
-fn arc_op_count(compiled: &cielo::CompiledC, kind: CfgArcOpKind) -> usize {
+fn arc_op_count(compiled: &cielo_test_support::CompiledC, kind: CfgArcOpKind) -> usize {
     let mut count = 0;
     for block in compiled.cfg.blocks() {
         count += block.entry_arc.iter().filter(|op| op.kind == kind).count();
@@ -100,13 +101,7 @@ fn main() -> Int { let value = Wrap(1); consume(value) }
     assert!(arc_op_count(&raw, CfgArcOpKind::Retain) > 0);
     assert!(arc_op_count(&raw, CfgArcOpKind::Release) > 0);
     assert_eq!(arc_op_count(&optimized, CfgArcOpKind::Retain), 0);
-    assert!(
-        optimized
-            .memory
-            .arc
-            .eliminated_move_pairs
-            > raw.memory.arc.eliminated_move_pairs
-    );
+    assert!(optimized.memory.arc.eliminated_move_pairs > raw.memory.arc.eliminated_move_pairs);
 }
 
 #[test]
