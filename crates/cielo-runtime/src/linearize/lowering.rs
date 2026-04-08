@@ -6,11 +6,11 @@ use cielo_base::ids::{
 };
 use cielo_ir::core::{CoreProgram, ExprKind, HandlerClause, HandlerDef, StmtKind};
 use cielo_ir::effect::{SortedEffectRow, is_thunkable};
+use cielo_ir::function_graph::collect_reachable_functions;
 use cielo_ir::linear::{
     CallConvention, LinearExpr, LinearFunction, LinearMatchArm, LinearProgram, LinearStmt,
 };
 use cielo_sema::SemanticTables;
-use cielo_ir::function_graph::collect_reachable_functions;
 
 use super::analysis::{
     analyze_clause_resume, classify_clause_convention, is_identity_handler_return_clause,
@@ -1020,10 +1020,7 @@ fn lower_expr(
     id
 }
 
-fn classify_call_convention(
-    effects: &SortedEffectRow,
-    sema: &SemanticTables,
-) -> CallConvention {
+fn classify_call_convention(effects: &SortedEffectRow, sema: &SemanticTables) -> CallConvention {
     if effects.is_empty() {
         return CallConvention::Pure;
     }

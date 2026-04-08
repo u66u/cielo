@@ -8,26 +8,19 @@ name = "cielo"
 path = "src/lib.rs"
 
 [dependencies]
-blake3 = "1.8.2"
-indexmap = "2.13.0"
-lasso = "0.7.3"
-miette = { version = "7.6.0", features = ["fancy"] }
-rustc-hash = "2.1.1"
-serde = { version = "1.0.228", features = ["derive"] }
-smallvec = "1.15.1"
-thiserror = "2.0.18"
-cielo-base = { path = "../cielo-base" }
-cielo-frontend = { path = "../cielo-frontend" }
-cielo-ir = { path = "../cielo-ir" }
-cielo-sema = { path = "../cielo-sema" }
-cielo-staging = { path = "../cielo-staging" }
-cielo-lowering = { path = "../cielo-lowering" }
-cielo-runtime = { path = "../cielo-runtime" }
 cielo-db = { path = "../cielo-db" }
 cielo-backend-c = { path = "../cielo-backend-c" }
+cielo-base = { path = "../cielo-base" }
+cielo-ir = { path = "../cielo-ir" }
 cielo-memory = { path = "../cielo-memory" }
 
 [dev-dependencies]
+blake3 = "1.8.2"
+cielo-frontend = { path = "../cielo-frontend" }
+cielo-lowering = { path = "../cielo-lowering" }
+cielo-runtime = { path = "../cielo-runtime" }
+cielo-sema = { path = "../cielo-sema" }
+cielo-staging = { path = "../cielo-staging" }
 cielo-test-support = { path = "../cielo-test-support" }
 
 [[bench]]

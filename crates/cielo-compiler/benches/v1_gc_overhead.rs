@@ -6,9 +6,10 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-use cielo_base::SourceId;
 use cielo_base::Interner;
-use cielo::{Compiler, CompilerConfig, GcPreset};
+use cielo_base::SourceId;
+use cielo_memory::{GcConfig, GcPreset};
+use cielo_test_support::{Compiler, CompilerConfig};
 
 const SOURCE_CTOR_CHURN: &str = r#"
 enum Boxed { Wrap(Int) }
@@ -425,7 +426,10 @@ pub fn gc_overhead_case_arc_stats(case: &str, preset: &str) -> Option<GcBenchArc
     let case = CASES.iter().copied().find(|entry| entry.name == case)?;
     let preset = PRESETS.iter().copied().find(|entry| entry.name == preset)?;
     let mut interner = Interner::new();
-    let config = CompilerConfig::default().with_gc_preset(preset.preset);
+    let config = CompilerConfig {
+        gc: GcConfig::from_preset(preset.preset),
+        ..CompilerConfig::default()
+    };
     let compiler = Compiler::new(config);
     let compiled = compiler.compile_source_to_c(case.source, SourceId::from_u32(0), &mut interner);
     if compiled.residual.diagnostics().has_errors() {
@@ -434,7 +438,7 @@ pub fn gc_overhead_case_arc_stats(case: &str, preset: &str) -> Option<GcBenchArc
     Some(extract_arc_stats(&compiled))
 }
 
-fn extract_arc_stats(compiled: &cielo::CompiledC) -> GcBenchArcStats {
+fn extract_arc_stats(compiled: &cielo_test_support::CompiledC) -> GcBenchArcStats {
     let arc_stats = compiled.memory.arc;
     GcBenchArcStats {
         planned_retain_ops: arc_stats.planned_retain_ops,
@@ -499,7 +503,10 @@ fn env_bool(name: &str, default: bool) -> bool {
 fn build_target(case: BenchCase, bench_preset: BenchPreset, source_id: u32) -> BuiltTarget {
     let compile_start = Instant::now();
     let mut interner = Interner::new();
-    let config = CompilerConfig::default().with_gc_preset(bench_preset.preset);
+    let config = CompilerConfig {
+        gc: GcConfig::from_preset(bench_preset.preset),
+        ..CompilerConfig::default()
+    };
     let compiler = Compiler::new(config);
     let compiled =
         compiler.compile_source_to_c(case.source, SourceId::from_u32(source_id), &mut interner);

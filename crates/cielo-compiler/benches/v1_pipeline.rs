@@ -1,10 +1,8 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use cielo_base::SourceId;
-use cielo_base::Interner;
-use cielo::V0PipelineTimings;
 use cielo::{Compiler, CompilerConfig};
+use cielo_base::SourceId;
 
 const SOURCE_EXAMPLE: &str = include_str!("../examples/v1_test.cielo");
 const SOURCE_DIRECT_RESUME: &str = r#"
@@ -143,36 +141,30 @@ const CASES: &[BenchCase] = &[
     },
 ];
 
-fn compile_case(case: BenchCase) -> V0PipelineTimings {
-    let mut interner = Interner::new();
+fn compile_case(case: BenchCase) {
     let compiler = Compiler::new(CompilerConfig::default());
-    let (residual, timings) =
-        compiler.compile_source_v0_profiled(case.source, SourceId::from_u32(0), &mut interner);
+    let source = compiler.source(case.source, SourceId::from_u32(0));
+    let staged = compiler.staged(source);
     assert!(
-        !residual.diagnostics().has_errors(),
+        !staged.residual.diagnostics().has_errors(),
         "benchmark source `{}` should compile without diagnostics errors",
         case.name
     );
-    black_box(residual.program().functions().len());
-    timings
+    black_box(staged.residual.program().functions().len());
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 struct BenchAccum {
     wall: Duration,
-    stages: V0PipelineTimings,
 }
 
 fn run_iterations(case: BenchCase, iterations: usize) -> BenchAccum {
     let start = Instant::now();
-    let mut stages = V0PipelineTimings::default();
     for _ in 0..iterations {
-        let iteration = compile_case(case);
-        stages.saturating_add_assign(iteration);
+        compile_case(case);
     }
     BenchAccum {
         wall: start.elapsed(),
-        stages,
     }
 }
 
@@ -202,7 +194,6 @@ fn emit_case(case: BenchCase, warmup_iters: usize, measure_iters: usize, enforce
     let elapsed = measured.wall;
     let per_iter = elapsed / (measure_iters as u32);
     let per_iter_ms = per_iter.as_secs_f64() * 1_000.0;
-    let stage_per_iter = measured.stages.per_iteration(measure_iters as u32);
 
     println!("benchmark=v1_pipeline");
     println!("case={}", case.name);
@@ -210,35 +201,6 @@ fn emit_case(case: BenchCase, warmup_iters: usize, measure_iters: usize, enforce
     println!("iterations={measure_iters}");
     println!("total_ms={:.3}", elapsed.as_secs_f64() * 1_000.0);
     println!("per_iter_ms={per_iter_ms:.3}");
-    println!(
-        "phase_parse_ms={:.3}",
-        stage_per_iter.parse.as_secs_f64() * 1_000.0
-    );
-    println!(
-        "phase_lower_ms={:.3}",
-        stage_per_iter.lower.as_secs_f64() * 1_000.0
-    );
-    println!(
-        "phase_typecheck_ms={:.3}",
-        stage_per_iter.typecheck.as_secs_f64() * 1_000.0
-    );
-    println!(
-        "phase_monomorphize_ms={:.3}",
-        stage_per_iter.monomorphize.as_secs_f64() * 1_000.0
-    );
-    println!(
-        "phase_ct_propagate_ms={:.3}",
-        stage_per_iter.ct_eval.as_secs_f64() * 1_000.0
-    );
-    println!(
-        "phase_bta_ms={:.3}",
-        stage_per_iter.bta.as_secs_f64() * 1_000.0
-    );
-    println!(
-        "phase_residualize_ms={:.3}",
-        stage_per_iter.residualize.as_secs_f64() * 1_000.0
-    );
-
     if enforce_thresholds
         && let Err(violation) = check_v1_pipeline_per_iter_ms(case.name, per_iter_ms)
     {

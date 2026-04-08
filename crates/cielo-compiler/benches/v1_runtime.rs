@@ -6,9 +6,9 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use cielo_base::SourceId;
 use cielo_base::Interner;
-use cielo::{Compiler, CompilerConfig};
+use cielo_base::SourceId;
+use cielo_test_support::{Compiler, CompilerConfig};
 
 const SOURCE_PURE_RUNTIME_LOOP: &str = r#"
 fn pure_loop(n: Int, acc: Int) -> Int {

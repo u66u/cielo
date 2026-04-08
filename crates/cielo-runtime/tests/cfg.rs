@@ -1,8 +1,8 @@
-use cielo_memory::refcount::analysis::cfg_liveness::{CfgLiveness, CfgUseSite};
 use cielo_base::{LinearFuncId, SymbolId, VarId};
 use cielo_ir::cfg::CfgTerminator;
 use cielo_ir::core::Literal;
 use cielo_ir::linear::{LinearExpr, LinearFunction, LinearProgram, LinearStmt};
+use cielo_memory::refcount::analysis::cfg_liveness::{CfgLiveness, CfgUseSite};
 use cielo_runtime::cfg_lower;
 
 fn source_value(cfg: &cielo_ir::cfg::CfgProgram, source: VarId) -> cielo_base::CfgValueId {

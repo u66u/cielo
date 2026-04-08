@@ -4,6 +4,7 @@ use std::process::Command;
 
 use clap::{Parser, ValueEnum};
 
+use cielo::{Compiler, CompilerConfig};
 use cielo_base::reporting::render_diagnostic;
 use cielo_base::{ExprId, Interner, SourceId, SymbolId};
 use cielo_frontend::ast::{Item, Program};
@@ -22,7 +23,6 @@ use cielo_staging::pipeline::staging_diff::{
     SnapshotStage, collect_snapshot, diff_snapshots, load_snapshot as load_stage_snapshot,
     save_snapshot as save_stage_snapshot,
 };
-use cielo::{Compiler, CompilerConfig};
 
 const RUNTIME_HEADER: &str = cielo::RUNTIME_HEADER;
 
@@ -102,26 +102,24 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
     };
 
     let source_id = SourceId::from_u32(0);
-    let db_source = compiler.database_source(&source, source_id);
-
-    let mut interner = Interner::new();
-    let parsed = compiler.database_parse_file(db_source, &mut interner);
-    let core = compiler.database_lower_file(db_source, &mut interner);
+    let db_source = compiler.source_at(path.to_string_lossy().as_ref(), &source, source_id);
+    let parsed = compiler.parsed(db_source);
+    let core = compiler.core(db_source);
 
     if should_dump(cli, DumpKind::Ast) {
-        println!("=== AST ===\n{:#?}", parsed.program());
+        println!("=== AST ===\n{:#?}", parsed.ast);
     }
     if should_dump(cli, DumpKind::Effects) {
-        dump_effects_from_ast(parsed.program(), &interner);
+        dump_effects_from_ast(&parsed.ast, &parsed.interner);
     }
     if should_dump(cli, DumpKind::Core) {
-        println!("=== Core IR ===\n{:#?}", core.program());
+        println!("=== Core IR ===\n{:#?}", core.core.program());
     }
     if should_dump(cli, DumpKind::Functions) {
-        dump_functions_from_core(core.program(), &interner);
+        dump_functions_from_core(core.core.program(), &core.interner);
     }
 
-    let staged = compiler.database_staged_file(db_source);
+    let staged = compiler.staged(db_source);
     let residual = &staged.residual;
     if should_dump(cli, DumpKind::Sema) {
         dump_sema_summary(residual);
@@ -149,13 +147,13 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
     }
     if !need_runtime {
         if should_dump(cli, DumpKind::Memory) {
-            let memory = compiler.database_memory_file(db_source);
+            let memory = compiler.memory(db_source);
             println!("=== Memory ===\n{memory:#?}");
         }
         return;
     }
 
-    let runtime = compiler.database_runtime_file(db_source);
+    let runtime = compiler.runtime(db_source);
     if should_dump(cli, DumpKind::Linear) {
         println!("=== Linear IR ===\n{:#?}", runtime.linear);
     }
@@ -164,12 +162,12 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
     }
 
     if should_dump(cli, DumpKind::Memory) {
-        let memory = compiler.database_memory_file(db_source);
+        let memory = compiler.memory(db_source);
         println!("=== Memory ===\n{memory:#?}");
     }
 
     if cli.emit_c || cli.run_c || should_dump(cli, DumpKind::C) {
-        let emitted = compiler.database_emitted_file(db_source);
+        let emitted = compiler.emit(db_source);
         if should_dump(cli, DumpKind::C) || cli.emit_c || cli.run_c {
             println!("=== Emitted C ===\n{}", emitted.c_source);
         }
@@ -353,7 +351,10 @@ fn dump_sema_summary(residual: &Residualized) {
         .knownness_of_expr
         .values()
         .filter(|known| {
-            matches!(known, cielo_staging::pipeline::phases::Knownness::KnownLocal)
+            matches!(
+                known,
+                cielo_staging::pipeline::phases::Knownness::KnownLocal
+            )
         })
         .count();
     let known_persistable = residual
@@ -583,10 +584,10 @@ fn main() -> Int {
 
     let mut failures = 0usize;
     for (idx, (name, source)) in CASES.iter().enumerate() {
-        let mut interner = Interner::new();
-        let residual = compiler.compile_source(source, SourceId::new(idx), &mut interner);
+        let file = compiler.source(source, SourceId::new(idx));
+        let residual = &compiler.staged(file).residual;
         let source_name = format!("smoke/{name}.cielo");
-        print_case_summary(name, &source_name, source, &residual);
+        print_case_summary(name, &source_name, source, residual);
         if residual.diagnostics().has_errors() {
             failures += 1;
         }

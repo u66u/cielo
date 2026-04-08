@@ -1,8 +1,8 @@
-use cielo_base::{ExprId, HandlerId, SourceId, StmtId, SymbolId, VarId};
 use cielo_base::Interner;
+use cielo_base::{ExprId, HandlerId, SourceId, StmtId, SymbolId, VarId};
 use cielo_ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, StmtKind, UnaryOp};
 use cielo_staging::pipeline::phases::CtPropagationTables;
-use cielo::{CompiledC, Compiler, CompilerConfig};
+use cielo_test_support::{CompiledC, Compiler, CompilerConfig};
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
