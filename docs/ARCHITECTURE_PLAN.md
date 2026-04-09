@@ -1,204 +1,231 @@
-# Cielo database and crate split
+# Cielo database architecture
 
-This is the migration plan for branch `009-db`.  The first pass keeps the
-existing compiler behavior intact while making the ownership boundaries
-explicit.  The goal is to make new memory managers and analysis variants easy
-to add without turning the driver or a shared phase struct into the owner of
-everything.
+This document describes the architecture implemented on `009-db`. The main
+goal is to make a compiler change local: a new pass, IR, or memory experiment
+should have one clear owner and one clear place in the compile path.
 
-## Dependency direction
-
-```text
-cielo-backend-api -> (no Cielo dependencies)
-cielo-frontend    -> cielo-base
-cielo-ir          -> cielo-base
-cielo-lowering    -> cielo-base + cielo-frontend + cielo-ir
-cielo-sema        -> cielo-base + cielo-ir
-cielo-staging    -> cielo-base + cielo-frontend + cielo-ir + cielo-sema
-cielo-memory      -> cielo-base + cielo-ir + cielo-staging + cielo-backend-api
-cielo-backend-c   -> cielo-backend-api + cielo-base + cielo-ir + cielo-staging
-cielo-db          -> frontend + lowering + sema + memory + backend-api
-cielo-compiler    -> database + feature crates (temporary integration layer)
-cielo-driver      -> compiler
-```
-
-An arrow points from a crate to a dependency.  Cargo verifies that this graph
-is acyclic.
-
-- `cielo-base`: IDs, spans, diagnostics, symbols, and small containers.
-- `cielo-ir`: representation types and boundary facts; no compiler driver or
-  Salsa dependency.
-- `cielo-frontend`: AST, lexer, and parser.
-- `cielo-lowering`: the real AST-to-Core lowering.
-- `cielo-sema`: type/effect checking and facts that are valid for one Core
-  snapshot.
-- `cielo-staging`: comptime evaluation, BTA, monomorphization, handler
-  specialization, residualization, and their phase products.  It exposes
-  ordinary Rust functions and does not know Salsa.
-- Future `cielo-concurrency`: one semantic concern, exposing ordinary Rust
-  functions.
-- `cielo-memory`: neutral runtime input plus separate `refcount`, `tracing`,
-  and `regions` implementations.  A strategy owns its analyses and output
-  type.  The active ARC CFG analysis now lives under `refcount`; the first
-  slice also has three concrete strategy families and a structured
-  `RuntimeManifest`.
-- `cielo-backend-api`: the shared machine/runtime contract.  It has no
-  dependency on `cielo-memory`; strategy-specific root maps, ownership facts,
-  and region constraints stop before this boundary.  Backends advertise
-  runtime capabilities and report missing manifest requirements before
-  emission.
-- `cielo-backend-c`: pure CFG-to-C rendering and the C runtime header.  The
-  temporary orchestration wrapper stays in `cielo-compiler` until CFG lowering
-  has its own crate.
-- `cielo-db`: the only crate that knows Salsa.  It composes pure compiler
-  functions into coarse queries.
-- `cielo-driver`: CLI, file I/O, profile selection, and final emission.
-
-The old `cielo` package is now `crates/cielo-compiler` (with library name
-`cielo`) so existing integration-test imports stay stable.  The repository
-root has no `src`, `tests`, or `benches` directory.
-
-## Salsa policy
-
-Use Salsa for source inputs and meaningful products, not for individual IR
-nodes or mutable pass state.  Profiles are currently small immutable values in
-the relevant query keys, so several experiment variants can coexist in one
-database.  If an IDE later needs to mutate profiles in place, make each profile
-dimension its own `#[salsa::input]`; do not introduce one global config input.
-
-Current query boundaries:
-
-```text
-parsed_module(SourceFile)                         real parser
-lowered_core(SourceFile, TargetProfile)           real AST -> Core lowering
-checked_core(SourceFile, SemanticsProfile, TargetProfile)
-                                                  real module typechecking
-typed_module(...)                                 temporary small summary
-staged_module(...)                                temporary small summary
-runtime_module(...)                               temporary small summary
-
-refcount_module(..., RefcountProfile, ...)        separate strategy query
-tracing_module(..., TracingProfile, ...)          separate strategy query
-region_module(..., RegionProfile, ...)            separate strategy query
-memory_module(..., MemoryProfile, ...)             thin dispatcher
-machine_module(..., TargetProfile)                common backend boundary
-```
-
-The queries return ordinary immutable `Arc` products.  Query bodies call pure
-Rust code and do not perform file writes, invoke external tools, or mutate
-builders.  The driver performs those side effects after the final artifact is
-returned.
-
-Configuration is split by semantic effect.  A backend change must not be a
-dependency of type checking; a memory strategy change must not be a dependency
-of parsing or staging.
-
-## Artifact boundaries
+## Compile path
 
 ```text
 SourceFile
-  -> ParsedModule
-  -> CoreModule
-  -> TypedCoreModule
-  -> StagedCore
-  -> RuntimeModule
-  -> MemoryModule (strategy-specific)
-  -> MachineModule
-  -> Artifact
+  -> ParsedFile
+  -> CoreFile
+  -> TypedFile
+  -> MonomorphizedFile
+  -> ClassifiedFile
+  -> StagedFile
+  -> LinearFile
+  -> RuntimeFile
+  -> MemoryFile
+  -> EmittedFile
 ```
 
-Each product contains facts valid at that boundary only.  Facts from a previous
-rewrite are not carried forward unless a later pass explicitly consumes them.
-The neutral runtime representation contains allocation, load/store, call,
-spawn/suspend, and continuation facts, but no retain/release, safepoint, or
-region operation.
+Every arrow is a Salsa query. Every query does one substantial unit of work
+and calls an ordinary Rust pass:
 
-## Strategy rule
+| Query | Work | Owned by |
+| --- | --- | --- |
+| `parsed_file` | lex and parse one source file | frontend |
+| `core_file` | lower AST to Core | lowering |
+| `typed_file` | type and effect check Core | sema |
+| `monomorphized_file` | create concrete function instances | staging |
+| `classified_file` | evaluate comptime code and classify values | staging |
+| `staged_file` | residualize and specialize | staging |
+| `linear_file` | normalize and lower control to Linear IR | runtime |
+| `runtime_file` | build the runtime CFG | runtime |
+| `memory_file` | apply the selected memory policy | memory |
+| `emitted_file` | render the resulting CFG as C | backend-c |
 
-The dispatch point selects a family and requests only that family query:
+There is one production compile path. The driver creates a `SourceFile` and
+requests the product it needs through `Compiler`. It does not choose between a
+database path and an old path, and it does not carry a mutable interner through
+the pipeline.
+
+## What Salsa does here
+
+A Salsa input is a value supplied from outside the compiler. `SourceFile`
+stores the source id, path, and text.
+
+A tracked query is a cached function. While a query runs, Salsa records which
+other queries it called. If an input changes, Salsa recomputes only products
+that depended on that input.
+
+For example:
+
+```text
+change source text  -> parse and every later query may run again
+change target       -> Core and every later query may run again
+change ARC options  -> only memory and emission may run again
+request C twice     -> the second request reuses the cached result
+```
+
+The compiler uses Salsa only at the artifact boundaries above. Expressions,
+statements, mutable builders, worklists, liveness sets, and pass-local caches
+remain ordinary Rust values. A pass never receives `&dyn Db`; only the small
+query wrapper knows about the database.
+
+The current outputs use `Arc<T>`, `returns(clone)`, and `no_eq`. This gives us a
+simple cached pipeline without forcing IR nodes into Salsa storage. We do not
+use tracked IR structs, Salsa interners, accumulators, cycle recovery,
+snapshots, persistence, or per-expression queries.
+
+Query events and Salsa memory statistics are exposed by `CieloDatabase`. They
+let benchmarks show which queries ran and how much memo storage each query
+uses.
+
+## Artifact types
+
+The file products are separate types so Rust rejects using a product at the
+wrong phase. Their repeated `source` and `interner` fields are generated by
+one private macro:
 
 ```rust
-match memory.model {
-    MemoryModel::ReferenceCounting => refcount_module(db, memory.refcount),
-    MemoryModel::Tracing => tracing_module(db, memory.tracing),
-    MemoryModel::Regions => region_module(db, memory.regions),
-}
+file_artifact!(TypedFile { typed: TypedCore });
+file_artifact!(StagedFile { residual: Residualized });
+file_artifact!(RuntimeFile {
+    residual: Residualized,
+    linear: LinearProgram,
+    cfg: CfgProgram,
+});
 ```
 
-`refcount`, `tracing`, and `regions` may have different analyses and output
-structures.  They converge at `MachineModule`, not at an artificial common
-memory plan.  Each family has a separate algorithm choice: for example tracing
-currently distinguishes mark-and-sweep from semi-space collection, while
-regions distinguishes lexical, constraint-based, and flow-sensitive variants.
-The driver exposes these as `--memory`, `--refcount-algorithm`,
-`--tracing-collector`, and `--region-algorithm` experiment switches.
+This is intentionally a macro rather than one enum. An enum would make every
+consumer match a phase variant and would allow a function to accept the wrong
+phase. Distinct types keep the boundary checked at compile time while the
+macro removes boilerplate.
 
-## Cycle rules
+An artifact contains only facts needed at or after its boundary. Pass-local
+tables should be dropped when their phase ends unless diagnostics or a later
+pass genuinely consumes them.
 
-- Put only stable vocabulary below sibling algorithm crates.  Do not make a
-  catch-all model crate own algorithm facts or arena identities.
-- Put orchestration above sibling crates.  The Salsa wrapper stays in
-  `cielo-db`; a pure integration solver can live below it.
-- If two analyses are genuinely simultaneous, expose one solver returning one
-  product (for example `StageEffectSolution`) instead of two queries calling
-  each other.
-- Compute recursive SCCs explicitly inside one query.  Do not rely on an
-  accidental Salsa query cycle for ordinary compiler recursion.
+## Production crate direction
 
-## Implementation order
+Cargo dependencies form this acyclic graph:
 
-1. **Done:** add the workspace and this document.
-2. **Done:** extract `cielo-base` and make the old `common` module re-export it.
-3. **Done:** move the real Core/Linear/CFG definitions into `cielo-ir` without
-   redesigning Core.
-4. Add `cielo-db` with source/profile inputs and coarse queries.  Keep query
-   wrappers thin and pure. **Done:** parsing, Core lowering, and typechecking
-   are real queries; execution events and memo memory statistics are exposed.
-5. Add strategy-specific memory products and a neutral runtime manifest.
-   **Done:** this lives in `cielo-memory`, with a backend-neutral machine
-   boundary in `cielo-backend-api`.
-6. Move frontend and semantic code behind those boundaries. **Done:** their
-   files and tests are physically owned by `cielo-frontend`, `cielo-lowering`,
-   and `cielo-sema`; there are no `include!` shims.
-7. Move the CLI to `cielo-driver`. **Done.** The repository root is now a pure
-   workspace and has no `src`, `tests`, or `benches` directory.
-8. **Done:** move monomorphization/comptime/BTA/residualization, their phase
-   products, normalization, constant tables, local analyses, and staging
-   reports/diffs into `cielo-staging`.  The old `cielo::passes` and
-   `cielo::pipeline::*` paths are reexports only.
-9. Replace the temporary `RuntimeModule` summary with the real runtime CFG,
-   then finish porting the existing RC implementation into
-   `cielo-memory::refcount` (the active CFG liveness/ARC insertion slice is
-   already there).  Tracing and region experiments remain siblings and may use
-   different facts.
-10. **Partly done:** pure C rendering and the runtime header live in
-    `cielo-backend-c`.  Move CFG/linear lowering out next, then move the thin C
-    orchestration wrapper and retire the `cielo-compiler` compatibility
-    modules.
+```text
+cielo-base
+  <- cielo-frontend
+  <- cielo-ir
 
-## First-pass acceptance checks
+cielo-base + frontend + ir
+  <- cielo-lowering
 
-- `cargo check --workspace` and the existing test suite still pass.
-- A source edit invalidates parse and downstream products, while changing only
-  the memory profile does not call parse/type queries.
-- Selecting reference counting does not execute tracing or region code.
-- The dependency graph has no Cargo cycles and `cielo-db` is the only Salsa
-  consumer.
-- The old Core remains unchanged in this branch; replacing it later should
-  require changing an artifact adapter, not the database or driver contract.
-- No unit tests live under any crate's `src`; each crate owns integration tests
-  in its own `tests` directory.
+cielo-base + ir
+  <- cielo-sema
+  <- cielo-staging
+  <- cielo-runtime
+  <- cielo-memory
 
-## Deliberate temporary seams
+cielo-base + ir
+  <- cielo-backend-c
 
-- `parsed_module`, `lowered_core`, and `checked_core` are real compiler work.
-  The current `staged_module` and `runtime_module` queries are summaries until
-  comptime file reads become explicit database inputs and the real runtime CFG
-  is the query output.
-- `cielo-memory` temporarily depends on `cielo-staging` because the legacy ARC
-  CFG pass still accepts `SemanticTables` and writes legacy `ArcStats`.  The
-  real `RuntimeCfg -> refcount/tracing/regions` boundary removes that edge.
-- `cielo-compiler` remains a compatibility and integration crate for linear
-  lowering, CFG construction, and backend orchestration.  It no longer owns
-  parsing, Core lowering, typechecking, staging, the active ARC CFG pass, or C
-  rendering.
+all pass crates
+  <- cielo-db
+  <- cielo-compiler
+  <- cielo-driver
+```
+
+The compact drawing shows ownership, not every direct Cargo edge. The rules
+that matter are:
+
+- `cielo-base` owns ids, spans, symbols, diagnostics, and containers.
+- `cielo-ir` owns Core, Linear, CFG, target, and boundary data types.
+- Algorithm crates own passes over those types.
+- `cielo-db` is the only crate that knows Salsa and composes algorithm crates.
+- `cielo-compiler` is a thin public facade containing config and a database.
+- `cielo-driver` owns CLI behavior, file I/O, C tool invocation, and running
+  executables.
+- `cielo-backend-c` depends only on base and IR in production. It receives a
+  CFG, interner, and constant table; it does not receive a staging product.
+- `cielo-memory` owns `GcConfig`. It has no production dependency on staging.
+
+`cielo-test-support` is dev-only. It lets component tests assemble ordinary
+passes without putting a second compiler path back into production. Each
+crate's integration tests live in that crate's `tests/` directory; no tests
+live under crate `src/`.
+
+## Preventing dependency cycles
+
+Use three rules:
+
+1. Shared data goes below both users. For example, an effect row used by
+   staging and type checking belongs in base or IR, not in either algorithm.
+2. Interaction code goes above independent algorithms. If two passes need to
+   be combined, `cielo-db` calls them in order without either crate importing
+   the other.
+3. Truly inseparable algorithms live in one crate and expose one result. If
+   effects and staging must reach a fixed point together, one solver returns
+   both facts.
+
+For recursive calls, compute the call graph and SCCs, then solve one SCC inside
+one query. Do not make `summary(a)` and `summary(b)` recursively call each
+other through Salsa.
+
+Modules inside one crate may share private helpers. We only split a crate when
+the new boundary has a stable input and output; crate splitting is not a goal
+by itself.
+
+## Memory experiments
+
+Only disabled memory management and ARC are implemented today. Production
+configuration contains only those choices.
+
+ARC lives under `cielo-memory::refcount` and owns its liveness, last-use,
+retain/release insertion, optimization, and verification. Its query runs only
+when the current `GcConfig` enables ARC.
+
+When a tracing collector is implemented, add it as a sibling module with its
+own analyses and output. Add its query at that time, then make a thin dispatch
+point choose ARC or tracing. A tracing query may ask for root maps and
+safepoints; it should not run ARC ownership analyses. The same rule applies to
+a future region implementation.
+
+Variants within one family stay inside that family. For example, two real ARC
+planners can be selected by a small enum in `refcount`; they do not require a
+compiler-wide strategy trait. Use a trait only when implementations really
+share one stable contract and need open-ended substitution.
+
+The memory query is downstream from `RuntimeFile`. Therefore changing the
+memory configuration does not invalidate parsing, typing, staging, or CFG
+construction. Unselected future strategies will not execute because Salsa is
+demand driven.
+
+## Adding a pass or IR
+
+- A mandatory pass within an existing phase is an ordinary Rust function
+  called inside that phase's query.
+- An expensive result reused by several later computations may become a query
+  at file, function, instance, or SCC granularity.
+- A new semantic boundary gets a new artifact type and lowering query.
+- Do not make `type_of_expr`, `lower_statement`, or similar node queries.
+- Give a pass only its explicit input product and configuration. Do not pass a
+  whole compiler config or use the database as a service locator.
+- Side effects stay in the driver. Queries return data; they do not write
+  files or invoke C tools.
+
+## Running it
+
+```sh
+cargo run -p cielo-driver -- \
+  crates/cielo-compiler/examples/v1_test.cielo --emit-c
+
+cargo test --workspace --no-fail-fast
+```
+
+The database tests also verify reuse: requesting a downstream artifact twice
+does not execute its upstream queries twice, and changing only memory options
+reuses the runtime result.
+
+## Acceptance checks
+
+- The workspace has no root `src`; implementation files are physically owned
+  by crates.
+- Production Cargo dependencies are acyclic.
+- `cielo-db` is the only Salsa consumer.
+- Query count scales with files and phase products, not AST or IR nodes.
+- The C backend has no production staging dependency.
+- Memory configuration and implementation are owned by `cielo-memory`.
+- The public compiler and driver have one database-backed path.
+- No unimplemented collector appears in production configuration.
+- Replacing Core later changes the relevant adapters and query products, not
+  the driver or every compiler crate.
