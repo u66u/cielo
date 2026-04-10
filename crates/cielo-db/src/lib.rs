@@ -156,7 +156,8 @@ impl Default for CompileProfile {
 }
 
 macro_rules! file_artifact {
-    ($name:ident { $($field:ident: $ty:ty),+ $(,)? }) => {
+    ($(#[$meta:meta])* $name:ident { $($field:ident: $ty:ty),+ $(,)? }) => {
+        $(#[$meta])*
         #[derive(Clone, Debug)]
         pub struct $name {
             pub source: SourceId,
@@ -166,32 +167,50 @@ macro_rules! file_artifact {
     };
 }
 
-file_artifact!(ParsedFile {
+file_artifact!(
+    /// Parsed syntax and diagnostics for one source file.
+    ParsedFile {
     path: String,
     ast: Program,
     diagnostics: DiagnosticBag,
-});
+    }
+);
 
-file_artifact!(CoreFile { core: LowerOutput });
-file_artifact!(TypedFile { typed: TypedCore });
-file_artifact!(MonomorphizedFile {
-    mono: Monomorphized
-});
-file_artifact!(ClassifiedFile {
-    classified: BtaClassified,
-});
-file_artifact!(StagedFile {
-    residual: Residualized,
-});
-file_artifact!(LinearFile {
-    residual: Residualized,
-    linear: LinearProgram,
-});
-file_artifact!(RuntimeFile {
-    residual: Residualized,
-    linear: LinearProgram,
-    cfg: CfgProgram,
-});
+file_artifact!(
+    /// Core lowering output for one source file.
+    CoreFile { core: LowerOutput }
+);
+file_artifact!(
+    /// Typechecked Core and facts for one source file.
+    TypedFile { typed: TypedCore }
+);
+file_artifact!(
+    /// Core after concrete function instances have been created.
+    MonomorphizedFile { mono: Monomorphized }
+);
+file_artifact!(
+    /// Monomorphized Core with comptime/runtime classifications.
+    ClassifiedFile { classified: BtaClassified }
+);
+file_artifact!(
+    /// Runtime-only Core after residualization and specialization.
+    StagedFile { residual: Residualized }
+);
+file_artifact!(
+    /// Normalized runtime Core and its Linear IR.
+    LinearFile {
+        residual: Residualized,
+        linear: LinearProgram,
+    }
+);
+file_artifact!(
+    /// Runtime CFG plus the products needed by downstream memory lowering.
+    RuntimeFile {
+        residual: Residualized,
+        linear: LinearProgram,
+        cfg: CfgProgram,
+    }
+);
 
 #[derive(Clone, Debug)]
 pub struct MemoryFile {

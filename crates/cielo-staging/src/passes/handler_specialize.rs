@@ -19,18 +19,16 @@
 use cielo_ir::function_graph::{collect_reachable_functions, prune_unreachable_functions};
 use std::collections::{HashMap, HashSet};
 
-use cielo_base::diagnostics::ErrorNode;
-use cielo_base::{
-    DiagnosticId, EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, VarId,
-};
-use cielo_base::span::Span;
-use cielo_ir::core::{
-    CoreProgram, ExprKind, ExprNode, FunctionDecl, HandlerDef, StmtKind, StmtNode,
-};
 use crate::passes::constant_table;
 use crate::pipeline::phases::{
     BtaTables, CtPropagationTables, Reason, Residualized, SemanticTables, SpecializationStats,
     Stage,
+};
+use cielo_base::diagnostics::ErrorNode;
+use cielo_base::span::Span;
+use cielo_base::{DiagnosticId, EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, VarId};
+use cielo_ir::core::{
+    CoreProgram, ExprKind, ExprNode, FunctionDecl, HandlerDef, StmtKind, StmtNode,
 };
 use cielo_ir::effect::SortedEffectRow;
 

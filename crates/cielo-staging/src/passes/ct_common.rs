@@ -3,12 +3,12 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
+use crate::pipeline::phases::{BranchDecision, CtCacheKey, CtEvalStats, CtFileDep, SemanticTables};
 use cielo_base::densemap::DenseMap;
 use cielo_base::{EffectLabelId, ExprId};
 use cielo_ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, OpCategory, UnaryOp};
-use cielo_ir::target::{Endianness, TargetSpec};
-use crate::pipeline::phases::{BranchDecision, CtCacheKey, CtEvalStats, CtFileDep, SemanticTables};
 use cielo_ir::effect::EffectFlags;
+use cielo_ir::target::{Endianness, TargetSpec};
 
 pub(super) const EVALUATOR_POLICY: &str = "v1-int-wrap-litnorm";
 

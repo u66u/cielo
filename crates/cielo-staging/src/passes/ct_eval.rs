@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
+use crate::passes::ct_common;
+use crate::pipeline::phases::{CtPropagated, CtPropagationTables, Monomorphized};
 use cielo_base::densemap::DenseMap;
 use cielo_base::{ExprId, FuncId, StmtId, VarId};
 use cielo_ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, StageDirective, UnaryOp};
-use crate::passes::ct_common;
 use cielo_ir::target::TargetSpec;
-use crate::pipeline::phases::{CtPropagated, CtPropagationTables, Monomorphized};
 
 const MAX_CALL_EVAL_DEPTH: usize = 32;
 

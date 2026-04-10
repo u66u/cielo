@@ -4,9 +4,9 @@ use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::Path;
 
+use crate::pipeline::phases::{BtaTables, Stage};
 use cielo_base::ExprId;
 use cielo_ir::core::{CoreProgram, ExprKind};
-use crate::pipeline::phases::{BtaTables, Stage};
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct StageSnapshotEntry {

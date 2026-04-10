@@ -24,12 +24,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cielo_ir::function_graph::collect_reachable_functions;
-use cielo_base::{ExprId, FuncId, HandlerId, StmtId, VarId};
-use cielo_base::span::Span;
-use cielo_ir::core::{CoreProgram, ExprKind, ExprNode, MatchArm, StmtKind, StmtNode};
 use crate::passes::constant_table;
 use crate::pipeline::phases::Residualized;
+use cielo_base::span::Span;
+use cielo_base::{ExprId, FuncId, HandlerId, StmtId, VarId};
+use cielo_ir::core::{CoreProgram, ExprKind, ExprNode, MatchArm, StmtKind, StmtNode};
+use cielo_ir::function_graph::collect_reachable_functions;
 use cielo_sema::typecheck::typecheck_core;
 
 const MAX_SHRINK_ITERS: usize = 16;

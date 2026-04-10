@@ -1,13 +1,13 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use cielo_base::{LinearExprId, SymbolId};
-use cielo_ir::core::CoreProgram;
-use cielo_ir::linear::LinearProgram;
-use cielo_ir::walk::{IrExprNode, IrProgram};
 use crate::pipeline::phases::{
     ConstantEmbedStrategy, ConstantEntry, ConstantKey, ConstantTable, CtorFieldKey, CtorLiteralKey,
     ScalarLiteralKey,
 };
+use cielo_base::{LinearExprId, SymbolId};
+use cielo_ir::core::CoreProgram;
+use cielo_ir::linear::LinearProgram;
+use cielo_ir::walk::{IrExprNode, IrProgram};
 
 pub const MAX_CONST_ENTRY_BYTES: usize = 1024;
 pub const MAX_CONST_POOL_BYTES: usize = 16 * 1024;

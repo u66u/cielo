@@ -20,11 +20,7 @@ pub struct TypedCore {
 }
 
 impl TypedCore {
-    pub fn new(
-        program: CoreProgram,
-        diagnostics: DiagnosticBag,
-        facts: SemanticTables,
-    ) -> Self {
+    pub fn new(program: CoreProgram, diagnostics: DiagnosticBag, facts: SemanticTables) -> Self {
         Self {
             program,
             diagnostics,

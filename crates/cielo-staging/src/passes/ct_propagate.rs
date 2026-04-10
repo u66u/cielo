@@ -18,8 +18,8 @@
 // - O(expr_count * fixpoint_iters), with small bounded iter count in practice
 
 use crate::passes::ct_common;
-use cielo_ir::target::TargetSpec;
 use crate::pipeline::phases::{CtPropagated, CtPropagationTables, Monomorphized};
+use cielo_ir::target::TargetSpec;
 
 pub fn run(mono: Monomorphized, target: TargetSpec) -> CtPropagated {
     ct_common::assert_pre_staging_effects_concrete(mono.program());

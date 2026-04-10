@@ -1,12 +1,12 @@
 use std::collections::HashSet;
 
+use crate::refcount::analysis::cfg_liveness::{CfgLiveness, CfgUseSite};
 use cielo_base::diagnostics::DiagnosticBag;
 use cielo_base::ids::{CfgExprId, CfgValueId};
 use cielo_base::span::Span;
 use cielo_ir::cfg::{
     CfgArcOp, CfgArcOpKind, CfgExpr, CfgProgram, CfgProjectionMode, CfgTerminator,
 };
-use crate::refcount::analysis::cfg_liveness::{CfgLiveness, CfgUseSite};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct CfgArcVerifyStats {
@@ -16,10 +16,7 @@ pub struct CfgArcVerifyStats {
     pub errors: u32,
 }
 
-pub fn verify(
-    cfg: &CfgProgram,
-    diagnostics: &mut DiagnosticBag,
-) -> CfgArcVerifyStats {
+pub fn verify(cfg: &CfgProgram, diagnostics: &mut DiagnosticBag) -> CfgArcVerifyStats {
     let mut stats = CfgArcVerifyStats::default();
     if let Err(errors) = cfg.validate() {
         for error in errors {

@@ -18,12 +18,12 @@
 
 use std::collections::HashSet;
 
-use cielo_base::{EffectLabelId, ExprId, HandlerId, StmtId};
-use cielo_ir::core::{CoreProgram, ExprKind, StageDirective, StmtKind};
 use crate::pipeline::phases::{
     BtaClassified, BtaTables, ClauseDischarge, CtPropagated, HandlerDischarge, Knownness, Reason,
     SemanticTables, Stage,
 };
+use cielo_base::{EffectLabelId, ExprId, HandlerId, StmtId};
+use cielo_ir::core::{CoreProgram, ExprKind, StageDirective, StmtKind};
 use cielo_ir::effect::{
     EffectFlags, EffectProperties, SortedEffectRow, first_non_thunkable_effect, is_thunkable,
 };
@@ -766,11 +766,7 @@ fn refine_expr_stage(expr_id: ExprId, reason: Reason, bta: &mut BtaTables) -> bo
     }
 }
 
-fn refine_var_stage(
-    var_id: cielo_base::VarId,
-    reason: Reason,
-    bta: &mut BtaTables,
-) -> bool {
+fn refine_var_stage(var_id: cielo_base::VarId, reason: Reason, bta: &mut BtaTables) -> bool {
     match bta.stage_of_var.get(&var_id).copied() {
         Some(Stage::Ct) => false,
         Some(Stage::Rt(Reason::UnclassifiedRuntime)) => {

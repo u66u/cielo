@@ -1,15 +1,12 @@
-use std::collections::HashSet;
 use crate::passes::{bta, ct_eval, handler_specialize, residualize};
-use cielo_ir::target::TargetSpec;
 use crate::pipeline::phases::{
     BranchDecision, BtaClassified, Monomorphized, Reason, Residualized, Stage,
 };
+use cielo_ir::target::TargetSpec;
+use std::collections::HashSet;
 
 /// v1 fused stage A: Evaluate+Classify.
-pub fn evaluate_classify(
-    mono: Monomorphized,
-    target: TargetSpec,
-) -> BtaClassified {
+pub fn evaluate_classify(mono: Monomorphized, target: TargetSpec) -> BtaClassified {
     let ct = ct_eval::run(mono, target);
     let classified = bta::run(ct);
     assert_evaluate_classify_invariants(&classified);
@@ -318,7 +315,6 @@ fn assert_residualize_specialize_invariants(residual: &crate::pipeline::phases::
         residual_tables.constant_table.total_size_bytes <= total_constant_bytes,
         "compiler bug: residual constant_table size accounting is inconsistent"
     );
-
 }
 
 fn assert_stage_reason_in_bounds(stage: Stage, function_count: usize, context: &str) {

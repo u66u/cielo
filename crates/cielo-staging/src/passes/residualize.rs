@@ -21,14 +21,14 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cielo_base::{ExprId, FuncId, HandlerId, StmtId, VarId};
-use cielo_base::span::Span;
-use cielo_ir::core::{CoreProgram, ExprKind, Literal, MatchArm, StmtKind, StmtNode};
 use crate::passes::constant_table;
 use crate::pipeline::phases::{
     BranchDecision, BtaClassified, BtaTables, CtPropagationTables, Knownness, ResidualTables,
     ResidualizeStats, Residualized, Stage,
 };
+use cielo_base::span::Span;
+use cielo_base::{ExprId, FuncId, HandlerId, StmtId, VarId};
+use cielo_ir::core::{CoreProgram, ExprKind, Literal, MatchArm, StmtKind, StmtNode};
 use cielo_ir::effect::SortedEffectRow;
 
 pub fn run(bta: BtaClassified) -> Residualized {
