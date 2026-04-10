@@ -22,7 +22,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::facts::SemanticTables;
-use crate::ownership::{OwnershipClass, classify_core_type_ref, classify_type_kind};
+use crate::ownership::{classify_core_type_ref, classify_type_kind};
 use crate::ty::{EnumVariant, PrimitiveType, StructField, TypeKind, TypeStore};
 use cielo_base::Span;
 use cielo_base::densemap::DenseMap;
@@ -32,6 +32,7 @@ use cielo_ir::core::{
     CoreProgram, CoreTypeRef, ExprKind, Literal, OpCategory, PrimitiveTypeRef, StmtKind, UnaryOp,
 };
 use cielo_ir::effect::SortedEffectRow;
+use cielo_ir::ownership::OwnershipClass;
 
 macro_rules! define_primitive_type_ids {
     ($($field:ident => $primitive:ident),* $(,)?) => {

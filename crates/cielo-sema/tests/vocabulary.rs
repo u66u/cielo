@@ -1,6 +1,7 @@
 use cielo_base::SymbolId;
 use cielo_ir::core::{CoreTypeRef, PrimitiveTypeRef};
-use cielo_sema::ownership::{OwnershipClass, classify_core_type_ref};
+use cielo_ir::ownership::OwnershipClass;
+use cielo_sema::ownership::classify_core_type_ref;
 use cielo_sema::ty::{Persistability, PrimitiveType, TypeKind, TypeStore};
 
 #[test]

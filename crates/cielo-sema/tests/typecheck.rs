@@ -3,8 +3,8 @@ use cielo_base::{EffectLabelId, Interner, SourceId, Span};
 use cielo_frontend::parser::parse_source;
 use cielo_ir::core::{BinaryOp, CoreProgram, ExprKind, ExprNode, Literal, StmtKind};
 use cielo_ir::effect::{CapabilityLevel, EffectFlags, SortedEffectRow, is_thunkable};
+use cielo_ir::ownership::OwnershipClass;
 use cielo_lowering::{LowerConfig, lower_program};
-use cielo_sema::ownership::OwnershipClass;
 use cielo_sema::typecheck::typecheck_core;
 
 #[test]
@@ -69,7 +69,7 @@ fn main() -> Int {
         sema.ownership_of_expr[int_literal_expr],
         OwnershipClass::Trivial
     );
-    assert_eq!(sema.ownership_of_expr[ctor_expr], OwnershipClass::RcManaged);
+    assert_eq!(sema.ownership_of_expr[ctor_expr], OwnershipClass::Managed);
 
     let mut literal_binding = None;
     let mut ctor_binding = None;
@@ -100,7 +100,7 @@ fn main() -> Int {
     );
     assert_eq!(
         sema.ownership_of_var.get(&ctor_binding).copied(),
-        Some(OwnershipClass::RcManaged)
+        Some(OwnershipClass::Managed)
     );
 }
 

@@ -812,7 +812,7 @@ fn synchronize_semantic_tables(program: &CoreProgram, sema: &mut SemanticTables)
     if sema.ownership_of_expr.len() < expr_count {
         sema.ownership_of_expr.resize(
             expr_count,
-            cielo_sema::ownership::OwnershipClass::BorrowedView,
+            cielo_ir::ownership::OwnershipClass::BorrowedView,
         );
     }
     if sema.effects_of_stmt.len() < stmt_count {
@@ -1417,11 +1417,11 @@ impl<'a> GraphCloner<'a> {
             .ownership_of_expr
             .get(source.index())
             .copied()
-            .unwrap_or(cielo_sema::ownership::OwnershipClass::BorrowedView);
+            .unwrap_or(cielo_ir::ownership::OwnershipClass::BorrowedView);
         if self.sema.ownership_of_expr.len() <= cloned.index() {
             self.sema.ownership_of_expr.resize(
                 cloned.index() + 1,
-                cielo_sema::ownership::OwnershipClass::BorrowedView,
+                cielo_ir::ownership::OwnershipClass::BorrowedView,
             );
         }
         self.sema.ownership_of_expr[cloned.index()] = ownership;

@@ -1,31 +1,6 @@
 use crate::ty::{PrimitiveType, TypeKind};
 use cielo_ir::core::CoreTypeRef;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum OwnershipClass {
-    #[default]
-    Trivial,
-    /// A value requiring a strategy-specific managed representation.
-    Managed,
-    BorrowedView,
-}
-
-impl OwnershipClass {
-    /// Compatibility name for the pre-database ARC implementation.  New
-    /// analyses should use `Managed`; the semantic layer does not choose a
-    /// collector.
-    #[allow(non_upper_case_globals)]
-    pub const RcManaged: Self = Self::Managed;
-
-    pub fn merge(self, other: Self) -> Self {
-        use OwnershipClass::{BorrowedView, Managed, Trivial};
-        match (self, other) {
-            (Managed, _) | (_, Managed) => Managed,
-            (BorrowedView, _) | (_, BorrowedView) => BorrowedView,
-            (Trivial, Trivial) => Trivial,
-        }
-    }
-}
+use cielo_ir::ownership::OwnershipClass;
 
 pub fn classify_type_kind(kind: &TypeKind) -> OwnershipClass {
     match kind {

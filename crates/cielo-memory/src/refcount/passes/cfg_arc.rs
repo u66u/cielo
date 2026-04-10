@@ -12,7 +12,8 @@ use cielo_base::ids::{CfgBlockId, CfgExprId, CfgInstId, CfgValueId};
 use cielo_ir::cfg::{
     CfgArcOp, CfgArcOpKind, CfgExpr, CfgInstruction, CfgProgram, CfgProjectionMode, CfgTerminator,
 };
-use cielo_sema::{OwnershipClass, SemanticTables};
+use cielo_ir::ownership::OwnershipClass;
+use cielo_sema::SemanticTables;
 
 use crate::GcConfig;
 use crate::refcount::ArcStats;
@@ -44,7 +45,7 @@ pub fn run(cfg: &mut CfgProgram, sema: &SemanticTables, gc: &GcConfig) -> ArcSta
             value
                 .source_var
                 .and_then(|var| sema.ownership_of_var.get(&var).copied())
-                .is_none_or(|class| class == OwnershipClass::RcManaged)
+                .is_none_or(|class| class == OwnershipClass::Managed)
         })
         .collect::<Vec<_>>();
     infer_managed_values(cfg, &mut managed);

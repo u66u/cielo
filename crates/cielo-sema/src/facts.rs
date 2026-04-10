@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use cielo_base::densemap::DenseMap;
 use cielo_base::{EffectLabelId, TypeId, VarId};
 use cielo_ir::effect::{EffectProperties, SortedEffectRow};
+use cielo_ir::ownership::OwnershipClass;
 
-use crate::ownership::OwnershipClass;
 use crate::ty::Persistability;
 
 #[derive(Clone, Debug, Default)]

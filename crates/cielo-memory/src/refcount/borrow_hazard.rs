@@ -4,7 +4,8 @@ use cielo_base::diagnostics::DiagnosticBag;
 use cielo_base::ids::{ExprId, StmtId, VarId};
 use cielo_base::span::Span;
 use cielo_ir::core::{CoreProgram, ExprKind, StmtKind};
-use cielo_sema::{OwnershipClass, SemanticTables};
+use cielo_ir::ownership::OwnershipClass;
+use cielo_sema::SemanticTables;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum BorrowHazardKind {
@@ -322,7 +323,7 @@ fn is_managed(sema: &SemanticTables, var: VarId) -> bool {
         .get(&var)
         .copied()
         .unwrap_or(OwnershipClass::BorrowedView)
-        == OwnershipClass::RcManaged
+        == OwnershipClass::Managed
 }
 
 fn push_site(out: &mut Vec<StmtId>, stmt_id: StmtId) {

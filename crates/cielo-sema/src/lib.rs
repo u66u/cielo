@@ -9,7 +9,6 @@ pub mod ty;
 pub mod typecheck;
 
 pub use facts::SemanticTables;
-pub use ownership::OwnershipClass;
 pub use ty::{Persistability, TypeKind, TypeStore};
 
 #[derive(Clone, Debug)]
