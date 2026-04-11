@@ -439,7 +439,7 @@ fn lower_stmt(
         StmtKind::Error(_) => LinearStmt::Error,
     };
 
-    let id = linear.push_stmt(kind);
+    let id = linear.push_stmt_at(kind, stmt.span);
     stmt_map[stmt_id.index()] = Some(id);
     id
 }

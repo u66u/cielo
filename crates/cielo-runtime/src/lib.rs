@@ -5,3 +5,6 @@
 
 pub mod cfg_lower;
 pub mod linearize;
+pub mod program;
+
+pub use program::assemble_program;

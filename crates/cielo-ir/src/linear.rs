@@ -1,5 +1,5 @@
 use crate::core::{BinaryOp, Literal, StageDirective, UnaryOp};
-use cielo_base::{EffectLabelId, LinearExprId, LinearFuncId, LinearStmtId, SymbolId, VarId};
+use cielo_base::{EffectLabelId, LinearExprId, LinearFuncId, LinearStmtId, Span, SymbolId, VarId};
 use smallvec::{SmallVec, smallvec};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -25,8 +25,12 @@ impl LinearProgram {
     }
 
     pub fn push_stmt(&mut self, kind: LinearStmt) -> LinearStmtId {
+        self.push_stmt_at(kind, Span::synthetic())
+    }
+
+    pub fn push_stmt_at(&mut self, kind: LinearStmt, span: Span) -> LinearStmtId {
         let id = LinearStmtId::new(self.stmts.len());
-        self.stmts.push(LinearStmtNode { kind });
+        self.stmts.push(LinearStmtNode { kind, span });
         id
     }
 
@@ -55,6 +59,7 @@ pub struct LinearExprNode {
 #[derive(Clone, Debug)]
 pub struct LinearStmtNode {
     pub kind: LinearStmt,
+    pub span: Span,
 }
 
 impl LinearStmtNode {
