@@ -12,8 +12,6 @@ use cielo_base::ids::{CfgBlockId, CfgExprId, CfgInstId, CfgValueId};
 use cielo_ir::cfg::{
     CfgArcOp, CfgArcOpKind, CfgExpr, CfgInstruction, CfgProgram, CfgProjectionMode, CfgTerminator,
 };
-use cielo_ir::ownership::OwnershipClass;
-use cielo_sema::SemanticTables;
 
 use crate::GcConfig;
 use crate::refcount::ArcStats;
@@ -31,24 +29,13 @@ enum UseMode {
     Consume,
 }
 
-pub fn run(cfg: &mut CfgProgram, sema: &SemanticTables, gc: &GcConfig) -> ArcStats {
+pub fn run(cfg: &mut CfgProgram, managed: &[bool], gc: &GcConfig) -> ArcStats {
     clear_annotations(cfg);
     if !gc.arc_insertion_enabled() {
         return ArcStats::default();
     }
 
     let liveness = CfgLiveness::analyze(cfg);
-    let mut managed = cfg
-        .values()
-        .iter()
-        .map(|value| {
-            value
-                .source_var
-                .and_then(|var| sema.ownership_of_var.get(&var).copied())
-                .is_none_or(|class| class == OwnershipClass::Managed)
-        })
-        .collect::<Vec<_>>();
-    infer_managed_values(cfg, &mut managed);
     let mut borrowed_binders = HashSet::new();
     let mut stats = ArcStats::default();
     let optimize_moves = gc.arc_optimization_enabled();
@@ -56,7 +43,7 @@ pub fn run(cfg: &mut CfgProgram, sema: &SemanticTables, gc: &GcConfig) -> ArcSta
     plan_match_projections(
         cfg,
         &liveness,
-        &managed,
+        managed,
         optimize_moves,
         &mut borrowed_binders,
         &mut stats,
@@ -70,7 +57,7 @@ pub fn run(cfg: &mut CfgProgram, sema: &SemanticTables, gc: &GcConfig) -> ArcSta
             .unwrap_or_default();
         let mut entry_ops = Vec::new();
         for param in &block.params {
-            if is_managed(&managed, *param)
+            if is_managed(managed, *param)
                 && !entry_live.contains(param)
                 && !borrowed_binders.contains(param)
             {
@@ -99,9 +86,9 @@ pub fn run(cfg: &mut CfgProgram, sema: &SemanticTables, gc: &GcConfig) -> ArcSta
                 _ => {}
             }
             let (pre, mut post) =
-                plan_uses(&counts, &live_after, &managed, optimize_moves, &mut stats);
+                plan_uses(&counts, &live_after, managed, optimize_moves, &mut stats);
             if let CfgInstruction::Let { result, .. } = instruction {
-                if is_managed(&managed, result) && !live_after.contains(&result) {
+                if is_managed(managed, result) && !live_after.contains(&result) {
                     post.push(release(result));
                     bump_release(&mut stats);
                 }
@@ -123,68 +110,13 @@ pub fn run(cfg: &mut CfgProgram, sema: &SemanticTables, gc: &GcConfig) -> ArcSta
         let live_after = liveness.live_after(site).cloned().unwrap_or_default();
         let mut counts = HashMap::new();
         collect_terminator_uses(cfg, &block.terminator, &mut counts);
-        let (pre, post) = plan_uses(&counts, &live_after, &managed, optimize_moves, &mut stats);
+        let (pre, post) = plan_uses(&counts, &live_after, managed, optimize_moves, &mut stats);
         let target = cfg.block_mut(block.id).expect("known CFG block");
         target.terminator_arc.pre = pre;
         target.terminator_arc.post = post;
     }
 
     stats
-}
-
-fn infer_managed_values(cfg: &CfgProgram, managed: &mut [bool]) {
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for block in cfg.blocks() {
-            for instruction in &block.instructions {
-                let Some(instruction) = cfg.instruction(*instruction) else {
-                    continue;
-                };
-                if let CfgInstruction::Let { result, value }
-                | CfgInstruction::Eval { result, value } = instruction.kind
-                    && expr_may_be_managed(cfg, value, managed)
-                    && !managed[result.index()]
-                {
-                    managed[result.index()] = true;
-                    changed = true;
-                }
-            }
-            match &block.terminator {
-                CfgTerminator::Goto { target, args } => {
-                    if let Some(target) = cfg.block(*target) {
-                        for (param, arg) in target.params.iter().zip(args) {
-                            if expr_may_be_managed(cfg, *arg, managed) && !managed[param.index()] {
-                                managed[param.index()] = true;
-                                changed = true;
-                            }
-                        }
-                    }
-                }
-                CfgTerminator::Match {
-                    scrutinee, arms, ..
-                } if expr_may_be_managed(cfg, *scrutinee, managed) => {
-                    for binder in arms.iter().flat_map(|arm| arm.binders.iter()) {
-                        if !managed[binder.index()] {
-                            managed[binder.index()] = true;
-                            changed = true;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-fn expr_may_be_managed(cfg: &CfgProgram, expression: CfgExprId, managed: &[bool]) -> bool {
-    match &cfg.expr(expression).map(|expression| &expression.kind) {
-        Some(CfgExpr::Value(value)) => is_managed(managed, *value),
-        Some(CfgExpr::PureCall { .. })
-        | Some(CfgExpr::MakeStruct { .. })
-        | Some(CfgExpr::MakeEnum { .. }) => true,
-        _ => false,
-    }
 }
 
 fn clear_annotations(cfg: &mut CfgProgram) {
