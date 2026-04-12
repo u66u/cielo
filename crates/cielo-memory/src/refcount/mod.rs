@@ -1,21 +1,11 @@
 //! Reference-counting analysis and lowering.
 
-use cielo_base::DiagnosticBag;
-use cielo_ir::cfg::CfgProgram;
-use cielo_ir::core::CoreProgram;
-use cielo_ir::ownership::OwnershipClass;
-use cielo_ir::runtime::{RuntimeSourceMap, RuntimeValueFacts};
-use cielo_sema::SemanticTables;
-
-use crate::GcConfig;
+use crate::{BorrowHazardReport, GcConfig, MemoryInput, MemoryProgram, MemoryReport};
 
 pub mod analysis;
 pub mod borrow_hazard;
 pub mod passes;
 pub mod verify;
-
-pub use borrow_hazard::BorrowHazardReport;
-pub use verify::CfgArcVerifyStats;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct ArcStats {
@@ -28,51 +18,14 @@ pub struct ArcStats {
     pub final_release_ops: u32,
 }
 
-#[derive(Clone, Copy)]
-pub struct MemoryInput<'a> {
-    pub cfg: &'a CfgProgram,
-    pub core: &'a CoreProgram,
-    pub sema: &'a SemanticTables,
-    pub diagnostics: &'a DiagnosticBag,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct MemoryReport {
-    pub arc: ArcStats,
-    pub verifier: Option<CfgArcVerifyStats>,
-    pub borrow_hazards: BorrowHazardReport,
-}
-
-#[derive(Clone, Debug)]
-pub struct MemoryProgram {
-    pub cfg: CfgProgram,
-    pub diagnostics: DiagnosticBag,
-    pub report: MemoryReport,
-}
-
 pub fn lower(input: MemoryInput<'_>, config: GcConfig) -> MemoryProgram {
-    let mut cfg = input.cfg.clone();
-    let mut diagnostics = input.diagnostics.clone();
-    let value_facts = RuntimeValueFacts::new(
-        cfg.values()
-            .iter()
-            .map(|value| {
-                value
-                    .source_var
-                    .and_then(|var| input.sema.ownership_of_var.get(&var).copied())
-                    .unwrap_or(OwnershipClass::Managed)
-            })
-            .collect(),
-    );
-    let managed_values = analysis::managed::classify(&cfg, &value_facts);
+    let mut cfg = input.runtime.cfg.clone();
+    let mut diagnostics = input.runtime.diagnostics.clone();
+    let managed_values = analysis::managed::classify(&cfg, &input.runtime.values);
     let borrow_hazards = borrow_hazard::analyze(&cfg, &managed_values);
     verify_hazard_report(&borrow_hazards);
     if config.borrow_hazard_diagnostics_enabled() {
-        borrow_hazard::emit_diagnostics(
-            &RuntimeSourceMap::default(),
-            &borrow_hazards,
-            &mut diagnostics,
-        );
+        borrow_hazard::emit_diagnostics(&input.runtime.sources, &borrow_hazards, &mut diagnostics);
     }
     let arc = passes::cfg_arc::run(&mut cfg, &managed_values, &config);
     verify_arc_stats(arc);
@@ -88,6 +41,7 @@ pub fn lower(input: MemoryInput<'_>, config: GcConfig) -> MemoryProgram {
             verifier,
             borrow_hazards,
         },
+        emit_arc_trace_comments: config.arc_emit_trace_enabled(),
     }
 }
 

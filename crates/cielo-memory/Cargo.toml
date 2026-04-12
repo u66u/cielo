@@ -7,11 +7,11 @@ edition = "2024"
 bitflags = "2.11.0"
 cielo-base = { path = "../cielo-base" }
 cielo-ir = { path = "../cielo-ir" }
-cielo-sema = { path = "../cielo-sema" }
 
 [dev-dependencies]
 cielo-backend-c = { path = "../cielo-backend-c" }
 cielo-lowering = { path = "../cielo-lowering" }
 cielo-runtime = { path = "../cielo-runtime" }
+cielo-sema = { path = "../cielo-sema" }
 cielo-staging = { path = "../cielo-staging" }
 cielo-test-support = { path = "../cielo-test-support" }

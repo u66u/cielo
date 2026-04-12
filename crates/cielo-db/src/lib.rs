@@ -9,13 +9,12 @@ use cielo_backend_c as backend_c;
 use cielo_base::{DiagnosticBag, Interner, SourceId};
 use cielo_frontend::{ast::Program, parser::parse_source};
 use cielo_ir::{
-    cfg::CfgProgram,
     linear::LinearProgram,
     target::{Endianness, TargetSpec},
 };
 use cielo_lowering::{LowerConfig, LowerOutput, TargetBuiltinSymbols, lower_program};
 use cielo_memory::{GcConfig, MemoryInput, MemoryProgram};
-use cielo_runtime::{cfg_lower, linearize};
+use cielo_runtime::{assemble_program, cfg_lower, linearize};
 use cielo_sema::{TypedCore, check_core};
 use cielo_staging::{
     passes::{comptime, monomorphize, normalize},
@@ -204,12 +203,8 @@ file_artifact!(
     }
 );
 file_artifact!(
-    /// Runtime CFG plus the products needed by downstream memory lowering.
-    RuntimeFile {
-        residual: Residualized,
-        linear: LinearProgram,
-        cfg: CfgProgram,
-    }
+    /// Self-contained input to memory lowering and backend emission.
+    RuntimeFile { runtime: cielo_ir::runtime::RuntimeProgram }
 );
 
 #[derive(Clone, Debug)]
@@ -330,11 +325,16 @@ pub fn linear_file(db: &dyn Db, source: SourceFile, target: TargetProfile) -> Ar
 pub fn runtime_file(db: &dyn Db, source: SourceFile, target: TargetProfile) -> Arc<RuntimeFile> {
     let linear = linear_file(db, source, target);
     let cfg = cfg_lower::run(&linear.linear);
+    let runtime = assemble_program(
+        cfg,
+        &linear.linear,
+        linear.residual.sema(),
+        linear.residual.residual().constant_table.clone(),
+        linear.residual.diagnostics().clone(),
+    );
     Arc::new(RuntimeFile {
         source: linear.source,
-        residual: linear.residual.clone(),
-        linear: linear.linear.clone(),
-        cfg,
+        runtime,
         interner: linear.interner.clone(),
     })
 }
@@ -349,10 +349,7 @@ pub fn memory_file(
     let runtime = runtime_file(db, source, target);
     let memory = cielo_memory::lower(
         MemoryInput {
-            cfg: &runtime.cfg,
-            core: runtime.residual.program(),
-            sema: runtime.residual.sema(),
-            diagnostics: runtime.residual.diagnostics(),
+            runtime: &runtime.runtime,
         },
         gc,
     );
@@ -370,8 +367,8 @@ pub fn emitted_file(
     let c_source = backend_c::emit(
         &memory.memory.cfg,
         &memory.runtime.interner,
-        &memory.runtime.residual.residual().constant_table,
-        gc.arc_emit_trace_enabled(),
+        &memory.runtime.runtime.constants,
+        memory.memory.emit_arc_trace_comments,
     );
     Arc::new(EmittedFile { memory, c_source })
 }

@@ -1,14 +1,48 @@
-//! Implemented memory management for runtime CFGs.
-//!
-//! Reference counting is the only managed strategy currently implemented.
-//! Add a strategy dispatcher only when a second implementation exists.
+//! Memory management over the self-contained runtime artifact.
+
+use cielo_base::DiagnosticBag;
+use cielo_ir::cfg::CfgProgram;
+use cielo_ir::runtime::RuntimeProgram;
 
 pub mod config;
 pub mod refcount;
 
 pub use config::{GcConfig, GcFeatureFlags, GcMode, GcPreset};
-pub use refcount::{ArcStats, MemoryInput, MemoryProgram, MemoryReport, lower};
+pub use refcount::ArcStats;
+pub use refcount::borrow_hazard::BorrowHazardReport;
+pub use refcount::verify::CfgArcVerifyStats;
 
-// Future memory strategies belong beside `refcount`, with their own inputs,
-// analyses, and result types. They should not be added to configuration until
-// they can lower a real runtime CFG.
+#[derive(Clone, Copy)]
+pub struct MemoryInput<'a> {
+    pub runtime: &'a RuntimeProgram,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct MemoryReport {
+    pub arc: ArcStats,
+    pub verifier: Option<CfgArcVerifyStats>,
+    pub borrow_hazards: BorrowHazardReport,
+}
+
+#[derive(Clone, Debug)]
+pub struct MemoryProgram {
+    pub cfg: CfgProgram,
+    pub diagnostics: DiagnosticBag,
+    pub report: MemoryReport,
+    pub emit_arc_trace_comments: bool,
+}
+
+pub fn lower(input: MemoryInput<'_>, config: GcConfig) -> MemoryProgram {
+    match config.mode {
+        GcMode::Off => MemoryProgram {
+            cfg: input.runtime.cfg.clone(),
+            diagnostics: input.runtime.diagnostics.clone(),
+            report: MemoryReport::default(),
+            emit_arc_trace_comments: false,
+        },
+        GcMode::Arc => refcount::lower(input, config),
+    }
+}
+
+// A future implemented strategy gets a sibling module and a branch in
+// `lower`. Its private analyses do not become a mandatory common pipeline.

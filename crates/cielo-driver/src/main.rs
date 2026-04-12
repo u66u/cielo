@@ -153,12 +153,15 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
         return;
     }
 
-    let runtime = compiler.runtime(db_source);
     if should_dump(cli, DumpKind::Linear) {
-        println!("=== Linear IR ===\n{:#?}", runtime.linear);
+        println!(
+            "=== Linear IR ===\n{:#?}",
+            compiler.linear(db_source).linear
+        );
     }
+    let runtime = compiler.runtime(db_source);
     if should_dump(cli, DumpKind::Cfg) {
-        println!("=== CFG IR ===\n{:#?}", runtime.cfg);
+        println!("=== CFG IR ===\n{:#?}", runtime.runtime.cfg);
     }
 
     if should_dump(cli, DumpKind::Memory) {

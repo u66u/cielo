@@ -56,21 +56,20 @@ pub fn emit_pipeline(
     interner: &Interner,
     gc: GcConfig,
 ) -> CompiledC {
-    let managed = cielo_memory::lower(
-        MemoryInput {
-            cfg: &cfg,
-            core: residual.program(),
-            sema: residual.sema(),
-            diagnostics: residual.diagnostics(),
-        },
-        gc,
+    let runtime = cielo_runtime::assemble_program(
+        cfg,
+        &linear,
+        residual.sema(),
+        residual.residual().constant_table.clone(),
+        residual.diagnostics().clone(),
     );
+    let managed = cielo_memory::lower(MemoryInput { runtime: &runtime }, gc);
     *residual.diagnostics_mut() = managed.diagnostics;
     let c_source = cielo_backend_c::emit(
         &managed.cfg,
         interner,
-        &residual.residual().constant_table,
-        gc.arc_emit_trace_enabled(),
+        &runtime.constants,
+        managed.emit_arc_trace_comments,
     );
     CompiledC {
         residual,

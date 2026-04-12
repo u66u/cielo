@@ -9,7 +9,7 @@ use cielo_frontend::{ParseOutput, parse_source};
 use cielo_ir::{cfg::CfgProgram, core::CoreProgram, linear::LinearProgram};
 use cielo_lowering::{LowerConfig, LowerOutput, TargetBuiltinSymbols, lower_program};
 use cielo_memory::{GcConfig, GcPreset, MemoryInput, MemoryReport};
-use cielo_runtime::{cfg_lower, linearize};
+use cielo_runtime::{assemble_program, cfg_lower, linearize};
 use cielo_sema::{TypedCore, check_core};
 use cielo_staging::{
     passes::{bta, comptime, ct_eval, handler_specialize, monomorphize, normalize, residualize},
@@ -193,21 +193,20 @@ pub fn emit_lowered(
     interner: &Interner,
     gc: GcConfig,
 ) -> CompiledC {
-    let managed = cielo_memory::lower(
-        MemoryInput {
-            cfg: &cfg,
-            core: residual.program(),
-            sema: residual.sema(),
-            diagnostics: residual.diagnostics(),
-        },
-        gc,
+    let runtime = assemble_program(
+        cfg,
+        &linear,
+        residual.sema(),
+        residual.residual().constant_table.clone(),
+        residual.diagnostics().clone(),
     );
+    let managed = cielo_memory::lower(MemoryInput { runtime: &runtime }, gc);
     *residual.diagnostics_mut() = managed.diagnostics;
     let c_source = cielo_backend_c::emit(
         &managed.cfg,
         interner,
-        &residual.residual().constant_table,
-        gc.arc_emit_trace_enabled(),
+        &runtime.constants,
+        managed.emit_arc_trace_comments,
     );
     CompiledC {
         residual,
