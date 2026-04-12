@@ -1,11 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use cielo_base::diagnostics::DiagnosticBag;
-use cielo_base::ids::{ExprId, StmtId, VarId};
-use cielo_base::span::Span;
-use cielo_ir::core::{CoreProgram, ExprKind, StmtKind};
-use cielo_ir::ownership::OwnershipClass;
-use cielo_sema::SemanticTables;
+use cielo_base::{CfgBlockId, CfgExprId, CfgInstId, CfgValueId, DiagnosticBag, Span};
+use cielo_ir::cfg::{CfgExpr, CfgInstruction, CfgProgram, CfgTerminator};
+use cielo_ir::runtime::RuntimeSourceMap;
+
+use crate::refcount::analysis::managed::is_managed;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum BorrowHazardKind {
@@ -46,15 +45,44 @@ impl BorrowHazardKind {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum BorrowHazardSite {
+    Instruction(CfgInstId),
+    Terminator(CfgBlockId),
+}
+
+impl BorrowHazardSite {
+    fn sort_key(self) -> (u8, usize) {
+        match self {
+            Self::Instruction(id) => (0, id.index()),
+            Self::Terminator(id) => (1, id.index()),
+        }
+    }
+
+    fn label(self) -> String {
+        match self {
+            Self::Instruction(id) => format!("i{}", id.as_u32()),
+            Self::Terminator(id) => format!("b{}", id.as_u32()),
+        }
+    }
+
+    fn span(self, sources: &RuntimeSourceMap) -> Span {
+        match self {
+            Self::Instruction(id) => sources.instruction_span(id),
+            Self::Terminator(id) => sources.block_span(id),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct BorrowHazardHotspot {
     pub kind: BorrowHazardKind,
-    pub stmt: StmtId,
+    pub site: BorrowHazardSite,
 }
 
 impl BorrowHazardHotspot {
     pub fn repro_key(self) -> String {
-        format!("{}-s{}", self.kind.repro_tag(), self.stmt.as_u32())
+        format!("{}-{}", self.kind.repro_tag(), self.site.label())
     }
 }
 
@@ -63,86 +91,63 @@ pub struct BorrowHazardReport {
     pub alias_fanout_count: u32,
     pub projection_count: u32,
     pub call_escape_count: u32,
-    pub alias_fanout_sites: Vec<StmtId>,
-    pub projection_sites: Vec<StmtId>,
-    pub call_escape_sites: Vec<StmtId>,
+    pub alias_fanout_sites: Vec<CfgInstId>,
+    pub projection_sites: Vec<CfgBlockId>,
+    pub call_escape_sites: Vec<CfgBlockId>,
     pub hotspots: Vec<BorrowHazardHotspot>,
 }
 
-pub fn analyze(program: &CoreProgram, sema: &SemanticTables) -> BorrowHazardReport {
-    let reachable = collect_reachable(program);
-    let mut use_counts = HashMap::<VarId, u32>::new();
-    for stmt_id in &reachable {
-        if let Some(stmt) = program.stmt(*stmt_id) {
-            let mut seen = std::collections::HashSet::new();
-            for expression in stmt.child_exprs() {
-                collect_var_uses(program, expression, &mut seen, &mut use_counts);
+pub fn analyze(cfg: &CfgProgram, managed: &[bool]) -> BorrowHazardReport {
+    let use_counts = count_value_uses(cfg);
+    let mut report = BorrowHazardReport::default();
+
+    for block in cfg.blocks() {
+        for instruction_id in &block.instructions {
+            let Some(instruction) = cfg.instruction(*instruction_id) else {
+                continue;
+            };
+            if let CfgInstruction::Let { result, value } = instruction.kind
+                && let Some(source) = direct_value(cfg, value)
+                && is_managed(managed, source)
+                && is_managed(managed, result)
+                && use_counts.get(&source).copied().unwrap_or(0) > 1
+            {
+                push_unique(&mut report.alias_fanout_sites, *instruction_id);
             }
         }
-    }
 
-    let mut report = BorrowHazardReport::default();
-    for stmt_id in reachable {
-        let Some(stmt) = program.stmt(stmt_id) else {
-            continue;
-        };
-        match &stmt.kind {
-            StmtKind::Let { binding, value, .. } => {
-                if let Some(ExprKind::Var(source)) = program.expr(*value).map(|expr| &expr.kind)
-                    && is_managed(sema, *source)
-                    && is_managed(sema, *binding)
-                    && use_counts.get(source).copied().unwrap_or(0) > 1
-                {
-                    push_site(&mut report.alias_fanout_sites, stmt_id);
-                }
-            }
-            StmtKind::Match {
+        match &block.terminator {
+            CfgTerminator::Match {
                 scrutinee, arms, ..
             } => {
-                if let Some(ExprKind::Var(source)) = program.expr(*scrutinee).map(|expr| &expr.kind)
-                    && is_managed(sema, *source)
+                if direct_value(cfg, *scrutinee).is_some_and(|value| is_managed(managed, value))
                     && arms
                         .iter()
                         .flat_map(|arm| arm.binders.iter())
                         .copied()
-                        .any(|binder| is_managed(sema, binder))
+                        .any(|binder| is_managed(managed, binder))
                 {
-                    push_site(&mut report.projection_sites, stmt_id);
+                    push_unique(&mut report.projection_sites, block.id);
                 }
             }
-            StmtKind::Call { args, .. } | StmtKind::Perform { args, .. } => {
-                let mut seen_exprs = std::collections::HashSet::new();
-                let mut hazard = false;
-                for arg in args {
-                    let vars = collect_managed_vars(program, sema, *arg, &mut seen_exprs);
-                    if vars
+            CfgTerminator::Call { args, .. } | CfgTerminator::Perform { args, .. } => {
+                let mut seen = HashSet::new();
+                let escapes_shared_value = args.iter().copied().any(|argument| {
+                    managed_values_in_expr(cfg, argument, managed, &mut seen)
                         .iter()
-                        .any(|var| use_counts.get(var).copied().unwrap_or(0) > 1)
-                    {
-                        hazard = true;
-                    }
-                }
-                if hazard {
-                    push_site(&mut report.call_escape_sites, stmt_id);
+                        .any(|value| use_counts.get(value).copied().unwrap_or(0) > 1)
+                });
+                if escapes_shared_value {
+                    push_unique(&mut report.call_escape_sites, block.id);
                 }
             }
-            StmtKind::Return(_)
-            | StmtKind::If { .. }
-            | StmtKind::Resume { .. }
-            | StmtKind::Val { .. }
-            | StmtKind::Handle { .. }
-            | StmtKind::Stage { .. }
-            | StmtKind::Hole { .. }
-            | StmtKind::Error(_) => {}
+            _ => {}
         }
     }
 
     report.alias_fanout_sites.sort_by_key(|id| id.index());
-    report.alias_fanout_sites.dedup();
     report.projection_sites.sort_by_key(|id| id.index());
-    report.projection_sites.dedup();
     report.call_escape_sites.sort_by_key(|id| id.index());
-    report.call_escape_sites.dedup();
     report.alias_fanout_count = report.alias_fanout_sites.len() as u32;
     report.projection_count = report.projection_sites.len() as u32;
     report.call_escape_count = report.call_escape_sites.len() as u32;
@@ -150,90 +155,141 @@ pub fn analyze(program: &CoreProgram, sema: &SemanticTables) -> BorrowHazardRepo
     report
 }
 
-fn collect_reachable(program: &CoreProgram) -> Vec<StmtId> {
-    let mut stack = program
-        .functions()
-        .iter()
-        .map(|function| function.body)
-        .collect::<Vec<_>>();
-    let mut seen = std::collections::HashSet::new();
-    while let Some(stmt) = stack.pop() {
-        if seen.insert(stmt)
-            && let Some(node) = program.stmt(stmt)
-        {
-            stack.extend(node.child_stmts());
+fn count_value_uses(cfg: &CfgProgram) -> HashMap<CfgValueId, u32> {
+    let mut counts = HashMap::new();
+    for block in cfg.blocks() {
+        for instruction in &block.instructions {
+            let Some(instruction) = cfg.instruction(*instruction) else {
+                continue;
+            };
+            let mut seen = HashSet::new();
+            match instruction.kind {
+                CfgInstruction::Let { value, .. } | CfgInstruction::Eval { value, .. } => {
+                    count_expr_uses(cfg, value, &mut seen, &mut counts)
+                }
+                _ => {}
+            }
         }
+        let mut seen = HashSet::new();
+        count_terminator_uses(cfg, &block.terminator, &mut seen, &mut counts);
     }
-    let mut result = seen.into_iter().collect::<Vec<_>>();
-    result.sort_by_key(|stmt| stmt.index());
-    result
+    counts
 }
 
-fn collect_var_uses(
-    program: &CoreProgram,
-    expression: ExprId,
-    seen: &mut std::collections::HashSet<ExprId>,
-    counts: &mut HashMap<VarId, u32>,
+fn count_terminator_uses(
+    cfg: &CfgProgram,
+    terminator: &CfgTerminator,
+    seen: &mut HashSet<CfgExprId>,
+    counts: &mut HashMap<CfgValueId, u32>,
+) {
+    match terminator {
+        CfgTerminator::Return(value)
+        | CfgTerminator::Branch { cond: value, .. }
+        | CfgTerminator::Match {
+            scrutinee: value, ..
+        } => count_expr_uses(cfg, *value, seen, counts),
+        CfgTerminator::Goto { args, .. }
+        | CfgTerminator::Call { args, .. }
+        | CfgTerminator::Perform { args, .. } => {
+            for argument in args {
+                count_expr_uses(cfg, *argument, seen, counts);
+            }
+        }
+        CfgTerminator::Unreachable => {}
+    }
+}
+
+fn count_expr_uses(
+    cfg: &CfgProgram,
+    expression: CfgExprId,
+    seen: &mut HashSet<CfgExprId>,
+    counts: &mut HashMap<CfgValueId, u32>,
 ) {
     if !seen.insert(expression) {
         return;
     }
-    let Some(expression) = program.expr(expression) else {
+    let Some(expression) = cfg.expr(expression) else {
         return;
     };
     match &expression.kind {
-        ExprKind::Var(var) => {
-            let count = counts.entry(*var).or_default();
-            *count = count.saturating_add(1);
+        CfgExpr::Value(value) => {
+            let count = counts.entry(*value).or_default();
+            *count = (*count).saturating_add(1);
         }
-        ExprKind::Unary { expr, .. } => collect_var_uses(program, *expr, seen, counts),
-        ExprKind::Binary { lhs, rhs, .. } => {
-            collect_var_uses(program, *lhs, seen, counts);
-            collect_var_uses(program, *rhs, seen, counts);
+        CfgExpr::Unary { expr, .. } => count_expr_uses(cfg, *expr, seen, counts),
+        CfgExpr::Binary { lhs, rhs, .. } => {
+            count_expr_uses(cfg, *lhs, seen, counts);
+            count_expr_uses(cfg, *rhs, seen, counts);
         }
-        ExprKind::PureCall { args, .. }
-        | ExprKind::MakeStruct { fields: args, .. }
-        | ExprKind::MakeEnum { fields: args, .. } => {
-            for arg in args {
-                collect_var_uses(program, *arg, seen, counts);
+        CfgExpr::PureCall { args, .. }
+        | CfgExpr::MakeStruct { fields: args, .. }
+        | CfgExpr::MakeEnum { fields: args, .. } => {
+            for argument in args {
+                count_expr_uses(cfg, *argument, seen, counts);
             }
         }
-        ExprKind::Literal(_) | ExprKind::Error(_) => {}
+        CfgExpr::Literal(_) | CfgExpr::Error => {}
+    }
+}
+
+fn managed_values_in_expr(
+    cfg: &CfgProgram,
+    expression: CfgExprId,
+    managed: &[bool],
+    seen: &mut HashSet<CfgExprId>,
+) -> Vec<CfgValueId> {
+    if !seen.insert(expression) {
+        return Vec::new();
+    }
+    let Some(expression) = cfg.expr(expression) else {
+        return Vec::new();
+    };
+    match &expression.kind {
+        CfgExpr::Value(value) if is_managed(managed, *value) => vec![*value],
+        CfgExpr::Unary { expr, .. } => managed_values_in_expr(cfg, *expr, managed, seen),
+        CfgExpr::Binary { lhs, rhs, .. } => {
+            let mut values = managed_values_in_expr(cfg, *lhs, managed, seen);
+            extend_unique(
+                &mut values,
+                managed_values_in_expr(cfg, *rhs, managed, seen),
+            );
+            values
+        }
+        CfgExpr::PureCall { args, .. }
+        | CfgExpr::MakeStruct { fields: args, .. }
+        | CfgExpr::MakeEnum { fields: args, .. } => {
+            let mut values = Vec::new();
+            for argument in args {
+                extend_unique(
+                    &mut values,
+                    managed_values_in_expr(cfg, *argument, managed, seen),
+                );
+            }
+            values
+        }
+        CfgExpr::Literal(_) | CfgExpr::Error | CfgExpr::Value(_) => Vec::new(),
     }
 }
 
 pub fn emit_diagnostics(
-    program: &CoreProgram,
+    sources: &RuntimeSourceMap,
     report: &BorrowHazardReport,
     diagnostics: &mut DiagnosticBag,
 ) {
-    let mut alias_count = 0u32;
-    let mut projection_count = 0u32;
-    let mut call_escape_count = 0u32;
     for hotspot in &report.hotspots {
-        match hotspot.kind {
-            BorrowHazardKind::AliasFanout => alias_count = alias_count.saturating_add(1),
-            BorrowHazardKind::Projection => projection_count = projection_count.saturating_add(1),
-            BorrowHazardKind::CallEscape => call_escape_count = call_escape_count.saturating_add(1),
-        }
-        let span = program
-            .stmt(hotspot.stmt)
-            .map(|stmt| stmt.span)
-            .unwrap_or_else(Span::synthetic);
         diagnostics.warning(
             hotspot.kind.diagnostic_code(),
             format!(
-                "{} (stmt s{}, repro={})",
+                "{} (site {}, repro={})",
                 hotspot.kind.diagnostic_message(),
-                hotspot.stmt.as_u32(),
+                hotspot.site.label(),
                 hotspot.repro_key()
             ),
-            span,
+            hotspot.site.span(sources),
         );
     }
 
-    let total = report.hotspots.len() as u32;
-    if total > 0 {
+    if !report.hotspots.is_empty() {
         let repro_keys = report
             .hotspots
             .iter()
@@ -245,7 +301,11 @@ pub fn emit_diagnostics(
             "BORROW_HAZARD_SUMMARY",
             format!(
                 "borrow hazard groundwork flagged {} site(s): alias_fanout={}, projection={}, call_escape={}, repro_keys=[{}]",
-                total, alias_count, projection_count, call_escape_count, repro_keys
+                report.hotspots.len(),
+                report.alias_fanout_count,
+                report.projection_count,
+                report.call_escape_count,
+                repro_keys
             ),
             Span::synthetic(),
         );
@@ -254,80 +314,53 @@ pub fn emit_diagnostics(
 
 fn collect_hotspots(report: &BorrowHazardReport) -> Vec<BorrowHazardHotspot> {
     let mut hotspots = Vec::new();
-    for stmt in &report.alias_fanout_sites {
-        hotspots.push(BorrowHazardHotspot {
-            kind: BorrowHazardKind::AliasFanout,
-            stmt: *stmt,
-        });
-    }
-    for stmt in &report.projection_sites {
-        hotspots.push(BorrowHazardHotspot {
-            kind: BorrowHazardKind::Projection,
-            stmt: *stmt,
-        });
-    }
-    for stmt in &report.call_escape_sites {
-        hotspots.push(BorrowHazardHotspot {
-            kind: BorrowHazardKind::CallEscape,
-            stmt: *stmt,
-        });
-    }
-    hotspots.sort_by_key(|site| (site.stmt.index(), site.kind));
+    hotspots.extend(
+        report
+            .alias_fanout_sites
+            .iter()
+            .map(|site| BorrowHazardHotspot {
+                kind: BorrowHazardKind::AliasFanout,
+                site: BorrowHazardSite::Instruction(*site),
+            }),
+    );
+    hotspots.extend(
+        report
+            .projection_sites
+            .iter()
+            .map(|site| BorrowHazardHotspot {
+                kind: BorrowHazardKind::Projection,
+                site: BorrowHazardSite::Terminator(*site),
+            }),
+    );
+    hotspots.extend(
+        report
+            .call_escape_sites
+            .iter()
+            .map(|site| BorrowHazardHotspot {
+                kind: BorrowHazardKind::CallEscape,
+                site: BorrowHazardSite::Terminator(*site),
+            }),
+    );
+    hotspots.sort_by_key(|hotspot| (hotspot.site.sort_key(), hotspot.kind));
     hotspots.dedup();
     hotspots
 }
 
-fn collect_managed_vars(
-    program: &CoreProgram,
-    sema: &SemanticTables,
-    expr_id: ExprId,
-    seen: &mut std::collections::HashSet<ExprId>,
-) -> Vec<VarId> {
-    if !seen.insert(expr_id) {
-        return Vec::new();
-    }
-    let Some(expr) = program.expr(expr_id) else {
-        return Vec::new();
-    };
-    match &expr.kind {
-        ExprKind::Var(var) if is_managed(sema, *var) => vec![*var],
-        ExprKind::Unary { expr, .. } => collect_managed_vars(program, sema, *expr, seen),
-        ExprKind::Binary { lhs, rhs, .. } => {
-            let mut out = collect_managed_vars(program, sema, *lhs, seen);
-            for var in collect_managed_vars(program, sema, *rhs, seen) {
-                if !out.contains(&var) {
-                    out.push(var);
-                }
-            }
-            out
-        }
-        ExprKind::PureCall { args, .. }
-        | ExprKind::MakeStruct { fields: args, .. }
-        | ExprKind::MakeEnum { fields: args, .. } => {
-            let mut out = Vec::new();
-            for arg in args {
-                for var in collect_managed_vars(program, sema, *arg, seen) {
-                    if !out.contains(&var) {
-                        out.push(var);
-                    }
-                }
-            }
-            out
-        }
-        ExprKind::Literal(_) | ExprKind::Error(_) | ExprKind::Var(_) => Vec::new(),
+fn direct_value(cfg: &CfgProgram, expression: CfgExprId) -> Option<CfgValueId> {
+    match cfg.expr(expression).map(|expression| &expression.kind) {
+        Some(CfgExpr::Value(value)) => Some(*value),
+        _ => None,
     }
 }
 
-fn is_managed(sema: &SemanticTables, var: VarId) -> bool {
-    sema.ownership_of_var
-        .get(&var)
-        .copied()
-        .unwrap_or(OwnershipClass::BorrowedView)
-        == OwnershipClass::Managed
+fn push_unique<T: Copy + PartialEq>(values: &mut Vec<T>, value: T) {
+    if !values.contains(&value) {
+        values.push(value);
+    }
 }
 
-fn push_site(out: &mut Vec<StmtId>, stmt_id: StmtId) {
-    if !out.contains(&stmt_id) {
-        out.push(stmt_id);
+fn extend_unique<T: Copy + PartialEq>(values: &mut Vec<T>, additions: Vec<T>) {
+    for value in additions {
+        push_unique(values, value);
     }
 }

@@ -4,7 +4,7 @@ use cielo_base::DiagnosticBag;
 use cielo_ir::cfg::CfgProgram;
 use cielo_ir::core::CoreProgram;
 use cielo_ir::ownership::OwnershipClass;
-use cielo_ir::runtime::RuntimeValueFacts;
+use cielo_ir::runtime::{RuntimeSourceMap, RuntimeValueFacts};
 use cielo_sema::SemanticTables;
 
 use crate::GcConfig;
@@ -53,12 +53,6 @@ pub struct MemoryProgram {
 pub fn lower(input: MemoryInput<'_>, config: GcConfig) -> MemoryProgram {
     let mut cfg = input.cfg.clone();
     let mut diagnostics = input.diagnostics.clone();
-    let borrow_hazards = borrow_hazard::analyze(input.core, input.sema);
-    verify_hazard_report(&borrow_hazards);
-    if config.borrow_hazard_diagnostics_enabled() {
-        borrow_hazard::emit_diagnostics(input.core, &borrow_hazards, &mut diagnostics);
-    }
-
     let value_facts = RuntimeValueFacts::new(
         cfg.values()
             .iter()
@@ -71,6 +65,15 @@ pub fn lower(input: MemoryInput<'_>, config: GcConfig) -> MemoryProgram {
             .collect(),
     );
     let managed_values = analysis::managed::classify(&cfg, &value_facts);
+    let borrow_hazards = borrow_hazard::analyze(&cfg, &managed_values);
+    verify_hazard_report(&borrow_hazards);
+    if config.borrow_hazard_diagnostics_enabled() {
+        borrow_hazard::emit_diagnostics(
+            &RuntimeSourceMap::default(),
+            &borrow_hazards,
+            &mut diagnostics,
+        );
+    }
     let arc = passes::cfg_arc::run(&mut cfg, &managed_values, &config);
     verify_arc_stats(arc);
     let verifier = config
