@@ -3,15 +3,18 @@
 //! Query bodies only compose ordinary Rust passes. The passes do not receive a
 //! database handle, and the database does not contain mutable IR builders.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+mod database;
+mod inputs;
+
+pub use database::{CieloDatabase, Db, QueryEvent, QueryMemoryStats};
+pub use inputs::{CompileProfile, SourceFile, TargetProfile};
 
 use cielo_backend_c as backend_c;
 use cielo_base::{DiagnosticBag, Interner, SourceId};
 use cielo_frontend::{ast::Program, parser::parse_source};
-use cielo_ir::{
-    linear::LinearProgram,
-    target::{Endianness, TargetSpec},
-};
+use cielo_ir::{linear::LinearProgram, target::TargetSpec};
 use cielo_lowering::{LowerConfig, LowerOutput, TargetBuiltinSymbols, lower_program};
 use cielo_memory::{GcConfig, MemoryInput, MemoryProgram};
 use cielo_runtime::{assemble_program, cfg_lower, linearize};
@@ -20,139 +23,6 @@ use cielo_staging::{
     passes::{comptime, monomorphize, normalize},
     pipeline::phases::{BtaClassified, Monomorphized, Residualized},
 };
-
-#[salsa::db]
-pub trait Db: salsa::Database {}
-
-#[derive(Clone, Debug, Default)]
-pub struct QueryEvent {
-    pub description: String,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct QueryMemoryStats {
-    pub query: String,
-    pub entries: usize,
-    pub metadata_bytes: usize,
-    pub field_bytes: usize,
-    pub heap_bytes: Option<usize>,
-}
-
-#[salsa::db]
-#[derive(Clone)]
-pub struct CieloDatabase {
-    storage: salsa::Storage<Self>,
-    events: Arc<Mutex<Vec<QueryEvent>>>,
-}
-
-impl Default for CieloDatabase {
-    fn default() -> Self {
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let callback_events = Arc::clone(&events);
-        let callback = Box::new(move |event: salsa::Event| {
-            if matches!(&event.kind, salsa::EventKind::WillExecute { .. }) {
-                callback_events
-                    .lock()
-                    .expect("Salsa event log mutex poisoned")
-                    .push(QueryEvent {
-                        description: format!("{event:?}"),
-                    });
-            }
-        });
-        Self {
-            storage: salsa::Storage::new(Some(callback)),
-            events,
-        }
-    }
-}
-
-impl CieloDatabase {
-    pub fn take_query_events(&self) -> Vec<QueryEvent> {
-        std::mem::take(&mut *self.events.lock().expect("Salsa event log mutex poisoned"))
-    }
-
-    pub fn query_memory_stats(&self) -> Vec<QueryMemoryStats> {
-        let info = (self as &dyn salsa::Database).memory_usage();
-        let mut stats = info
-            .queries
-            .values()
-            .map(|entry| QueryMemoryStats {
-                query: entry.debug_name().to_owned(),
-                entries: entry.count(),
-                metadata_bytes: entry.size_of_metadata(),
-                field_bytes: entry.size_of_fields(),
-                heap_bytes: entry.heap_size_of_fields(),
-            })
-            .collect::<Vec<_>>();
-        stats.sort_by(|lhs, rhs| lhs.query.cmp(&rhs.query));
-        stats
-    }
-}
-
-#[salsa::db]
-impl salsa::Database for CieloDatabase {}
-
-#[salsa::db]
-impl Db for CieloDatabase {}
-
-#[salsa::input]
-#[derive(Debug)]
-pub struct SourceFile {
-    #[returns(copy)]
-    pub source_id: u32,
-    #[returns(clone)]
-    pub path: String,
-    #[returns(deref)]
-    pub text: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct TargetProfile {
-    pub word_size_bits: u8,
-    pub endianness: Endianness,
-    pub pointer_alignment: u8,
-}
-
-impl Default for TargetProfile {
-    fn default() -> Self {
-        Self::from(TargetSpec::default())
-    }
-}
-
-impl From<TargetSpec> for TargetProfile {
-    fn from(target: TargetSpec) -> Self {
-        Self {
-            word_size_bits: target.word_size_bits,
-            endianness: target.endianness,
-            pointer_alignment: target.pointer_alignment,
-        }
-    }
-}
-
-impl From<TargetProfile> for TargetSpec {
-    fn from(target: TargetProfile) -> Self {
-        Self {
-            word_size_bits: target.word_size_bits,
-            endianness: target.endianness,
-            pointer_alignment: target.pointer_alignment,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct CompileProfile {
-    pub target: TargetProfile,
-    pub gc: GcConfig,
-}
-
-impl Default for CompileProfile {
-    fn default() -> Self {
-        Self {
-            target: TargetProfile::default(),
-            gc: GcConfig::default(),
-        }
-    }
-}
 
 macro_rules! file_artifact {
     ($(#[$meta:meta])* $name:ident { $($field:ident: $ty:ty),+ $(,)? }) => {
