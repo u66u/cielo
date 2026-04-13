@@ -1,6 +1,5 @@
 //! Intermediate representations owned independently from compiler algorithms.
 
-pub mod boundary;
 pub mod cfg;
 pub mod constants;
 pub mod core;
