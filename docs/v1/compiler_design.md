@@ -546,7 +546,7 @@ site, and moves from live parents.
 
 The emitter consumes the annotated CFG. It emits explicit labels and gotos, preserves
 parallel edge-copy semantics with temporaries, and passes lexical handler capabilities
-to scoped effects. No legacy Linear emitter or Linear ARC annotations remain.
+to scoped effects. No obsolete Linear emitter or Linear ARC annotations remain.
 
 ## Normalizer reduction rules
 

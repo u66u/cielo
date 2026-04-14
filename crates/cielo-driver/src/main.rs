@@ -27,7 +27,7 @@ use cielo_staging::pipeline::staging_diff::{
 const RUNTIME_HEADER: &str = cielo::RUNTIME_HEADER;
 
 #[derive(Parser, Debug)]
-#[command(name = "cielo", about = "cielo v0 compiler driver")]
+#[command(name = "cielo", about = "cielo compiler driver")]
 struct Cli {
     #[arg(value_name = "INPUT")]
     input: Option<PathBuf>,

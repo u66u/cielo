@@ -2,7 +2,7 @@
 //!
 //! Production compilation goes through `cielo-db`. This crate deliberately
 //! drives ordinary pass functions so a component test can stop at, or alter,
-//! any boundary without adding legacy entry points to the compiler facade.
+//! any boundary without adding test entry points to the compiler facade.
 
 use cielo_base::{DiagnosticBag, Interner, SourceId};
 use cielo_frontend::{ParseOutput, parse_source};
