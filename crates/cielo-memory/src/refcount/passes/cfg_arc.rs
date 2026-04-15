@@ -13,7 +13,7 @@ use cielo_ir::cfg::{
     CfgArcOp, CfgArcOpKind, CfgExpr, CfgInstruction, CfgProgram, CfgProjectionMode, CfgTerminator,
 };
 
-use crate::GcConfig;
+use crate::ArcConfig;
 use crate::refcount::ArcStats;
 use crate::refcount::analysis::cfg_liveness::{CfgLiveness, CfgUseSite};
 
@@ -29,16 +29,16 @@ enum UseMode {
     Consume,
 }
 
-pub fn run(cfg: &mut CfgProgram, managed: &[bool], gc: &GcConfig) -> ArcStats {
+pub fn run(cfg: &mut CfgProgram, managed: &[bool], config: &ArcConfig) -> ArcStats {
     clear_annotations(cfg);
-    if !gc.arc_insertion_enabled() {
+    if !config.insertion_enabled() {
         return ArcStats::default();
     }
 
     let liveness = CfgLiveness::analyze(cfg);
     let mut borrowed_binders = HashSet::new();
     let mut stats = ArcStats::default();
-    let optimize_moves = gc.arc_optimization_enabled();
+    let optimize_moves = config.optimization_enabled();
 
     plan_match_projections(
         cfg,

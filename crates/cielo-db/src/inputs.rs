@@ -1,5 +1,5 @@
 use cielo_ir::target::{Endianness, TargetSpec};
-use cielo_memory::GcConfig;
+use cielo_memory::MemoryProfile;
 
 #[salsa::input]
 #[derive(Debug)]
@@ -48,14 +48,14 @@ impl From<TargetProfile> for TargetSpec {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CompileProfile {
     pub target: TargetProfile,
-    pub gc: GcConfig,
+    pub memory: MemoryProfile,
 }
 
 impl Default for CompileProfile {
     fn default() -> Self {
         Self {
             target: TargetProfile::default(),
-            gc: GcConfig::default(),
+            memory: MemoryProfile::default(),
         }
     }
 }

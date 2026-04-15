@@ -1,7 +1,7 @@
 use cielo_db::{
     CieloDatabase, CompileProfile, SourceFile, compile, compile_memory, linear_file, staged_file,
 };
-use cielo_memory::GcConfig;
+use cielo_memory::MemoryProfile;
 use salsa::Setter;
 
 #[test]
@@ -37,7 +37,7 @@ fn changing_memory_config_does_not_rerun_runtime_queries() {
     let _ = db.take_query_events();
 
     let off = CompileProfile {
-        gc: GcConfig::from_preset(cielo_memory::GcPreset::Off),
+        memory: MemoryProfile::from_preset(cielo_memory::MemoryPreset::Unmanaged),
         ..profile
     };
     let _unmanaged = compile_memory(&db, source, off);

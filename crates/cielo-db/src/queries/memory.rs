@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use cielo_backend_c as backend_c;
-use cielo_memory::{GcConfig, MemoryInput};
+use cielo_memory::{MemoryInput, MemoryProfile};
 
 use crate::{CompileProfile, Db, EmittedFile, MemoryFile, SourceFile, TargetProfile, runtime_file};
 
@@ -10,14 +10,14 @@ pub fn memory_file(
     db: &dyn Db,
     source: SourceFile,
     target: TargetProfile,
-    gc: GcConfig,
+    memory: MemoryProfile,
 ) -> Arc<MemoryFile> {
     let runtime = runtime_file(db, source, target);
     let memory = cielo_memory::lower(
         MemoryInput {
             runtime: &runtime.runtime,
         },
-        gc,
+        memory,
     );
     Arc::new(MemoryFile { runtime, memory })
 }
@@ -27,9 +27,9 @@ pub fn emitted_file(
     db: &dyn Db,
     source: SourceFile,
     target: TargetProfile,
-    gc: GcConfig,
+    memory: MemoryProfile,
 ) -> Arc<EmittedFile> {
-    let memory = memory_file(db, source, target, gc);
+    let memory = memory_file(db, source, target, memory);
     let c_source = backend_c::emit(
         &memory.memory.cfg,
         &memory.runtime.interner,
@@ -40,9 +40,9 @@ pub fn emitted_file(
 }
 
 pub fn compile(db: &dyn Db, source: SourceFile, profile: CompileProfile) -> Arc<EmittedFile> {
-    emitted_file(db, source, profile.target, profile.gc)
+    emitted_file(db, source, profile.target, profile.memory)
 }
 
 pub fn compile_memory(db: &dyn Db, source: SourceFile, profile: CompileProfile) -> Arc<MemoryFile> {
-    memory_file(db, source, profile.target, profile.gc)
+    memory_file(db, source, profile.target, profile.memory)
 }

@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use cielo_base::Interner;
 use cielo_base::SourceId;
-use cielo_memory::{GcConfig, GcPreset};
+use cielo_memory::{MemoryPreset, MemoryProfile};
 use cielo_test_support::{Compiler, CompilerConfig};
 
 const SOURCE_CTOR_CHURN: &str = r#"
@@ -358,7 +358,7 @@ struct BenchCase {
 #[derive(Clone, Copy)]
 struct BenchPreset {
     name: &'static str,
-    preset: GcPreset,
+    preset: MemoryPreset,
 }
 
 const CASES: &[BenchCase] = &[
@@ -383,15 +383,15 @@ const CASES: &[BenchCase] = &[
 const PRESETS: &[BenchPreset] = &[
     BenchPreset {
         name: "off",
-        preset: GcPreset::Off,
+        preset: MemoryPreset::Unmanaged,
     },
     BenchPreset {
         name: "arc_raw",
-        preset: GcPreset::ArcBenchRaw,
+        preset: MemoryPreset::ArcBenchRaw,
     },
     BenchPreset {
         name: "arc_optimized",
-        preset: GcPreset::ArcBenchOptimized,
+        preset: MemoryPreset::ArcBenchOptimized,
     },
 ];
 
@@ -427,7 +427,7 @@ pub fn gc_overhead_case_arc_stats(case: &str, preset: &str) -> Option<GcBenchArc
     let preset = PRESETS.iter().copied().find(|entry| entry.name == preset)?;
     let mut interner = Interner::new();
     let config = CompilerConfig {
-        gc: GcConfig::from_preset(preset.preset),
+        memory: MemoryProfile::from_preset(preset.preset),
         ..CompilerConfig::default()
     };
     let compiler = Compiler::new(config);
@@ -504,7 +504,7 @@ fn build_target(case: BenchCase, bench_preset: BenchPreset, source_id: u32) -> B
     let compile_start = Instant::now();
     let mut interner = Interner::new();
     let config = CompilerConfig {
-        gc: GcConfig::from_preset(bench_preset.preset),
+        memory: MemoryProfile::from_preset(bench_preset.preset),
         ..CompilerConfig::default()
     };
     let compiler = Compiler::new(config);

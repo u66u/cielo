@@ -8,7 +8,7 @@ use cielo_base::{DiagnosticBag, Interner, SourceId};
 use cielo_frontend::{ParseOutput, parse_source};
 use cielo_ir::{cfg::CfgProgram, core::CoreProgram, linear::LinearProgram};
 use cielo_lowering::{LowerConfig, LowerOutput, TargetBuiltinSymbols, lower_program};
-use cielo_memory::{GcConfig, GcPreset, MemoryInput, MemoryReport};
+use cielo_memory::{MemoryInput, MemoryPreset, MemoryProfile, MemoryReport};
 use cielo_runtime::{assemble_program, cfg_lower, linearize};
 use cielo_sema::{TypedCore, check_core};
 use cielo_staging::{
@@ -21,12 +21,12 @@ pub use cielo_ir::target::{Endianness, TargetSpec};
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct CompilerConfig {
     pub target: TargetSpec,
-    pub gc: GcConfig,
+    pub memory: MemoryProfile,
 }
 
 impl CompilerConfig {
-    pub fn with_gc_preset(mut self, preset: GcPreset) -> Self {
-        self.gc = GcConfig::from_preset(preset);
+    pub fn with_memory_preset(mut self, preset: MemoryPreset) -> Self {
+        self.memory = MemoryProfile::from_preset(preset);
         self
     }
 }
@@ -110,7 +110,7 @@ impl Compiler {
     ) -> CompiledC {
         let residual = self.compile_source(source, source_id, interner);
         let normalized = normalize::run(residual);
-        emit_runtime(normalized, interner, self.config.gc)
+        emit_runtime(normalized, interner, self.config.memory)
     }
 
     pub fn compile_source_v0(
@@ -132,7 +132,7 @@ impl Compiler {
         let residual = self.compile_source_v0(source, source_id, interner);
         let residual = handler_specialize::run(residual);
         let normalized = normalize::run(residual);
-        emit_runtime(normalized, interner, self.config.gc)
+        emit_runtime(normalized, interner, self.config.memory)
     }
 
     pub fn run_v1_evaluate_classify(&self, built: LowerOutput) -> BtaClassified {
@@ -176,14 +176,18 @@ fn typecheck(built: LowerOutput) -> TypedCore {
     check_core(program, diagnostics)
 }
 
-pub fn emit_runtime(mut residual: Residualized, interner: &Interner, gc: GcConfig) -> CompiledC {
+pub fn emit_runtime(
+    mut residual: Residualized,
+    interner: &Interner,
+    memory: MemoryProfile,
+) -> CompiledC {
     let sema = residual.sema().clone();
     let linear = {
         let (program, diagnostics) = residual.program_and_diagnostics_mut();
         linearize::run(program, &sema, diagnostics)
     };
     let cfg = cfg_lower::run(&linear);
-    emit_lowered(residual, linear, cfg, interner, gc)
+    emit_lowered(residual, linear, cfg, interner, memory)
 }
 
 pub fn emit_lowered(
@@ -191,7 +195,7 @@ pub fn emit_lowered(
     linear: LinearProgram,
     cfg: CfgProgram,
     interner: &Interner,
-    gc: GcConfig,
+    memory: MemoryProfile,
 ) -> CompiledC {
     let runtime = assemble_program(
         cfg,
@@ -200,7 +204,7 @@ pub fn emit_lowered(
         residual.facts().constant_table.clone(),
         residual.diagnostics().clone(),
     );
-    let managed = cielo_memory::lower(MemoryInput { runtime: &runtime }, gc);
+    let managed = cielo_memory::lower(MemoryInput { runtime: &runtime }, memory);
     *residual.diagnostics_mut() = managed.diagnostics;
     let c_source = cielo_backend_c::emit(
         &managed.cfg,

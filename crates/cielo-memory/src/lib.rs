@@ -7,7 +7,7 @@ use cielo_ir::runtime::RuntimeProgram;
 pub mod config;
 pub mod refcount;
 
-pub use config::{GcConfig, GcFeatureFlags, GcMode, GcPreset};
+pub use config::{ArcConfig, ArcFeatures, MemoryPreset, MemoryProfile, MemoryStrategy};
 pub use refcount::ArcStats;
 pub use refcount::borrow_hazard::BorrowHazardReport;
 pub use refcount::verify::CfgArcVerifyStats;
@@ -32,15 +32,15 @@ pub struct MemoryProgram {
     pub emit_arc_trace_comments: bool,
 }
 
-pub fn lower(input: MemoryInput<'_>, config: GcConfig) -> MemoryProgram {
-    match config.mode {
-        GcMode::Off => MemoryProgram {
+pub fn lower(input: MemoryInput<'_>, profile: MemoryProfile) -> MemoryProgram {
+    match profile.strategy {
+        MemoryStrategy::Unmanaged => MemoryProgram {
             cfg: input.runtime.cfg.clone(),
             diagnostics: input.runtime.diagnostics.clone(),
             report: MemoryReport::default(),
             emit_arc_trace_comments: false,
         },
-        GcMode::Arc => refcount::lower(input, config),
+        MemoryStrategy::ReferenceCounting(config) => refcount::lower(input, config),
     }
 }
 

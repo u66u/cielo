@@ -1,6 +1,6 @@
 use crate::helpers::c_emit::assert_arc_trace_comments_align;
 use crate::helpers::core::compile_source_to_c_with_config;
-use cielo_memory::{GcFeatureFlags, GcPreset};
+use cielo_memory::{ArcFeatures, MemoryPreset};
 use cielo_test_support::CompilerConfig;
 
 #[test]
@@ -23,11 +23,13 @@ fn main() -> Int {
 }
 "#;
 
-    let mut config = CompilerConfig::default().with_gc_preset(GcPreset::ArcRaw);
+    let mut config = CompilerConfig::default().with_memory_preset(MemoryPreset::ArcRaw);
     config
-        .gc
+        .memory
+        .reference_counting_mut()
+        .expect("ARC preset should select reference counting")
         .features
-        .insert(GcFeatureFlags::ARC_EMIT_TRACE_COMMENTS);
+        .insert(ArcFeatures::EMIT_TRACE_COMMENTS);
     let compiled = compile_source_to_c_with_config(src, config);
     let arc_stats = compiled.memory.arc;
     assert!(

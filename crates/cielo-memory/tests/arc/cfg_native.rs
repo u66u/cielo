@@ -1,7 +1,7 @@
 use cielo_base::Interner;
 use cielo_base::SourceId;
 use cielo_ir::cfg::{CfgArcOpKind, CfgProjectionMode, CfgTerminator};
-use cielo_memory::GcPreset;
+use cielo_memory::MemoryPreset;
 use cielo_runtime::{cfg_lower, linearize};
 use cielo_test_support::{Compiler, CompilerConfig};
 
@@ -16,9 +16,9 @@ fn compile(source: &str) -> cielo_test_support::CompiledC {
     )
 }
 
-fn compile_with_preset(source: &str, preset: GcPreset) -> cielo_test_support::CompiledC {
+fn compile_with_preset(source: &str, preset: MemoryPreset) -> cielo_test_support::CompiledC {
     let mut interner = Interner::new();
-    Compiler::new(CompilerConfig::default().with_gc_preset(preset)).compile_source_to_c(
+    Compiler::new(CompilerConfig::default().with_memory_preset(preset)).compile_source_to_c(
         source,
         SourceId::from_u32(0),
         &mut interner,
@@ -95,8 +95,8 @@ enum Boxed { Wrap(Int) }
 fn consume(v: Boxed) -> Int { match v { | Wrap(n) => n | _ => 0 } }
 fn main() -> Int { let value = Wrap(1); consume(value) }
 "#;
-    let raw = compile_with_preset(source, GcPreset::ArcRaw);
-    let optimized = compile_with_preset(source, GcPreset::ArcOptimized);
+    let raw = compile_with_preset(source, MemoryPreset::ArcRaw);
+    let optimized = compile_with_preset(source, MemoryPreset::ArcOptimized);
 
     assert!(arc_op_count(&raw, CfgArcOpKind::Retain) > 0);
     assert!(arc_op_count(&raw, CfgArcOpKind::Release) > 0);

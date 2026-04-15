@@ -2,7 +2,7 @@ use cielo_base::SourceId;
 use cielo_db::{
     CieloDatabase, CompileProfile, SourceFile, TargetProfile, compile, parsed_file, typed_file,
 };
-use cielo_memory::{GcConfig, GcPreset};
+use cielo_memory::{MemoryPreset, MemoryProfile};
 
 fn source(db: &CieloDatabase, text: &str) -> SourceFile {
     SourceFile::new(
@@ -38,7 +38,7 @@ fn emits_through_the_database_boundary() {
     let db = CieloDatabase::default();
     let profile = CompileProfile {
         target: TargetProfile::default(),
-        gc: GcConfig::from_preset(GcPreset::Off),
+        memory: MemoryProfile::from_preset(MemoryPreset::Unmanaged),
     };
     let emitted = compile(&db, source(&db, "fn main() {}"), profile);
     assert!(emitted.c_source.contains("int main(void)"));

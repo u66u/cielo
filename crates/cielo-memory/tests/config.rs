@@ -1,54 +1,32 @@
-use cielo_memory::{GcConfig, GcPreset};
+use cielo_memory::{ArcFeatures, MemoryPreset, MemoryProfile, MemoryStrategy};
 
 #[test]
-fn gc_preset_off_disables_arc_pipeline() {
-    let config = GcConfig::from_preset(GcPreset::Off);
-    assert!(
-        !config.gc_enabled(),
-        "off preset should disable GC entirely"
-    );
-    assert!(
-        !config.arc_insertion_enabled(),
-        "off preset should not plan ARC ops"
-    );
-    assert!(
-        !config.arc_emission_enabled(),
-        "off preset should not emit ARC runtime calls"
-    );
+fn unmanaged_profile_has_no_arc_configuration() {
+    let profile = MemoryProfile::from_preset(MemoryPreset::Unmanaged);
+    assert_eq!(profile.strategy, MemoryStrategy::Unmanaged);
+    assert!(profile.reference_counting().is_none());
 }
 
 #[test]
-fn gc_preset_arc_bench_raw_keeps_arc_without_optimizer() {
-    let config = GcConfig::from_preset(GcPreset::ArcBenchRaw);
-    assert!(config.gc_enabled(), "bench raw preset should keep ARC on");
-    assert!(
-        config.arc_insertion_enabled(),
-        "bench raw preset should still materialize ARC ownership ops"
-    );
-    assert!(
-        !config.arc_optimization_enabled(),
-        "bench raw preset should disable ARC optimization passes"
-    );
-    assert!(
-        config.arc_emission_enabled(),
-        "bench raw preset should keep ARC runtime call emission enabled"
-    );
-    assert!(
-        !config.arc_verify_enabled(),
-        "bench raw preset should disable ARC verifier for compile overhead isolation"
-    );
+fn raw_arc_profile_inserts_and_emits_without_optimizing() {
+    let profile = MemoryProfile::from_preset(MemoryPreset::ArcBenchRaw);
+    let config = profile
+        .reference_counting()
+        .expect("raw ARC preset should select reference counting");
+    assert!(config.insertion_enabled());
+    assert!(!config.optimization_enabled());
+    assert!(config.emission_enabled());
+    assert!(!config.verify_enabled());
 }
 
 #[test]
-fn gc_preset_arc_optimized_enables_cfg_move_optimization() {
-    let config = GcConfig::from_preset(GcPreset::ArcOptimized);
-    assert!(config.gc_enabled(), "optimized preset should keep ARC on");
-    assert!(
-        config.arc_optimization_enabled(),
-        "optimized preset should enable ARC optimization pass"
-    );
-    assert!(
-        config.borrow_hazard_diagnostics_enabled(),
-        "optimized preset should keep hazard diagnostics enabled"
-    );
+fn optimized_arc_profile_keeps_diagnostics_and_verification() {
+    let profile = MemoryProfile::from_preset(MemoryPreset::ArcOptimized);
+    let config = profile
+        .reference_counting()
+        .expect("optimized ARC preset should select reference counting");
+    assert!(config.optimization_enabled());
+    assert!(config.borrow_hazard_diagnostics_enabled());
+    assert!(config.verify_enabled());
+    assert!(config.features.contains(ArcFeatures::EMIT_TRACE_COMMENTS));
 }

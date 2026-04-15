@@ -1,6 +1,6 @@
 //! Reference-counting analysis and lowering.
 
-use crate::{BorrowHazardReport, GcConfig, MemoryInput, MemoryProgram, MemoryReport};
+use crate::{ArcConfig, BorrowHazardReport, MemoryInput, MemoryProgram, MemoryReport};
 
 pub mod analysis;
 pub mod borrow_hazard;
@@ -18,7 +18,7 @@ pub struct ArcStats {
     pub final_release_ops: u32,
 }
 
-pub fn lower(input: MemoryInput<'_>, config: GcConfig) -> MemoryProgram {
+pub fn lower(input: MemoryInput<'_>, config: ArcConfig) -> MemoryProgram {
     let mut cfg = input.runtime.cfg.clone();
     let mut diagnostics = input.runtime.diagnostics.clone();
     let managed_values = analysis::managed::classify(&cfg, &input.runtime.values);
@@ -30,7 +30,7 @@ pub fn lower(input: MemoryInput<'_>, config: GcConfig) -> MemoryProgram {
     let arc = passes::cfg_arc::run(&mut cfg, &managed_values, &config);
     verify_arc_stats(arc);
     let verifier = config
-        .arc_verify_enabled()
+        .verify_enabled()
         .then(|| verify::verify(&cfg, &mut diagnostics));
 
     MemoryProgram {
@@ -41,7 +41,7 @@ pub fn lower(input: MemoryInput<'_>, config: GcConfig) -> MemoryProgram {
             verifier,
             borrow_hazards,
         },
-        emit_arc_trace_comments: config.arc_emit_trace_enabled(),
+        emit_arc_trace_comments: config.emit_trace_enabled(),
     }
 }
 

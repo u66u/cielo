@@ -5,14 +5,14 @@ use cielo_db::{
     CieloDatabase, CompileProfile, CoreFile, EmittedFile, MemoryFile, ParsedFile, RuntimeFile,
     SourceFile, StagedFile, TargetProfile, TypedFile,
 };
-use cielo_memory::GcConfig;
+use cielo_memory::MemoryProfile;
 
 pub use cielo_ir::target::{Endianness, TargetSpec};
 
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct CompilerConfig {
     pub target: TargetSpec,
-    pub gc: GcConfig,
+    pub memory: MemoryProfile,
 }
 
 #[derive(Default)]
@@ -109,7 +109,7 @@ impl Compiler {
     fn compile_profile(&self) -> CompileProfile {
         CompileProfile {
             target: self.target_profile(),
-            gc: self.config.gc,
+            memory: self.config.memory,
         }
     }
 }

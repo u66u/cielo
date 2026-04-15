@@ -1,26 +1,63 @@
 use bitflags::bitflags;
 
+/// The memory implementations that exist today.
+///
+/// New strategies get their own configuration type and enum variant when
+/// their lowering is implemented. ARC flags therefore never leak into a
+/// tracing collector or a region allocator.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum GcMode {
-    Off,
-    Arc,
+pub enum MemoryStrategy {
+    Unmanaged,
+    ReferenceCounting(ArcConfig),
 }
 
 bitflags! {
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-    pub struct GcFeatureFlags: u32 {
-        const ARC_INSERTION = 1 << 0;
-        const ARC_OPTIMIZATION = 1 << 1;
-        const ARC_EMISSION = 1 << 2;
-        const ARC_VERIFIER = 1 << 3;
+    pub struct ArcFeatures: u32 {
+        const INSERTION = 1 << 0;
+        const OPTIMIZATION = 1 << 1;
+        const EMISSION = 1 << 2;
+        const VERIFIER = 1 << 3;
         const BORROW_HAZARD_DIAGNOSTICS = 1 << 4;
-        const ARC_EMIT_TRACE_COMMENTS = 1 << 5;
+        const EMIT_TRACE_COMMENTS = 1 << 5;
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum GcPreset {
-    Off,
+pub struct ArcConfig {
+    pub features: ArcFeatures,
+}
+
+impl ArcConfig {
+    pub fn insertion_enabled(self) -> bool {
+        self.features.contains(ArcFeatures::INSERTION)
+    }
+
+    pub fn optimization_enabled(self) -> bool {
+        self.insertion_enabled() && self.features.contains(ArcFeatures::OPTIMIZATION)
+    }
+
+    pub fn emission_enabled(self) -> bool {
+        self.features.contains(ArcFeatures::EMISSION)
+    }
+
+    pub fn verify_enabled(self) -> bool {
+        self.emission_enabled() && self.features.contains(ArcFeatures::VERIFIER)
+    }
+
+    pub fn borrow_hazard_diagnostics_enabled(self) -> bool {
+        self.features
+            .contains(ArcFeatures::BORROW_HAZARD_DIAGNOSTICS)
+    }
+
+    pub fn emit_trace_enabled(self) -> bool {
+        self.emission_enabled() && self.features.contains(ArcFeatures::EMIT_TRACE_COMMENTS)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum MemoryPreset {
+    Unmanaged,
     ArcRaw,
     ArcOptimized,
     ArcNoVerify,
@@ -29,89 +66,61 @@ pub enum GcPreset {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct GcConfig {
-    pub mode: GcMode,
-    pub features: GcFeatureFlags,
+pub struct MemoryProfile {
+    pub strategy: MemoryStrategy,
 }
 
-impl Default for GcConfig {
+impl Default for MemoryProfile {
     fn default() -> Self {
-        Self::from_preset(GcPreset::ArcOptimized)
+        Self::from_preset(MemoryPreset::ArcOptimized)
     }
 }
 
-impl GcConfig {
-    pub const fn from_preset(preset: GcPreset) -> Self {
-        match preset {
-            GcPreset::Off => Self {
-                mode: GcMode::Off,
-                features: GcFeatureFlags::empty(),
-            },
-            GcPreset::ArcRaw => Self {
-                mode: GcMode::Arc,
-                features: GcFeatureFlags::ARC_INSERTION.union(GcFeatureFlags::ARC_EMISSION),
-            },
-            GcPreset::ArcOptimized => Self {
-                mode: GcMode::Arc,
-                features: GcFeatureFlags::ARC_INSERTION
-                    .union(GcFeatureFlags::ARC_OPTIMIZATION)
-                    .union(GcFeatureFlags::ARC_EMISSION)
-                    .union(GcFeatureFlags::ARC_VERIFIER)
-                    .union(GcFeatureFlags::BORROW_HAZARD_DIAGNOSTICS)
-                    .union(GcFeatureFlags::ARC_EMIT_TRACE_COMMENTS),
-            },
-            GcPreset::ArcNoVerify => Self {
-                mode: GcMode::Arc,
-                features: GcFeatureFlags::ARC_INSERTION
-                    .union(GcFeatureFlags::ARC_OPTIMIZATION)
-                    .union(GcFeatureFlags::ARC_EMISSION)
-                    .union(GcFeatureFlags::BORROW_HAZARD_DIAGNOSTICS)
-                    .union(GcFeatureFlags::ARC_EMIT_TRACE_COMMENTS),
-            },
-            GcPreset::ArcBenchRaw => Self {
-                mode: GcMode::Arc,
-                features: GcFeatureFlags::ARC_INSERTION.union(GcFeatureFlags::ARC_EMISSION),
-            },
-            GcPreset::ArcBenchOptimized => Self {
-                mode: GcMode::Arc,
-                features: GcFeatureFlags::ARC_INSERTION
-                    .union(GcFeatureFlags::ARC_OPTIMIZATION)
-                    .union(GcFeatureFlags::ARC_EMISSION),
-            },
+impl MemoryProfile {
+    pub const fn from_preset(preset: MemoryPreset) -> Self {
+        let strategy = match preset {
+            MemoryPreset::Unmanaged => MemoryStrategy::Unmanaged,
+            MemoryPreset::ArcRaw => MemoryStrategy::ReferenceCounting(ArcConfig {
+                features: ArcFeatures::INSERTION.union(ArcFeatures::EMISSION),
+            }),
+            MemoryPreset::ArcOptimized => MemoryStrategy::ReferenceCounting(ArcConfig {
+                features: ArcFeatures::INSERTION
+                    .union(ArcFeatures::OPTIMIZATION)
+                    .union(ArcFeatures::EMISSION)
+                    .union(ArcFeatures::VERIFIER)
+                    .union(ArcFeatures::BORROW_HAZARD_DIAGNOSTICS)
+                    .union(ArcFeatures::EMIT_TRACE_COMMENTS),
+            }),
+            MemoryPreset::ArcNoVerify => MemoryStrategy::ReferenceCounting(ArcConfig {
+                features: ArcFeatures::INSERTION
+                    .union(ArcFeatures::OPTIMIZATION)
+                    .union(ArcFeatures::EMISSION)
+                    .union(ArcFeatures::BORROW_HAZARD_DIAGNOSTICS)
+                    .union(ArcFeatures::EMIT_TRACE_COMMENTS),
+            }),
+            MemoryPreset::ArcBenchRaw => MemoryStrategy::ReferenceCounting(ArcConfig {
+                features: ArcFeatures::INSERTION.union(ArcFeatures::EMISSION),
+            }),
+            MemoryPreset::ArcBenchOptimized => MemoryStrategy::ReferenceCounting(ArcConfig {
+                features: ArcFeatures::INSERTION
+                    .union(ArcFeatures::OPTIMIZATION)
+                    .union(ArcFeatures::EMISSION),
+            }),
+        };
+        Self { strategy }
+    }
+
+    pub fn reference_counting(self) -> Option<ArcConfig> {
+        match self.strategy {
+            MemoryStrategy::Unmanaged => None,
+            MemoryStrategy::ReferenceCounting(config) => Some(config),
         }
     }
 
-    pub fn gc_enabled(self) -> bool {
-        matches!(self.mode, GcMode::Arc)
-    }
-
-    pub fn arc_insertion_enabled(self) -> bool {
-        self.gc_enabled() && self.features.contains(GcFeatureFlags::ARC_INSERTION)
-    }
-
-    pub fn arc_optimization_enabled(self) -> bool {
-        self.arc_insertion_enabled() && self.features.contains(GcFeatureFlags::ARC_OPTIMIZATION)
-    }
-
-    pub fn arc_emission_enabled(self) -> bool {
-        self.gc_enabled() && self.features.contains(GcFeatureFlags::ARC_EMISSION)
-    }
-
-    pub fn arc_verify_enabled(self) -> bool {
-        self.arc_emission_enabled() && self.features.contains(GcFeatureFlags::ARC_VERIFIER)
-    }
-
-    pub fn borrow_hazard_diagnostics_enabled(self) -> bool {
-        self.gc_enabled()
-            && self
-                .features
-                .contains(GcFeatureFlags::BORROW_HAZARD_DIAGNOSTICS)
-    }
-
-    pub fn arc_emit_trace_enabled(self) -> bool {
-        self.arc_emission_enabled()
-            && self
-                .features
-                .contains(GcFeatureFlags::ARC_EMIT_TRACE_COMMENTS)
+    pub fn reference_counting_mut(&mut self) -> Option<&mut ArcConfig> {
+        match &mut self.strategy {
+            MemoryStrategy::Unmanaged => None,
+            MemoryStrategy::ReferenceCounting(config) => Some(config),
+        }
     }
 }

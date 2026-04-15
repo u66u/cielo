@@ -5,7 +5,7 @@ use cielo_base::SourceId;
 use cielo_base::diagnostics::DiagnosticBag;
 use cielo_ir::core::CoreProgram;
 use cielo_ir::{cfg::CfgProgram, linear::LinearProgram};
-use cielo_memory::{GcConfig, MemoryInput};
+use cielo_memory::{MemoryInput, MemoryProfile};
 use cielo_sema::typecheck::typecheck_core;
 use cielo_staging::pipeline::phases::Residualized;
 use cielo_staging::pipeline::phases::SemanticTables;
@@ -54,7 +54,7 @@ pub fn emit_pipeline(
     linear: LinearProgram,
     cfg: CfgProgram,
     interner: &Interner,
-    gc: GcConfig,
+    memory: MemoryProfile,
 ) -> CompiledC {
     let runtime = cielo_runtime::assemble_program(
         cfg,
@@ -63,7 +63,7 @@ pub fn emit_pipeline(
         residual.facts().constant_table.clone(),
         residual.diagnostics().clone(),
     );
-    let managed = cielo_memory::lower(MemoryInput { runtime: &runtime }, gc);
+    let managed = cielo_memory::lower(MemoryInput { runtime: &runtime }, memory);
     *residual.diagnostics_mut() = managed.diagnostics;
     let c_source = cielo_backend_c::emit(
         &managed.cfg,
