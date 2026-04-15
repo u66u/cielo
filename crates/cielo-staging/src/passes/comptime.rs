@@ -151,7 +151,7 @@ fn assert_residualize_specialize_invariants(residual: &crate::pipeline::phases::
     let bta = residual.bta();
     let sema = residual.sema();
     let mono = residual.mono();
-    let residual_tables = residual.residual();
+    let residual_facts = residual.facts();
     let expr_count = program.exprs().len();
     let stmt_count = program.stmts().len();
     let func_count = program.functions().len();
@@ -285,7 +285,7 @@ fn assert_residualize_specialize_invariants(residual: &crate::pipeline::phases::
         }
     }
 
-    for func_id in residual_tables.function_effect_summary.keys() {
+    for func_id in residual_facts.function_effect_summary.keys() {
         assert!(
             func_id.index() < func_count,
             "compiler bug: residual function_effect_summary key f{} out of bounds after residualize+specialize",
@@ -295,24 +295,24 @@ fn assert_residualize_specialize_invariants(residual: &crate::pipeline::phases::
 
     let mut seen_constant_keys = HashSet::new();
     let mut total_constant_bytes = 0usize;
-    for entry in &residual_tables.constant_table.entries {
+    for entry in &residual_facts.constant_table.entries {
         assert!(
             seen_constant_keys.insert(entry.key.clone()),
             "compiler bug: residual constant_table contains duplicate key"
         );
         assert!(
-            entry.estimated_size_bytes <= residual_tables.constant_table.entry_cap_bytes,
+            entry.estimated_size_bytes <= residual_facts.constant_table.entry_cap_bytes,
             "compiler bug: residual constant_table entry exceeds entry cap"
         );
         total_constant_bytes = total_constant_bytes.saturating_add(entry.estimated_size_bytes);
     }
     assert!(
-        residual_tables.constant_table.total_size_bytes
-            <= residual_tables.constant_table.unit_cap_bytes,
+        residual_facts.constant_table.total_size_bytes
+            <= residual_facts.constant_table.unit_cap_bytes,
         "compiler bug: residual constant_table total size exceeds unit cap"
     );
     assert!(
-        residual_tables.constant_table.total_size_bytes <= total_constant_bytes,
+        residual_facts.constant_table.total_size_bytes <= total_constant_bytes,
         "compiler bug: residual constant_table size accounting is inconsistent"
     );
 }

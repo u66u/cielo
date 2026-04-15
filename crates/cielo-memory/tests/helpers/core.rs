@@ -60,7 +60,7 @@ pub fn emit_pipeline(
         cfg,
         &linear,
         residual.sema(),
-        residual.residual().constant_table.clone(),
+        residual.facts().constant_table.clone(),
         residual.diagnostics().clone(),
     );
     let managed = cielo_memory::lower(MemoryInput { runtime: &runtime }, gc);

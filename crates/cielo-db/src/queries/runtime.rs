@@ -29,7 +29,7 @@ pub fn runtime_file(db: &dyn Db, source: SourceFile, target: TargetProfile) -> A
         cfg,
         &linear.linear,
         linear.residual.sema(),
-        linear.residual.residual().constant_table.clone(),
+        linear.residual.facts().constant_table.clone(),
         linear.residual.diagnostics().clone(),
     );
     Arc::new(RuntimeFile {

@@ -296,7 +296,7 @@ fn main() -> Int {
     assert!(
         compiled
             .residual
-            .residual()
+            .facts()
             .constant_table
             .entries
             .iter()
@@ -524,7 +524,7 @@ fn main() -> Int {
     assert!(
         compiled
             .residual
-            .residual()
+            .facts()
             .constant_table
             .entries
             .iter()

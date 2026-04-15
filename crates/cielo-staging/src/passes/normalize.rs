@@ -37,14 +37,13 @@ const MAX_SPEC_INLINE_STMTS: usize = 6;
 const MAX_SPEC_INLINE_EXPRS: usize = 24;
 
 pub fn run(residual: Residualized) -> Residualized {
-    let (mut program, mut diagnostics, _sema, mono, ct, bta, mut residual_tables) =
-        residual.into_parts();
+    let (mut program, mut diagnostics, _sema, mut facts, report) = residual.into_parts();
     shrink_to_fixpoint(&mut program);
     speculative_inline_once(&mut program);
     shrink_to_fixpoint(&mut program);
     let sema = typecheck_core(&program, &mut diagnostics);
-    residual_tables.constant_table = constant_table::build_for_core(&program);
-    Residualized::new(program, diagnostics, sema, mono, ct, bta, residual_tables)
+    facts.constant_table = constant_table::build_for_core(&program);
+    Residualized::new(program, diagnostics, sema, facts, report)
 }
 
 fn shrink_to_fixpoint(program: &mut CoreProgram) {

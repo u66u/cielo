@@ -13,10 +13,7 @@ use cielo_ir::core::{
 };
 use cielo_ir::effect::SortedEffectRow;
 use cielo_staging::passes::normalize;
-use cielo_staging::pipeline::phases::{
-    BtaTables, CtPropagationTables, MonomorphizationSummary, ResidualTables, Residualized,
-    SemanticTables,
-};
+use cielo_staging::pipeline::phases::{ResidualFacts, Residualized, SemanticTables, StagingReport};
 use cielo_test_support::{Compiler, CompilerConfig};
 use helpers::ir::{contains_call_to, contains_if_stmt, reachable_stmt_count};
 
@@ -869,10 +866,8 @@ fn residualized(program: CoreProgram) -> Residualized {
         program,
         DiagnosticBag::default(),
         sema,
-        MonomorphizationSummary::default(),
-        CtPropagationTables::default(),
-        BtaTables::default(),
-        ResidualTables::default(),
+        ResidualFacts::default(),
+        StagingReport::default(),
     )
 }
 

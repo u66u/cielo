@@ -159,7 +159,7 @@ fn main() -> Int {
         })
         .expect("ping function must exist");
     let ping_effects = residual
-        .residual()
+        .facts()
         .function_effect_summary
         .get(&cielo_base::FuncId::new(ping_id))
         .expect("ping summary must exist");
@@ -1018,7 +1018,7 @@ fn residualize_recomputes_function_effect_summary_from_rewritten_ir() {
     let residual = residualize::run(classified);
 
     assert_eq!(
-        residual.residual().function_effect_summary.get(&callee_id),
+        residual.facts().function_effect_summary.get(&callee_id),
         Some(&SortedEffectRow::empty()),
         "callee summary should follow pruned residual body, not stale pre-residual stmt effects"
     );
@@ -1744,7 +1744,7 @@ fn residualize_preserves_function_effect_summary_when_match_pruning_rewrites_roo
     );
     assert!(
         residual
-            .residual()
+            .facts()
             .function_effect_summary
             .get(&callee_id)
             .is_some_and(|row| row.contains(effect)),
@@ -2084,7 +2084,7 @@ fn v1_example_contract_oracle_matches_effect_and_staging_intent_split_pipeline()
     let io_step_id = func_id_named("io_step");
     let main_id = func_id_named("main");
 
-    let summary = &residual.residual().function_effect_summary;
+    let summary = &residual.facts().function_effect_summary;
     assert!(
         summary.get(&seed_id).is_some_and(SortedEffectRow::is_empty),
         "seed is pure and should keep an empty residual effect summary"
@@ -2366,7 +2366,7 @@ fn main() -> Int {
     let mut interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
     let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
-    let stats = residual.residual().residualize_stats;
+    let stats = residual.report().residualize;
 
     assert!(
         stats.embedded_literals > 0,

@@ -8,8 +8,8 @@ pub struct StagingPassCounters {
 
 pub fn staging_pass_counters(residual: &Residualized) -> StagingPassCounters {
     StagingPassCounters {
-        residualize: residual.residual().residualize_stats,
-        specialize: residual.residual().specialization_stats,
+        residualize: residual.report().residualize,
+        specialize: residual.report().specialization,
     }
 }
 

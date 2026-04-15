@@ -21,8 +21,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::passes::constant_table;
 use crate::pipeline::phases::{
-    BtaTables, CtPropagationTables, Reason, Residualized, SemanticTables, SpecializationStats,
-    Stage,
+    BtaTables, CtPropagationTables, Reason, ResidualFacts, Residualized, SemanticTables,
+    SpecializationStats, Stage,
 };
 use cielo_base::diagnostics::ErrorNode;
 use cielo_base::span::Span;
@@ -36,21 +36,27 @@ const MAX_SPECIALIZATIONS_PER_CALLEE: usize = 8;
 const MAX_TOTAL_SPECIALIZATIONS: usize = 256;
 
 pub fn run(residual: Residualized) -> Residualized {
-    let (mut program, diagnostics, mut sema, mut mono, ct, mut bta, mut residual_tables) =
-        residual.into_parts();
+    let (mut program, diagnostics, mut sema, mut facts, mut report) = residual.into_parts();
     synchronize_semantic_tables(&program, &mut sema);
 
-    residual_tables.specialization_stats =
-        specialize_handle_wrapped_calls(&mut program, &mut bta, &mut sema);
+    report.specialization =
+        specialize_handle_wrapped_calls(&mut program, &mut report.bta, &mut sema);
 
     let func_remap = prune_unreachable_functions(&mut program);
-    mono.remap_func_ids(&func_remap);
-    bta.remap_func_ids(&func_remap);
-    residual_tables.remap_func_ids(&func_remap);
-    residual_tables.constant_table = constant_table::build_for_core(&program);
+    report.remap_func_ids(&func_remap);
+    facts.remap_func_ids(&func_remap);
+    facts.constant_table = constant_table::build_for_core(&program);
     synchronize_semantic_tables(&program, &mut sema);
-    assert_remap_integrity(&program, &sema, &mono, &ct, &bta, &residual_tables);
-    Residualized::new(program, diagnostics, sema, mono, ct, bta, residual_tables)
+    assert_remap_integrity(
+        &program,
+        &sema,
+        &report.monomorphization,
+        &report.ct,
+        &report.bta,
+        &facts,
+        &report.specialization,
+    );
+    Residualized::new(program, diagnostics, sema, facts, report)
 }
 
 #[derive(Clone)]
@@ -665,7 +671,8 @@ fn assert_remap_integrity(
     mono: &crate::pipeline::phases::MonomorphizationSummary,
     ct: &CtPropagationTables,
     bta: &crate::pipeline::phases::BtaTables,
-    residual: &crate::pipeline::phases::ResidualTables,
+    residual: &ResidualFacts,
+    specialization: &SpecializationStats,
 ) {
     let function_count = program.functions().len();
     let expr_count = program.exprs().len();
@@ -772,11 +779,11 @@ fn assert_remap_integrity(
         assert_func_id_in_bounds(*func_id, function_count, "residual function_effect_summary");
     }
     assert!(
-        residual.specialization_stats.created <= residual.specialization_stats.candidates_seen,
+        specialization.created <= specialization.candidates_seen,
         "compiler bug: specialization created count exceeds candidates seen"
     );
     assert!(
-        residual.specialization_stats.rewrites <= residual.specialization_stats.candidates_seen,
+        specialization.rewrites <= specialization.candidates_seen,
         "compiler bug: specialization rewrite count exceeds candidates seen"
     );
 }

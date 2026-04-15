@@ -35,13 +35,13 @@ fn main() -> Int {
     let counters = staging_pass_counters(&residual);
     assert_eq!(
         counters.residualize,
-        residual.residual().residualize_stats,
-        "staging diagnostics should surface residualization counters from residual tables"
+        residual.report().residualize,
+        "staging diagnostics should surface residualization counters from the staging report"
     );
     assert_eq!(
         counters.specialize,
-        residual.residual().specialization_stats,
-        "staging diagnostics should surface specialization counters from residual tables"
+        residual.report().specialization,
+        "staging diagnostics should surface specialization counters from the staging report"
     );
     assert!(
         counters.specialize.candidates_seen > 0

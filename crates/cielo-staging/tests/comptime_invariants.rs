@@ -285,7 +285,7 @@ fn main() -> Int {
 
     assert!(
         residual
-            .residual()
+            .facts()
             .function_effect_summary
             .keys()
             .all(|id| id.index() < func_count),

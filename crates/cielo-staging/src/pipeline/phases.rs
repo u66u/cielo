@@ -235,14 +235,12 @@ impl BtaTables {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct ResidualTables {
+pub struct ResidualFacts {
     pub function_effect_summary: HashMap<FuncId, SortedEffectRow>,
     pub constant_table: ConstantTable,
-    pub residualize_stats: ResidualizeStats,
-    pub specialization_stats: SpecializationStats,
 }
 
-impl ResidualTables {
+impl ResidualFacts {
     pub fn remap_func_ids(&mut self, remap: &[Option<FuncId>]) {
         let summary = std::mem::take(&mut self.function_effect_summary);
         for (source, effects) in summary {
@@ -251,6 +249,40 @@ impl ResidualTables {
             };
             self.function_effect_summary.insert(mapped, effects);
         }
+    }
+}
+
+/// Facts kept after staging for runtime lowering.
+///
+/// The staging and evaluator tables are useful for diagnostics and tooling,
+/// but they are not inputs to runtime lowering. Keeping them in this explicit
+/// report makes that distinction visible instead of making every downstream
+/// pass depend on the whole history of staging.
+#[derive(Clone, Debug, Default)]
+pub struct StagingReport {
+    pub monomorphization: MonomorphizationSummary,
+    pub ct: CtPropagationTables,
+    pub bta: BtaTables,
+    pub residualize: ResidualizeStats,
+    pub specialization: SpecializationStats,
+}
+
+impl StagingReport {
+    pub fn mono(&self) -> &MonomorphizationSummary {
+        &self.monomorphization
+    }
+
+    pub fn ct(&self) -> &CtPropagationTables {
+        &self.ct
+    }
+
+    pub fn bta(&self) -> &BtaTables {
+        &self.bta
+    }
+
+    pub fn remap_func_ids(&mut self, remap: &[Option<FuncId>]) {
+        self.monomorphization.remap_func_ids(remap);
+        self.bta.remap_func_ids(remap);
     }
 }
 
@@ -341,9 +373,25 @@ impl BtaClassified {
         &mut self.program
     }
 
-    pub fn into_residualized(self, residual: ResidualTables) -> Residualized {
+    pub fn into_residualized(
+        self,
+        residual: ResidualFacts,
+        residualize: ResidualizeStats,
+    ) -> Residualized {
         let (program, diagnostics, sema, mono, ct, bta) = self.into_parts();
-        Residualized::new(program, diagnostics, sema, mono, ct, bta, residual)
+        Residualized::new(
+            program,
+            diagnostics,
+            sema,
+            residual,
+            StagingReport {
+                monomorphization: mono,
+                ct,
+                bta,
+                residualize,
+                specialization: SpecializationStats::default(),
+            },
+        )
     }
 }
 
@@ -351,10 +399,8 @@ define_phase_state_with_parts!(Residualized {
     program: CoreProgram,
     diagnostics: DiagnosticBag,
     sema: SemanticTables,
-    mono: MonomorphizationSummary,
-    ct: CtPropagationTables,
-    bta: BtaTables,
-    residual: ResidualTables,
+    facts: ResidualFacts,
+    report: StagingReport,
 });
 
 impl Residualized {
@@ -362,8 +408,24 @@ impl Residualized {
         (&self.program, &mut self.diagnostics)
     }
 
-    pub fn residual_mut(&mut self) -> &mut ResidualTables {
-        &mut self.residual
+    pub fn facts_mut(&mut self) -> &mut ResidualFacts {
+        &mut self.facts
+    }
+
+    pub fn report_mut(&mut self) -> &mut StagingReport {
+        &mut self.report
+    }
+
+    pub fn mono(&self) -> &MonomorphizationSummary {
+        self.report.mono()
+    }
+
+    pub fn ct(&self) -> &CtPropagationTables {
+        self.report.ct()
+    }
+
+    pub fn bta(&self) -> &BtaTables {
+        self.report.bta()
     }
 
     pub fn diagnostics_mut(&mut self) -> &mut DiagnosticBag {

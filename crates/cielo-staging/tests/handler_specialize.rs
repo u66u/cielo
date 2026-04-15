@@ -203,7 +203,7 @@ fn main() -> Int {
     let mut _interner = Interner::new();
     let compiler = Compiler::new(CompilerConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
-    let stats = compiled.residual.residual().specialization_stats;
+    let stats = compiled.residual.report().specialization;
 
     assert!(
         stats.candidates_seen >= 2,
@@ -1257,7 +1257,7 @@ fn assert_phase_func_ids_in_bounds(compiled: &cielo_test_support::CompiledC) {
     assert!(
         compiled
             .residual
-            .residual()
+            .facts()
             .function_effect_summary
             .keys()
             .all(|id| id.index() < func_count),
@@ -1347,7 +1347,7 @@ fn main() -> Int {
 
     // Verify that specialization actually fired
     assert!(
-        residual.residual().specialization_stats.created > 0,
+        residual.report().specialization.created > 0,
         "Specialization failed to fire, cannot test cloner stability!"
     );
 

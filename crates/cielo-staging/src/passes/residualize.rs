@@ -4,7 +4,7 @@
 // - BTA-classified program
 //
 // Outputs:
-// - Residualized wrapper + residual side tables
+// - Residualized Core plus runtime-facing facts and a staging report
 //
 // Invariants:
 // - Function-level effect annotations are erased from function decls
@@ -23,7 +23,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::passes::constant_table;
 use crate::pipeline::phases::{
-    BranchDecision, BtaClassified, BtaTables, CtPropagationTables, Knownness, ResidualTables,
+    BranchDecision, BtaClassified, BtaTables, CtPropagationTables, Knownness, ResidualFacts,
     ResidualizeStats, Residualized, Stage,
 };
 use cielo_base::span::Span;
@@ -41,12 +41,13 @@ pub fn run(bta: BtaClassified) -> Residualized {
     rewrite_call_effect_rows(bta.program_mut(), &function_effect_summary);
     erase_function_effect_annotations(bta.program_mut());
     let constant_table = constant_table::build_for_core(bta.program());
-    bta.into_residualized(ResidualTables {
-        function_effect_summary,
-        constant_table,
+    bta.into_residualized(
+        ResidualFacts {
+            function_effect_summary,
+            constant_table,
+        },
         residualize_stats,
-        specialization_stats: Default::default(),
-    })
+    )
 }
 
 fn collect_function_effect_summary(program: &CoreProgram) -> HashMap<FuncId, SortedEffectRow> {
