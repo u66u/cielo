@@ -13,7 +13,7 @@ use cielo_ir::core::{
 };
 use cielo_ir::effect::SortedEffectRow;
 use cielo_staging::passes::normalize;
-use cielo_staging::pipeline::phases::{ResidualFacts, Residualized, SemanticTables, StagingReport};
+use cielo_staging::pipeline::phases::{ResidualFacts, SemanticTables, StagedCore, StagingReport};
 use cielo_test_support::{Compiler, CompilerConfig};
 use helpers::ir::{contains_call_to, contains_if_stmt, reachable_stmt_count};
 
@@ -860,9 +860,9 @@ fn normalize_preserves_used_handler_return_bindings() {
     }
 }
 
-fn residualized(program: CoreProgram) -> Residualized {
+fn residualized(program: CoreProgram) -> StagedCore {
     let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
-    Residualized::new(
+    StagedCore::new(
         program,
         DiagnosticBag::default(),
         sema,

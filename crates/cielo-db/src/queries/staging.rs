@@ -3,7 +3,7 @@ use std::sync::Arc;
 use cielo_ir::target::TargetSpec;
 use cielo_staging::{
     passes::{comptime, monomorphize},
-    pipeline::phases::Residualized,
+    pipeline::phases::StagedCore,
 };
 
 use crate::{
@@ -43,10 +43,10 @@ pub fn classified_file(
 #[salsa::tracked(no_eq, returns(clone))]
 pub fn staged_file(db: &dyn Db, source: SourceFile, target: TargetProfile) -> Arc<StagedFile> {
     let classified = classified_file(db, source, target);
-    let residual: Residualized = comptime::residualize_specialize(classified.classified.clone());
+    let staged: StagedCore = comptime::residualize_specialize(classified.classified.clone());
     Arc::new(StagedFile {
         source: classified.source,
-        residual,
+        staged,
         interner: classified.interner.clone(),
     })
 }

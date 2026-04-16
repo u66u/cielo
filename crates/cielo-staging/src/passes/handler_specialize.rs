@@ -1,10 +1,10 @@
 // Pass 7/9: handler_specialize (bounded handler-call specialization groundwork)
 //
 // Inputs:
-// - Residualized Core program
+// - Staged Core program
 //
 // Outputs:
-// - Residualized Core program with specialized function copies for handle-wrapped direct calls
+// - Staged Core program with specialized function copies for handle-wrapped direct calls
 //
 // Invariants:
 // - A pair (callee, handler-shape) specializes at most once
@@ -21,8 +21,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::passes::constant_table;
 use crate::pipeline::phases::{
-    BtaTables, CtPropagationTables, Reason, ResidualFacts, Residualized, SemanticTables,
-    SpecializationStats, Stage,
+    BtaTables, CtPropagationTables, Reason, ResidualFacts, SemanticTables, SpecializationStats,
+    Stage, StagedCore,
 };
 use cielo_base::diagnostics::ErrorNode;
 use cielo_base::span::Span;
@@ -35,7 +35,7 @@ use cielo_ir::effect::SortedEffectRow;
 const MAX_SPECIALIZATIONS_PER_CALLEE: usize = 8;
 const MAX_TOTAL_SPECIALIZATIONS: usize = 256;
 
-pub fn run(residual: Residualized) -> Residualized {
+pub fn run(residual: StagedCore) -> StagedCore {
     let (mut program, diagnostics, mut sema, mut facts, mut report) = residual.into_parts();
     synchronize_semantic_tables(&program, &mut sema);
 
@@ -56,7 +56,7 @@ pub fn run(residual: Residualized) -> Residualized {
         &facts,
         &report.specialization,
     );
-    Residualized::new(program, diagnostics, sema, facts, report)
+    StagedCore::new(program, diagnostics, sema, facts, report)
 }
 
 #[derive(Clone)]

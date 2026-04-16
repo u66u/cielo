@@ -146,11 +146,11 @@ fn compile_case(case: BenchCase) {
     let source = compiler.source(case.source, SourceId::from_u32(0));
     let staged = compiler.staged(source);
     assert!(
-        !staged.residual.diagnostics().has_errors(),
+        !staged.staged.diagnostics().has_errors(),
         "benchmark source `{}` should compile without diagnostics errors",
         case.name
     );
-    black_box(staged.residual.program().functions().len());
+    black_box(staged.staged.program().functions().len());
 }
 
 #[derive(Clone, Copy, Debug, Default)]

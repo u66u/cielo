@@ -1,7 +1,7 @@
 // Pass 8/9: linearize (Residual Core -> linear runtime IR)
 //
 // Inputs:
-// - Residualized Core program
+// - Staged runtime Core program
 //
 // Outputs:
 // - Arena-backed LinearProgram with explicit expression/statement ids

@@ -6,10 +6,10 @@
 // - Re-run shrinking to clean up post-inline residue.
 //
 // Inputs:
-// - Residualized Core program after Residualize+Specialize
+// - Staged Core program after Residualize+Specialize
 //
 // Outputs:
-// - Residualized Core program (mutated in place)
+// - Staged Core program (mutated in place)
 //
 // Invariants:
 // - Rewrites are semantics-preserving and bounded.
@@ -25,7 +25,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::passes::constant_table;
-use crate::pipeline::phases::Residualized;
+use crate::pipeline::phases::StagedCore;
 use cielo_base::span::Span;
 use cielo_base::{ExprId, FuncId, HandlerId, StmtId, VarId};
 use cielo_ir::core::{CoreProgram, ExprKind, ExprNode, MatchArm, StmtKind, StmtNode};
@@ -36,14 +36,14 @@ const MAX_SHRINK_ITERS: usize = 16;
 const MAX_SPEC_INLINE_STMTS: usize = 6;
 const MAX_SPEC_INLINE_EXPRS: usize = 24;
 
-pub fn run(residual: Residualized) -> Residualized {
+pub fn run(residual: StagedCore) -> StagedCore {
     let (mut program, mut diagnostics, _sema, mut facts, report) = residual.into_parts();
     shrink_to_fixpoint(&mut program);
     speculative_inline_once(&mut program);
     shrink_to_fixpoint(&mut program);
     let sema = typecheck_core(&program, &mut diagnostics);
     facts.constant_table = constant_table::build_for_core(&program);
-    Residualized::new(program, diagnostics, sema, facts, report)
+    StagedCore::new(program, diagnostics, sema, facts, report)
 }
 
 fn shrink_to_fixpoint(program: &mut CoreProgram) {

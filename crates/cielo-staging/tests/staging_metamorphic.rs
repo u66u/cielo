@@ -6,7 +6,7 @@ mod helpers;
 use cielo_base::Interner;
 use cielo_base::{ExprId, FuncId, SourceId, StmtId, VarId};
 use cielo_ir::core::{CoreProgram, ExprKind};
-use cielo_staging::pipeline::phases::{BranchDecision, Knownness, Reason, Residualized, Stage};
+use cielo_staging::pipeline::phases::{BranchDecision, Knownness, Reason, Stage, StagedCore};
 use cielo_test_support::{Compiler, CompilerConfig};
 use helpers::ir::{first_return_expr, reachable_stmt_count_from_root};
 
@@ -236,7 +236,7 @@ fn main() -> Int {
     );
 }
 
-fn stage_signature(residual: &Residualized) -> StageSignature {
+fn stage_signature(residual: &StagedCore) -> StageSignature {
     let mut ct_exprs = 0usize;
     let mut rt_exprs = 0usize;
     let mut rt_reasons = BTreeMap::new();

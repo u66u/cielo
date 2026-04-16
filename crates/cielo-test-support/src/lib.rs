@@ -13,7 +13,7 @@ use cielo_runtime::{assemble_program, cfg_lower, linearize};
 use cielo_sema::{TypedCore, check_core};
 use cielo_staging::{
     passes::{bta, comptime, ct_eval, handler_specialize, monomorphize, normalize, residualize},
-    pipeline::phases::{BtaClassified, CtPropagated, Residualized},
+    pipeline::phases::{BtaClassified, CtPropagated, StagedCore},
 };
 
 pub use cielo_ir::target::{Endianness, TargetSpec};
@@ -33,7 +33,7 @@ impl CompilerConfig {
 
 #[derive(Clone, Debug)]
 pub struct CompiledC {
-    pub residual: Residualized,
+    pub residual: StagedCore,
     pub linear: LinearProgram,
     pub cfg: CfgProgram,
     pub memory: MemoryReport,
@@ -97,7 +97,7 @@ impl Compiler {
         source: &str,
         source_id: SourceId,
         interner: &mut Interner,
-    ) -> Residualized {
+    ) -> StagedCore {
         let core = self.parse_and_lower_to_core(source, source_id, interner);
         self.run_v1_core_pipeline(core)
     }
@@ -118,7 +118,7 @@ impl Compiler {
         source: &str,
         source_id: SourceId,
         interner: &mut Interner,
-    ) -> Residualized {
+    ) -> StagedCore {
         let core = self.parse_and_lower_to_core(source, source_id, interner);
         self.run_v0_core_pipeline(core)
     }
@@ -145,26 +145,26 @@ impl Compiler {
         ct_eval::run(mono, self.config.target)
     }
 
-    pub fn run_v1_residualize_specialize(&self, classified: BtaClassified) -> Residualized {
+    pub fn run_v1_residualize_specialize(&self, classified: BtaClassified) -> StagedCore {
         comptime::residualize_specialize(classified)
     }
 
-    pub fn run_v1_normalize(&self, residual: Residualized) -> Residualized {
+    pub fn run_v1_normalize(&self, residual: StagedCore) -> StagedCore {
         normalize::run(residual)
     }
 
-    pub fn run_v1_core_pipeline(&self, built: LowerOutput) -> Residualized {
+    pub fn run_v1_core_pipeline(&self, built: LowerOutput) -> StagedCore {
         let classified = self.run_v1_evaluate_classify(built);
         self.run_v1_residualize_specialize(classified)
     }
 
-    pub fn run_v1_typed_pipeline(&self, typed: TypedCore) -> Residualized {
+    pub fn run_v1_typed_pipeline(&self, typed: TypedCore) -> StagedCore {
         let mono = monomorphize::run(typed);
         let classified = comptime::evaluate_classify(mono, self.config.target);
         comptime::residualize_specialize(classified)
     }
 
-    pub fn run_v0_core_pipeline(&self, built: LowerOutput) -> Residualized {
+    pub fn run_v0_core_pipeline(&self, built: LowerOutput) -> StagedCore {
         let mono = monomorphize::run(typecheck(built));
         let ct = ct_eval::run(mono, self.config.target);
         residualize::run(bta::run(ct))
@@ -177,7 +177,7 @@ fn typecheck(built: LowerOutput) -> TypedCore {
 }
 
 pub fn emit_runtime(
-    mut residual: Residualized,
+    mut residual: StagedCore,
     interner: &Interner,
     memory: MemoryProfile,
 ) -> CompiledC {
@@ -191,7 +191,7 @@ pub fn emit_runtime(
 }
 
 pub fn emit_lowered(
-    mut residual: Residualized,
+    mut residual: StagedCore,
     linear: LinearProgram,
     cfg: CfgProgram,
     interner: &Interner,

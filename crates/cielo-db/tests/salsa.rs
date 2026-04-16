@@ -34,7 +34,17 @@ fn changing_memory_config_does_not_rerun_runtime_queries() {
     let source = SourceFile::new(&db, 0, "memory.cielo".to_owned(), "fn main() {}".to_owned());
     let profile = CompileProfile::default();
     let _arc = compile_memory(&db, source, profile);
-    let _ = db.take_query_events();
+    let arc_events = db.take_query_events();
+    assert!(
+        arc_events
+            .iter()
+            .any(|event| event.description.contains("refcount_memory_file"))
+    );
+    assert!(
+        !arc_events
+            .iter()
+            .any(|event| event.description.contains("unmanaged_memory_file"))
+    );
 
     let off = CompileProfile {
         memory: MemoryProfile::from_preset(cielo_memory::MemoryPreset::Unmanaged),
@@ -46,6 +56,16 @@ fn changing_memory_config_does_not_rerun_runtime_queries() {
         events
             .iter()
             .any(|event| event.description.contains("memory_file"))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.description.contains("unmanaged_memory_file"))
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.description.contains("refcount_memory_file"))
     );
     assert!(
         !events

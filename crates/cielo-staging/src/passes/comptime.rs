@@ -1,6 +1,6 @@
 use crate::passes::{bta, ct_eval, handler_specialize, residualize};
 use crate::pipeline::phases::{
-    BranchDecision, BtaClassified, Monomorphized, Reason, Residualized, Stage,
+    BranchDecision, BtaClassified, Monomorphized, Reason, Stage, StagedCore,
 };
 use cielo_ir::target::TargetSpec;
 use std::collections::HashSet;
@@ -14,7 +14,7 @@ pub fn evaluate_classify(mono: Monomorphized, target: TargetSpec) -> BtaClassifi
 }
 
 /// v1 fused stage B: Residualize+Specialize.
-pub fn residualize_specialize(classified: BtaClassified) -> Residualized {
+pub fn residualize_specialize(classified: BtaClassified) -> StagedCore {
     let residual = residualize::run(classified);
     let residual = handler_specialize::run(residual);
     assert_residualize_specialize_invariants(&residual);
@@ -145,7 +145,7 @@ fn assert_evaluate_classify_invariants(classified: &BtaClassified) {
     }
 }
 
-fn assert_residualize_specialize_invariants(residual: &crate::pipeline::phases::Residualized) {
+fn assert_residualize_specialize_invariants(residual: &StagedCore) {
     let program = residual.program();
     let ct = residual.ct();
     let bta = residual.bta();

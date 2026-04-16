@@ -7,7 +7,7 @@ use cielo_ir::runtime::RuntimeProgram;
 use cielo_lowering::LowerOutput;
 use cielo_memory::MemoryProgram;
 use cielo_sema::TypedCore;
-use cielo_staging::pipeline::phases::{BtaClassified, Monomorphized, Residualized};
+use cielo_staging::pipeline::phases::{BtaClassified, Monomorphized, StagedCore};
 
 macro_rules! file_artifact {
     ($(#[$meta:meta])* $name:ident { $($field:ident: $ty:ty),+ $(,)? }) => {
@@ -47,12 +47,12 @@ file_artifact!(
 );
 file_artifact!(
     /// Runtime-only Core after residualization and specialization.
-    StagedFile { residual: Residualized }
+    StagedFile { staged: StagedCore }
 );
 file_artifact!(
     /// Normalized runtime Core and its Linear IR.
     LinearFile {
-        residual: Residualized,
+        staged: StagedCore,
         linear: LinearProgram,
     }
 );

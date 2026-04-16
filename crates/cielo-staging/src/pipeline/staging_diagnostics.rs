@@ -1,4 +1,4 @@
-use crate::pipeline::phases::{ResidualizeStats, Residualized, SpecializationStats};
+use crate::pipeline::phases::{ResidualizeStats, SpecializationStats, StagedCore};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct StagingPassCounters {
@@ -6,7 +6,7 @@ pub struct StagingPassCounters {
     pub specialize: SpecializationStats,
 }
 
-pub fn staging_pass_counters(residual: &Residualized) -> StagingPassCounters {
+pub fn staging_pass_counters(residual: &StagedCore) -> StagingPassCounters {
     StagingPassCounters {
         residualize: residual.report().residualize,
         specialize: residual.report().specialization,

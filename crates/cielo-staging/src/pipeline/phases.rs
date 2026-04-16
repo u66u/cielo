@@ -377,9 +377,9 @@ impl BtaClassified {
         self,
         residual: ResidualFacts,
         residualize: ResidualizeStats,
-    ) -> Residualized {
+    ) -> StagedCore {
         let (program, diagnostics, sema, mono, ct, bta) = self.into_parts();
-        Residualized::new(
+        StagedCore::new(
             program,
             diagnostics,
             sema,
@@ -395,7 +395,7 @@ impl BtaClassified {
     }
 }
 
-define_phase_state_with_parts!(Residualized {
+define_phase_state_with_parts!(StagedCore {
     program: CoreProgram,
     diagnostics: DiagnosticBag,
     sema: SemanticTables,
@@ -403,7 +403,7 @@ define_phase_state_with_parts!(Residualized {
     report: StagingReport,
 });
 
-impl Residualized {
+impl StagedCore {
     pub fn program_and_diagnostics_mut(&mut self) -> (&CoreProgram, &mut DiagnosticBag) {
         (&self.program, &mut self.diagnostics)
     }

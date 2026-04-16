@@ -4,7 +4,7 @@
 // - BTA-classified program
 //
 // Outputs:
-// - Residualized Core plus runtime-facing facts and a staging report
+// - Staged Core plus runtime-facing facts and a staging report
 //
 // Invariants:
 // - Function-level effect annotations are erased from function decls
@@ -24,14 +24,14 @@ use std::collections::{HashMap, HashSet};
 use crate::passes::constant_table;
 use crate::pipeline::phases::{
     BranchDecision, BtaClassified, BtaTables, CtPropagationTables, Knownness, ResidualFacts,
-    ResidualizeStats, Residualized, Stage,
+    ResidualizeStats, Stage, StagedCore,
 };
 use cielo_base::span::Span;
 use cielo_base::{ExprId, FuncId, HandlerId, StmtId, VarId};
 use cielo_ir::core::{CoreProgram, ExprKind, Literal, MatchArm, StmtKind, StmtNode};
 use cielo_ir::effect::SortedEffectRow;
 
-pub fn run(bta: BtaClassified) -> Residualized {
+pub fn run(bta: BtaClassified) -> StagedCore {
     let mut bta = bta;
     let ct_tables = bta.ct().clone();
     let bta_tables = bta.bta().clone();

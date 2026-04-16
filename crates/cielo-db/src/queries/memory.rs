@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use cielo_backend_c as backend_c;
-use cielo_memory::{MemoryInput, MemoryProfile};
+use cielo_memory::{ArcConfig, MemoryInput, MemoryProfile, MemoryStrategy};
 
 use crate::{CompileProfile, Db, EmittedFile, MemoryFile, SourceFile, TargetProfile, runtime_file};
 
@@ -12,12 +12,40 @@ pub fn memory_file(
     target: TargetProfile,
     memory: MemoryProfile,
 ) -> Arc<MemoryFile> {
+    match memory.strategy {
+        MemoryStrategy::Unmanaged => unmanaged_memory_file(db, source, target),
+        MemoryStrategy::ReferenceCounting(config) => {
+            refcount_memory_file(db, source, target, config)
+        }
+    }
+}
+
+#[salsa::tracked(no_eq, returns(clone))]
+pub fn unmanaged_memory_file(
+    db: &dyn Db,
+    source: SourceFile,
+    target: TargetProfile,
+) -> Arc<MemoryFile> {
     let runtime = runtime_file(db, source, target);
-    let memory = cielo_memory::lower(
+    let memory = cielo_memory::unmanaged::lower(MemoryInput {
+        runtime: &runtime.runtime,
+    });
+    Arc::new(MemoryFile { runtime, memory })
+}
+
+#[salsa::tracked(no_eq, returns(clone))]
+pub fn refcount_memory_file(
+    db: &dyn Db,
+    source: SourceFile,
+    target: TargetProfile,
+    config: ArcConfig,
+) -> Arc<MemoryFile> {
+    let runtime = runtime_file(db, source, target);
+    let memory = cielo_memory::refcount::lower(
         MemoryInput {
             runtime: &runtime.runtime,
         },
-        memory,
+        config,
     );
     Arc::new(MemoryFile { runtime, memory })
 }

@@ -6,6 +6,7 @@ use cielo_ir::runtime::RuntimeProgram;
 
 pub mod config;
 pub mod refcount;
+pub mod unmanaged;
 
 pub use config::{ArcConfig, ArcFeatures, MemoryPreset, MemoryProfile, MemoryStrategy};
 pub use refcount::ArcStats;
@@ -34,12 +35,7 @@ pub struct MemoryProgram {
 
 pub fn lower(input: MemoryInput<'_>, profile: MemoryProfile) -> MemoryProgram {
     match profile.strategy {
-        MemoryStrategy::Unmanaged => MemoryProgram {
-            cfg: input.runtime.cfg.clone(),
-            diagnostics: input.runtime.diagnostics.clone(),
-            report: MemoryReport::default(),
-            emit_arc_trace_comments: false,
-        },
+        MemoryStrategy::Unmanaged => unmanaged::lower(input),
         MemoryStrategy::ReferenceCounting(config) => refcount::lower(input, config),
     }
 }

@@ -14,7 +14,7 @@ use cielo_staging::pipeline::ct_invalidation::{
     load_snapshot as load_ct_snapshot, save_snapshot as save_ct_snapshot,
     sidecar_path as ct_sidecar_path,
 };
-use cielo_staging::pipeline::phases::{Residualized, Stage};
+use cielo_staging::pipeline::phases::{Stage, StagedCore};
 use cielo_staging::pipeline::provenance::runtime_provenance_lines;
 use cielo_staging::pipeline::staging_diagnostics::{
     render_stage_b_counter_summary, staging_pass_counters,
@@ -120,7 +120,7 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
     }
 
     let staged = compiler.staged(db_source);
-    let residual = &staged.residual;
+    let residual = &staged.staged;
     if should_dump(cli, DumpKind::Sema) {
         dump_sema_summary(residual);
     }
@@ -183,7 +183,7 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
     }
 }
 
-fn print_staging_report(residual: &Residualized) {
+fn print_staging_report(residual: &StagedCore) {
     println!("=== Staging Report ===");
     let rollups = cielo_staging::pipeline::provenance::staging_root_causes(
         residual.program(),
@@ -329,7 +329,7 @@ fn dump_functions_from_core(program: &CoreProgram, interner: &Interner) {
     }
 }
 
-fn dump_sema_summary(residual: &Residualized) {
+fn dump_sema_summary(residual: &StagedCore) {
     let typed_exprs = residual
         .sema()
         .type_of_expr
@@ -434,7 +434,7 @@ fn dump_sema_summary(residual: &Residualized) {
     }
 }
 
-fn emit_staging_diff(snapshot_path: &Path, residual: &Residualized) {
+fn emit_staging_diff(snapshot_path: &Path, residual: &StagedCore) {
     let current = collect_snapshot(residual.program(), residual.bta());
     let previous = load_stage_snapshot(snapshot_path).unwrap_or_default();
     let changes = diff_snapshots(previous.as_slice(), current.as_slice());
@@ -588,7 +588,7 @@ fn main() -> Int {
     let mut failures = 0usize;
     for (idx, (name, source)) in CASES.iter().enumerate() {
         let file = compiler.source(source, SourceId::new(idx));
-        let residual = &compiler.staged(file).residual;
+        let residual = &compiler.staged(file).staged;
         let source_name = format!("smoke/{name}.cielo");
         print_case_summary(name, &source_name, source, residual);
         if residual.diagnostics().has_errors() {
@@ -602,7 +602,7 @@ fn main() -> Int {
     }
 }
 
-fn print_case_summary(name: &str, source_name: &str, source: &str, residual: &Residualized) {
+fn print_case_summary(name: &str, source_name: &str, source: &str, residual: &StagedCore) {
     let ct_exprs = residual
         .bta()
         .stage_of_expr
