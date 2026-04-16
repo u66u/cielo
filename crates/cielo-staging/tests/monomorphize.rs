@@ -1,6 +1,6 @@
 use cielo_base::Interner;
 use cielo_base::SourceId;
-use cielo_test_support::{Compiler, CompilerConfig};
+use cielo_test_support::{PassConfig, PassHarness};
 
 #[test]
 fn monomorphize_summary_tracks_identity_in_v0() {
@@ -14,7 +14,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(residual.program().functions().len(), 2);
@@ -33,7 +33,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let residual = compiler.compile_source(src, SourceId::from_u32(1), &mut interner);
     let func_count = residual.program().functions().len();
     assert!(
@@ -66,7 +66,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let residual = compiler.compile_source(src, SourceId::from_u32(2), &mut interner);
     let names = residual
         .program()

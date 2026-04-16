@@ -7,7 +7,7 @@ mod helpers;
 use cielo_base::Interner;
 use cielo_base::{ExprId, FuncId, HandlerId, SourceId, StmtId};
 use cielo_ir::core::{CoreProgram, StmtKind};
-use cielo_test_support::{Compiler, CompilerConfig};
+use cielo_test_support::{PassConfig, PassHarness};
 use helpers::bta::{reason_has_valid_func_ids, stage_has_valid_func_ids};
 
 #[test]
@@ -27,7 +27,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
@@ -108,7 +108,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
@@ -144,7 +144,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
@@ -201,7 +201,7 @@ fn main() -> Int {
 }
 "#;
     let mut _interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
     let stats = compiled.residual.report().specialization;
 
@@ -244,7 +244,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
@@ -295,7 +295,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
@@ -346,7 +346,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
@@ -394,7 +394,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
@@ -442,7 +442,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
@@ -485,7 +485,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
@@ -533,7 +533,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
@@ -568,7 +568,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(
@@ -622,7 +622,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     let specialized_id = specialized_copy_named(compiled.residual.program(), &interner, "io")
@@ -682,7 +682,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
@@ -725,7 +725,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     let specialized_id = specialized_copy_named(compiled.residual.program(), &interner, "io")
@@ -780,7 +780,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     let specialized_id = specialized_copy_named(compiled.residual.program(), &interner, "io")
@@ -834,7 +834,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     let specialized_id = specialized_copy_named(compiled.residual.program(), &interner, "io")
@@ -893,7 +893,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
@@ -935,7 +935,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     let io_ids = function_ids_named(compiled.residual.program(), &interner, "io");
@@ -993,7 +993,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
@@ -1025,7 +1025,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     let specialized_id = specialized_copy_named(compiled.residual.program(), &interner, "io")
@@ -1084,7 +1084,7 @@ fn main() -> Int {{
     );
 
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src.as_str(), SourceId::from_u32(0), &mut interner);
     let program = compiled.residual.program();
 
@@ -1321,7 +1321,7 @@ fn assert_phase_func_ids_in_bounds(compiled: &cielo_test_support::CompiledC) {
 
 #[test]
 fn test_provenance_stability_across_specialization() {
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
 
     // A direct wrapper around a handled call should always specialize in v1.

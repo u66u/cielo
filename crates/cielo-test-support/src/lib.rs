@@ -19,12 +19,12 @@ use cielo_staging::{
 pub use cielo_ir::target::{Endianness, TargetSpec};
 
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
-pub struct CompilerConfig {
+pub struct PassConfig {
     pub target: TargetSpec,
     pub memory: MemoryProfile,
 }
 
-impl CompilerConfig {
+impl PassConfig {
     pub fn with_memory_preset(mut self, preset: MemoryPreset) -> Self {
         self.memory = MemoryProfile::from_preset(preset);
         self
@@ -41,16 +41,16 @@ pub struct CompiledC {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Compiler {
-    config: CompilerConfig,
+pub struct PassHarness {
+    config: PassConfig,
 }
 
-impl Compiler {
-    pub fn new(config: CompilerConfig) -> Self {
+impl PassHarness {
+    pub fn new(config: PassConfig) -> Self {
         Self { config }
     }
 
-    pub fn config(&self) -> CompilerConfig {
+    pub fn config(&self) -> PassConfig {
         self.config.clone()
     }
 

@@ -1,6 +1,6 @@
 use cielo_base::Interner;
 use cielo_base::SourceId;
-use cielo_test_support::{Compiler, CompilerConfig};
+use cielo_test_support::{PassConfig, PassHarness};
 
 #[test]
 fn v1_pipeline_tracks_arc_accounting_consistently() {
@@ -14,7 +14,7 @@ fn main() -> Int {
 "#;
 
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let stats = compiled.memory.arc;
 

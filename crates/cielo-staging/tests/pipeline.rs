@@ -16,7 +16,7 @@ use cielo_staging::pipeline::phases::{
     BranchDecision, BtaClassified, BtaTables, CtPropagationTables, Knownness,
     MonomorphizationSummary, Monomorphized, Reason, SemanticTables, Stage,
 };
-use cielo_test_support::{Compiler, CompilerConfig};
+use cielo_test_support::{PassConfig, PassHarness};
 use helpers::core::emit_pipeline;
 
 #[test]
@@ -30,7 +30,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
     assert_eq!(residual.program().entrypoints().len(), 1);
     assert!(
@@ -96,7 +96,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
     assert_eq!(residual.program().handlers().len(), 1);
     let main_body = residual.program().functions()[0].body;
@@ -118,7 +118,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
     assert_eq!(residual.program().structs().len(), 1);
     assert_eq!(residual.program().enums().len(), 1);
@@ -139,7 +139,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
 
     for function in residual.program().functions() {
@@ -363,7 +363,7 @@ fn ct_propagate_collects_stable_eval_stats_oracle() {
         sema,
         MonomorphizationSummary::default(),
     );
-    let ct = ct_propagate::run(mono, CompilerConfig::default().target);
+    let ct = ct_propagate::run(mono, PassConfig::default().target);
     let stats = ct.ct().eval_stats;
 
     assert_eq!(
@@ -462,7 +462,7 @@ fn ct_propagate_tracks_host_float_folds_explicitly() {
         sema,
         MonomorphizationSummary::default(),
     );
-    let ct = ct_propagate::run(mono, CompilerConfig::default().target);
+    let ct = ct_propagate::run(mono, PassConfig::default().target);
     let stats = ct.ct().eval_stats;
 
     assert_eq!(
@@ -588,7 +588,7 @@ fn ct_propagate_folds_float_binary_surface_and_counts_host_float_folds() {
         sema,
         MonomorphizationSummary::default(),
     );
-    let ct = ct_propagate::run(mono, CompilerConfig::default().target);
+    let ct = ct_propagate::run(mono, PassConfig::default().target);
     let stats = ct.ct().eval_stats;
 
     assert_eq!(ct.ct().ct_cache.get(&add), Some(&Literal::Float(1.75)));
@@ -712,7 +712,7 @@ fn ct_propagate_folds_non_numeric_equality_and_leaves_mixed_types_unresolved() {
         sema,
         MonomorphizationSummary::default(),
     );
-    let ct = ct_propagate::run(mono, CompilerConfig::default().target);
+    let ct = ct_propagate::run(mono, PassConfig::default().target);
     let stats = ct.ct().eval_stats;
 
     assert_eq!(ct.ct().ct_cache.get(&bool_eq), Some(&Literal::Bool(false)));
@@ -813,7 +813,7 @@ fn ct_propagate_skips_non_finite_host_float_folds() {
         sema,
         MonomorphizationSummary::default(),
     );
-    let ct = ct_propagate::run(mono, CompilerConfig::default().target);
+    let ct = ct_propagate::run(mono, PassConfig::default().target);
     let stats = ct.ct().eval_stats;
 
     assert_eq!(
@@ -1993,7 +1993,7 @@ fn residualize_prunes_match_through_let_alias_chain_with_binder_materialization(
 fn v1_example_contract_oracle_matches_effect_and_staging_intent_split_pipeline() {
     let src = include_str!("../../cielo-compiler/examples/v1_test.cielo");
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
 
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
     assert_eq!(core.program().effects().len(), 2);
@@ -2220,7 +2220,7 @@ fn main() -> Int {
 }
 "#;
 
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
 
     let mut fused_interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut fused_interner);
@@ -2261,7 +2261,7 @@ fn main() -> Int {
   }
 }
 "#;
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
 
     let mut fused_interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut fused_interner);
@@ -2364,7 +2364,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
     let stats = residual.report().residualize;
 

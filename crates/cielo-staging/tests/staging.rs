@@ -4,7 +4,7 @@ use cielo_ir::core::{ExprKind, Literal, StmtKind};
 use cielo_ir::effect::SortedEffectRow;
 use cielo_ir::target::Endianness;
 use cielo_staging::pipeline::phases::{Knownness, Stage};
-use cielo_test_support::{Compiler, CompilerConfig};
+use cielo_test_support::{PassConfig, PassHarness};
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,7 +17,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
 
     assert!(!residual.ct().ct_cache.is_empty());
@@ -39,7 +39,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
 
     let main = residual.program().functions().first().expect("main");
@@ -84,7 +84,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
 
     let main = residual.program().functions().first().expect("main");
@@ -135,7 +135,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
 
     let main = residual.program().functions().first().expect("main");
@@ -288,7 +288,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
@@ -311,7 +311,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
@@ -337,7 +337,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
@@ -363,7 +363,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
 
     assert!(residual.bta().stage_of_var.values().any(|stage| matches!(
@@ -384,7 +384,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
 
     let handler_id = HandlerId::new(0);
@@ -421,13 +421,13 @@ fn main() -> Int {
 }
 "#;
     let mut interner_64 = Interner::new();
-    let compiler_64 = Compiler::new(CompilerConfig::default());
+    let compiler_64 = PassHarness::new(PassConfig::default());
     let residual_64 = compiler_64.compile_source(src, SourceId::from_u32(0), &mut interner_64);
 
-    let mut config_32 = CompilerConfig::default();
+    let mut config_32 = PassConfig::default();
     config_32.target.word_size_bits = 32;
     config_32.target.pointer_alignment = 4;
-    let compiler_32 = Compiler::new(config_32);
+    let compiler_32 = PassHarness::new(config_32);
     let mut interner_32 = Interner::new();
     let residual_32 = compiler_32.compile_source(src, SourceId::from_u32(0), &mut interner_32);
 
@@ -469,17 +469,17 @@ fn main() -> Int {
 }
 "#;
     let mut interner_64 = Interner::new();
-    let residual_64 = Compiler::new(CompilerConfig::default()).compile_source(
+    let residual_64 = PassHarness::new(PassConfig::default()).compile_source(
         src,
         SourceId::from_u32(0),
         &mut interner_64,
     );
 
-    let mut cfg_32 = CompilerConfig::default();
+    let mut cfg_32 = PassConfig::default();
     cfg_32.target.word_size_bits = 32;
     let mut interner_32 = Interner::new();
     let residual_32 =
-        Compiler::new(cfg_32).compile_source(src, SourceId::from_u32(1), &mut interner_32);
+        PassHarness::new(cfg_32).compile_source(src, SourceId::from_u32(1), &mut interner_32);
 
     let ints_64 = residual_64
         .ct()
@@ -525,20 +525,24 @@ fn main() -> Int {
 }
 "#;
 
-    let mut little_cfg = CompilerConfig::default();
+    let mut little_cfg = PassConfig::default();
     little_cfg.target.word_size_bits = 64;
     little_cfg.target.endianness = Endianness::Little;
     little_cfg.target.pointer_alignment = 8;
     let mut little_interner = Interner::new();
-    let little =
-        Compiler::new(little_cfg).compile_source(src, SourceId::from_u32(0), &mut little_interner);
+    let little = PassHarness::new(little_cfg).compile_source(
+        src,
+        SourceId::from_u32(0),
+        &mut little_interner,
+    );
 
-    let mut big_cfg = CompilerConfig::default();
+    let mut big_cfg = PassConfig::default();
     big_cfg.target.word_size_bits = 32;
     big_cfg.target.endianness = Endianness::Big;
     big_cfg.target.pointer_alignment = 16;
     let mut big_interner = Interner::new();
-    let big = Compiler::new(big_cfg).compile_source(src, SourceId::from_u32(1), &mut big_interner);
+    let big =
+        PassHarness::new(big_cfg).compile_source(src, SourceId::from_u32(1), &mut big_interner);
 
     let little_ints = little
         .ct()
@@ -613,7 +617,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
 
     assert!(
@@ -635,7 +639,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let residual = Compiler::new(CompilerConfig::default()).compile_source(
+    let residual = PassHarness::new(PassConfig::default()).compile_source(
         src,
         SourceId::from_u32(0),
         &mut interner,
@@ -666,7 +670,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let residual = Compiler::new(CompilerConfig::default()).compile_source(
+    let residual = PassHarness::new(PassConfig::default()).compile_source(
         src,
         SourceId::from_u32(1),
         &mut interner,
@@ -697,21 +701,24 @@ fn main() -> Int {
   y
 }
 "#;
-    let mut little_cfg = CompilerConfig::default();
+    let mut little_cfg = PassConfig::default();
     little_cfg.target.word_size_bits = 64;
     little_cfg.target.endianness = Endianness::Little;
     little_cfg.target.pointer_alignment = 8;
-    let mut big_cfg = CompilerConfig::default();
+    let mut big_cfg = PassConfig::default();
     big_cfg.target.word_size_bits = 64;
     big_cfg.target.endianness = Endianness::Big;
     big_cfg.target.pointer_alignment = 16;
 
     let mut little_interner = Interner::new();
-    let little_residual =
-        Compiler::new(little_cfg).compile_source(src, SourceId::from_u32(0), &mut little_interner);
+    let little_residual = PassHarness::new(little_cfg).compile_source(
+        src,
+        SourceId::from_u32(0),
+        &mut little_interner,
+    );
     let mut big_interner = Interner::new();
     let big_residual =
-        Compiler::new(big_cfg).compile_source(src, SourceId::from_u32(1), &mut big_interner);
+        PassHarness::new(big_cfg).compile_source(src, SourceId::from_u32(1), &mut big_interner);
 
     assert_eq!(little_residual.ct().cache_key.target_endianness, "little");
     assert_eq!(big_residual.ct().cache_key.target_endianness, "big");
@@ -774,7 +781,7 @@ fn main() -> Int {{
 "#
     );
 
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let mut interner_1 = Interner::new();
     let residual_1 = compiler.compile_source(src.as_str(), SourceId::from_u32(0), &mut interner_1);
     let dep_1 = residual_1.ct().file_deps.first().expect("first dep");
@@ -817,7 +824,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
 
     assert!(

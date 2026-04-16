@@ -14,7 +14,7 @@ use cielo_ir::core::{
 use cielo_ir::effect::SortedEffectRow;
 use cielo_staging::passes::normalize;
 use cielo_staging::pipeline::phases::{ResidualFacts, SemanticTables, StagedCore, StagingReport};
-use cielo_test_support::{Compiler, CompilerConfig};
+use cielo_test_support::{PassConfig, PassHarness};
 use helpers::ir::{contains_call_to, contains_if_stmt, reachable_stmt_count};
 
 #[test]
@@ -30,7 +30,7 @@ fn main() -> Int {
   x
 }
 "#;
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
 

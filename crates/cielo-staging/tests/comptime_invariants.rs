@@ -7,7 +7,7 @@ use cielo_base::Interner;
 use cielo_base::{FuncId, HandlerId, SourceId};
 use cielo_ir::core::Literal;
 use cielo_ir::core::{ExprKind, StmtKind};
-use cielo_test_support::{Compiler, CompilerConfig};
+use cielo_test_support::{PassConfig, PassHarness};
 use helpers::bta::{reason_has_valid_func_ids, stage_has_valid_func_ids};
 use helpers::ir::reachable_stmt_count;
 
@@ -35,7 +35,7 @@ fn main() -> Int {
 }
 "#;
 
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
     let staged = compiler.run_v1_evaluate_classify(core);
@@ -208,7 +208,7 @@ fn main() -> Int {
 }
 "#;
 
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(1), &mut interner);
     let staged = compiler.run_v1_evaluate_classify(core);
@@ -397,7 +397,7 @@ fn main() -> Int {
 }
 "#;
 
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(2), &mut interner);
     let staged = compiler.run_v1_evaluate_classify(core);

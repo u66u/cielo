@@ -12,7 +12,7 @@ use cielo_staging::passes::{bta, ct_eval};
 use cielo_staging::pipeline::phases::{
     BranchDecision, CtPropagated, MonomorphizationSummary, Monomorphized, SemanticTables,
 };
-use cielo_test_support::{Compiler, CompilerConfig};
+use cielo_test_support::{PassConfig, PassHarness};
 
 #[test]
 fn cteval_folds_pure_call_with_literal_arguments() {
@@ -26,7 +26,7 @@ fn main() -> Int {
 }
 "#;
 
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
     let staged = compiler.run_v1_ct_eval(core);
@@ -66,7 +66,7 @@ fn main() -> Int {
 }
 "#;
 
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
     let staged = compiler.run_v1_ct_eval(core);
@@ -90,7 +90,7 @@ fn main() -> Int {
 }
 "#;
 
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
     let staged = compiler.run_v1_ct_eval(core);
@@ -137,7 +137,7 @@ fn main() -> Int {
 }
 "#;
 
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
     let staged = compiler.run_v1_ct_eval(core);
@@ -331,7 +331,7 @@ fn main() -> Int {
 }
 "#;
 
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
     let staged = compiler.run_v1_ct_eval(core);
@@ -367,7 +367,7 @@ fn main() -> Int {
 }
 "#;
 
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
     let staged = compiler.run_v1_ct_eval(core);
@@ -392,7 +392,7 @@ fn main() -> Int {
 #[test]
 fn cteval_call_depth_budget_is_deterministic() {
     let src = deep_call_chain_source(33);
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
 
     let mut interner_a = Interner::new();
     let core_a =
@@ -465,7 +465,7 @@ fn main() -> Int {
 }
 "#;
 
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let mut interner_eval = Interner::new();
     let core_eval =
         compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner_eval);
@@ -505,7 +505,7 @@ fn main() -> Int {
 }
 "#;
 
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let mut interner_eval = Interner::new();
     let core_eval =
         compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner_eval);

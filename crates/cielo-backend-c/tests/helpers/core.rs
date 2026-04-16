@@ -9,17 +9,17 @@ use cielo_memory::{MemoryInput, MemoryProfile};
 use cielo_sema::typecheck::typecheck_core;
 use cielo_staging::pipeline::phases::SemanticTables;
 use cielo_staging::pipeline::phases::StagedCore;
-use cielo_test_support::{CompiledC, Compiler, CompilerConfig};
+use cielo_test_support::{CompiledC, PassConfig, PassHarness};
 
 pub fn lower_to_core(source: &str) -> CoreProgram {
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(source, SourceId::from_u32(0), &mut interner);
     core.program().clone()
 }
 
 pub fn lower_and_typecheck(source: &str) -> (CoreProgram, SemanticTables) {
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(source, SourceId::from_u32(0), &mut interner);
     let program = core.program().clone();
@@ -34,11 +34,11 @@ pub fn lower_and_typecheck(source: &str) -> (CoreProgram, SemanticTables) {
 }
 
 pub fn compile_source_to_c(source: &str) -> CompiledC {
-    compile_source_to_c_with_config(source, CompilerConfig::default())
+    compile_source_to_c_with_config(source, PassConfig::default())
 }
 
-pub fn compile_source_to_c_with_config(source: &str, config: CompilerConfig) -> CompiledC {
-    let compiler = Compiler::new(config);
+pub fn compile_source_to_c_with_config(source: &str, config: PassConfig) -> CompiledC {
+    let compiler = PassHarness::new(config);
     let mut interner = Interner::new();
     let compiled = compiler.compile_source_to_c(source, SourceId::from_u32(0), &mut interner);
     assert!(

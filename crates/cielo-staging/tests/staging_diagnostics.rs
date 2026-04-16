@@ -3,7 +3,7 @@ use cielo_base::SourceId;
 use cielo_staging::pipeline::staging_diagnostics::{
     render_stage_b_counter_summary, staging_pass_counters,
 };
-use cielo_test_support::{Compiler, CompilerConfig};
+use cielo_test_support::{PassConfig, PassHarness};
 
 #[test]
 fn staging_diagnostics_surface_residual_and_specialization_counters() {
@@ -26,7 +26,7 @@ fn main() -> Int {
 }
 "#;
 
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
     let staged = compiler.run_v1_evaluate_classify(core);

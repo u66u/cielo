@@ -11,7 +11,7 @@ use cielo_runtime::{cfg_lower, linearize};
 use cielo_staging::pipeline::phases::{
     ConstantEmbedStrategy, ConstantKey, CtorFieldKey, ScalarLiteralKey,
 };
-use cielo_test_support::{Compiler, CompilerConfig};
+use cielo_test_support::{PassConfig, PassHarness};
 use helpers::core::{emit_c_program, emit_pipeline};
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -25,7 +25,7 @@ fn main() -> Int {
 }
 "#;
     let mut _interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
 
     assert_eq!(compiled.linear.functions.len(), 1);
@@ -44,7 +44,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     let perform_line = find_perform_call_line(&compiled.c_source, "print")
@@ -74,7 +74,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let main = compiled
         .linear
@@ -100,7 +100,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let main = compiled
         .linear
@@ -132,7 +132,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let main = compiled
         .linear
@@ -160,7 +160,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let main = compiled
         .linear
@@ -198,7 +198,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let main = compiled
         .linear
@@ -232,7 +232,7 @@ fn main() -> Int {
 }
 "#;
     let mut _interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
 
     assert_eq!(
@@ -262,7 +262,7 @@ fn main() -> Int {{
 "#
     );
     let mut _interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled =
         compiler.compile_source_to_c(src.as_str(), SourceId::from_u32(0), &mut _interner);
 
@@ -290,7 +290,7 @@ fn main() -> Int {
 }
 "#;
     let mut _interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
 
     assert!(
@@ -331,7 +331,7 @@ fn main() -> Int {
 }
 "#;
     let mut _interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
 
     assert!(
@@ -706,7 +706,7 @@ fn c_emitter_limits_ctor_pool_by_compilation_unit_budget() {
         "enum Blob {{ Mk({fields}) }}\neffect Sink {{ fn use(v: Blob) -> () }}\nfn main() -> Int {{\n  @runtime {{\n{body}  }}\n}}\n"
     );
     let mut _interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled =
         compiler.compile_source_to_c(src.as_str(), SourceId::from_u32(0), &mut _interner);
 
@@ -751,7 +751,7 @@ fn main() -> Int {
 }
 "#;
     let mut _interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
 
     assert!(
@@ -981,7 +981,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let main = compiled
         .linear
@@ -1031,7 +1031,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let main = compiled
         .linear
@@ -1082,7 +1082,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let main = compiled
         .linear
@@ -1125,7 +1125,7 @@ fn main() -> Int {
 }
 "#;
     let mut _interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
 
     assert!(
@@ -1168,7 +1168,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let main = compiled
         .linear
@@ -1224,7 +1224,7 @@ fn main() -> Int {
 }
 "#;
     let mut _interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
 
     assert!(
@@ -1256,7 +1256,7 @@ fn main() -> Int {
 }
 "#;
     let mut _interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
 
     assert!(
@@ -1290,7 +1290,7 @@ fn main() -> Int {
 }
 "#;
     let mut _interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
 
     assert!(
@@ -1318,7 +1318,7 @@ fn main() -> Int {
 }
 "#;
     let mut _interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
 
     assert!(
@@ -1368,7 +1368,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let main = compiled
         .linear
@@ -1420,7 +1420,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
     let main = compiled
         .linear
@@ -1513,7 +1513,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     let main = compiled
@@ -1559,7 +1559,7 @@ fn main() -> Int {
 }
 "#;
     let mut _interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut _interner);
 
     assert!(compiled.c_source.contains("CIELO_CALL_PURE("));
@@ -1655,7 +1655,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
 
     let loop_count = compiled
@@ -1680,7 +1680,7 @@ fn compile_source_to_c_without_normalize(
     source_id: SourceId,
     interner: &mut Interner,
 ) -> cielo_test_support::CompiledC {
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let core = compiler.parse_and_lower_to_core(src, source_id, interner);
     let mut residual = compiler.run_v1_core_pipeline(core);
     let sema = residual.sema().clone();

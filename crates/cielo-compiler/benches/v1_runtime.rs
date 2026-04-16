@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use cielo_base::Interner;
 use cielo_base::SourceId;
-use cielo_test_support::{Compiler, CompilerConfig};
+use cielo_test_support::{PassConfig, PassHarness};
 
 const SOURCE_PURE_RUNTIME_LOOP: &str = r#"
 fn pure_loop(n: Int, acc: Int) -> Int {
@@ -330,7 +330,7 @@ fn env_bool(name: &str, default: bool) -> bool {
 
 fn build_case(case: RuntimeBenchCase, source_id: u32) -> BuiltCase {
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let compiled =
         compiler.compile_source_v0_to_c(case.source, SourceId::from_u32(source_id), &mut interner);
     assert!(

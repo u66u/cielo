@@ -3,13 +3,13 @@ use cielo_base::SourceId;
 use cielo_ir::cfg::{CfgArcOpKind, CfgProjectionMode, CfgTerminator};
 use cielo_memory::MemoryPreset;
 use cielo_runtime::{cfg_lower, linearize};
-use cielo_test_support::{Compiler, CompilerConfig};
+use cielo_test_support::{PassConfig, PassHarness};
 
 use crate::helpers::core::emit_pipeline;
 
 fn compile(source: &str) -> cielo_test_support::CompiledC {
     let mut interner = Interner::new();
-    Compiler::new(CompilerConfig::default()).compile_source_to_c(
+    PassHarness::new(PassConfig::default()).compile_source_to_c(
         source,
         SourceId::from_u32(0),
         &mut interner,
@@ -18,7 +18,7 @@ fn compile(source: &str) -> cielo_test_support::CompiledC {
 
 fn compile_with_preset(source: &str, preset: MemoryPreset) -> cielo_test_support::CompiledC {
     let mut interner = Interner::new();
-    Compiler::new(CompilerConfig::default().with_memory_preset(preset)).compile_source_to_c(
+    PassHarness::new(PassConfig::default().with_memory_preset(preset)).compile_source_to_c(
         source,
         SourceId::from_u32(0),
         &mut interner,
@@ -27,7 +27,7 @@ fn compile_with_preset(source: &str, preset: MemoryPreset) -> cielo_test_support
 
 fn compile_without_normalize(source: &str) -> cielo_test_support::CompiledC {
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let core = compiler.parse_and_lower_to_core(source, SourceId::from_u32(0), &mut interner);
     let mut residual = compiler.run_v1_core_pipeline(core);
     let sema = residual.sema().clone();

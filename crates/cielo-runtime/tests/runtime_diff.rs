@@ -2,7 +2,7 @@ use cielo_base::Interner;
 use cielo_base::{ExprId, HandlerId, SourceId, StmtId, SymbolId, VarId};
 use cielo_ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, StmtKind, UnaryOp};
 use cielo_staging::pipeline::phases::CtPropagationTables;
-use cielo_test_support::{CompiledC, Compiler, CompilerConfig};
+use cielo_test_support::{CompiledC, PassConfig, PassHarness};
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
@@ -392,7 +392,7 @@ fn main() -> Int {
         },
     ];
 
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     for (idx, case) in cases.iter().enumerate() {
         let mut interner = Interner::new();
         let compiled = compiler.compile_source_to_c(
@@ -430,7 +430,7 @@ fn runtime_exit_matches_evaluator_oracle_for_seed_expanding_handler_cases() {
     const VARIANT_MIX: u64 = 0x9E37_79B9_7F4A_7C15;
     const SOURCE_ID_BASE: u32 = 10_000;
 
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let mut case_index = 0u32;
 
     for base_seed in BASE_SEEDS {

@@ -5,7 +5,7 @@ use cielo_base::Interner;
 use cielo_base::SourceId;
 use cielo_staging::pipeline::phases::Reason;
 use cielo_staging::pipeline::provenance::{runtime_provenance_lines, staging_root_causes};
-use cielo_test_support::{Compiler, CompilerConfig};
+use cielo_test_support::{PassConfig, PassHarness};
 use helpers::ir::first_return_expr_linear;
 
 #[test]
@@ -18,7 +18,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
 
     let main = residual
@@ -54,7 +54,7 @@ fn main() -> Int {
 }
 "#;
     let mut interner = Interner::new();
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
 
     let main = residual
@@ -77,7 +77,7 @@ fn main() -> Int {
 
 #[test]
 fn test_root_cause_rollup_parameter_taint() {
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
 
     // `input` is RT. It taints `a`, `b`, and all the binary operations.

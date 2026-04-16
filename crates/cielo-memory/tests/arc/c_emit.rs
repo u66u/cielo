@@ -1,7 +1,7 @@
 use crate::helpers::c_emit::assert_arc_trace_comments_align;
 use crate::helpers::core::compile_source_to_c_with_config;
 use cielo_memory::{ArcFeatures, MemoryPreset};
-use cielo_test_support::CompilerConfig;
+use cielo_test_support::PassConfig;
 
 #[test]
 fn arc_c_emitter_trace_comments_align_with_runtime_calls() {
@@ -23,7 +23,7 @@ fn main() -> Int {
 }
 "#;
 
-    let mut config = CompilerConfig::default().with_memory_preset(MemoryPreset::ArcRaw);
+    let mut config = PassConfig::default().with_memory_preset(MemoryPreset::ArcRaw);
     config
         .memory
         .reference_counting_mut()

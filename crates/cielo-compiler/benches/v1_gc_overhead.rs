@@ -9,7 +9,7 @@ use std::time::Instant;
 use cielo_base::Interner;
 use cielo_base::SourceId;
 use cielo_memory::{MemoryPreset, MemoryProfile};
-use cielo_test_support::{Compiler, CompilerConfig};
+use cielo_test_support::{PassConfig, PassHarness};
 
 const SOURCE_CTOR_CHURN: &str = r#"
 enum Boxed { Wrap(Int) }
@@ -426,11 +426,11 @@ pub fn gc_overhead_case_arc_stats(case: &str, preset: &str) -> Option<GcBenchArc
     let case = CASES.iter().copied().find(|entry| entry.name == case)?;
     let preset = PRESETS.iter().copied().find(|entry| entry.name == preset)?;
     let mut interner = Interner::new();
-    let config = CompilerConfig {
+    let config = PassConfig {
         memory: MemoryProfile::from_preset(preset.preset),
-        ..CompilerConfig::default()
+        ..PassConfig::default()
     };
-    let compiler = Compiler::new(config);
+    let compiler = PassHarness::new(config);
     let compiled = compiler.compile_source_to_c(case.source, SourceId::from_u32(0), &mut interner);
     if compiled.residual.diagnostics().has_errors() {
         return None;
@@ -503,11 +503,11 @@ fn env_bool(name: &str, default: bool) -> bool {
 fn build_target(case: BenchCase, bench_preset: BenchPreset, source_id: u32) -> BuiltTarget {
     let compile_start = Instant::now();
     let mut interner = Interner::new();
-    let config = CompilerConfig {
+    let config = PassConfig {
         memory: MemoryProfile::from_preset(bench_preset.preset),
-        ..CompilerConfig::default()
+        ..PassConfig::default()
     };
-    let compiler = Compiler::new(config);
+    let compiler = PassHarness::new(config);
     let compiled =
         compiler.compile_source_to_c(case.source, SourceId::from_u32(source_id), &mut interner);
     let compile_source_ms = compile_start.elapsed().as_secs_f64() * 1_000.0;

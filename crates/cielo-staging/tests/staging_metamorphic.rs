@@ -7,7 +7,7 @@ use cielo_base::Interner;
 use cielo_base::{ExprId, FuncId, SourceId, StmtId, VarId};
 use cielo_ir::core::{CoreProgram, ExprKind};
 use cielo_staging::pipeline::phases::{BranchDecision, Knownness, Reason, Stage, StagedCore};
-use cielo_test_support::{Compiler, CompilerConfig};
+use cielo_test_support::{PassConfig, PassHarness};
 use helpers::ir::{first_return_expr, reachable_stmt_count_from_root};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -49,7 +49,7 @@ fn main() -> Int {
 }
 "#;
 
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let mut interner_a = Interner::new();
     let residual_a = compiler.compile_source(src_a, SourceId::from_u32(0), &mut interner_a);
     let mut interner_b = Interner::new();
@@ -89,7 +89,7 @@ fn main() -> Int {
 }
 "#;
 
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let mut interner_base = Interner::new();
     let residual_base =
         compiler.compile_source(src_base, SourceId::from_u32(10), &mut interner_base);
@@ -183,7 +183,7 @@ fn main() -> Int {
 }
 "#;
 
-    let compiler = Compiler::new(CompilerConfig::default());
+    let compiler = PassHarness::new(PassConfig::default());
     let mut interner_direct = Interner::new();
     let residual_direct =
         compiler.compile_source(src_direct, SourceId::from_u32(20), &mut interner_direct);
