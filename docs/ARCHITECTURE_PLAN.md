@@ -187,6 +187,24 @@ The database mirrors this dispatch with `unmanaged_memory_file` and
 profile reuses `runtime_file`; it does not rerun parsing, typing, staging, or
 runtime lowering.
 
+The public facade can request several memory profiles from the same database:
+
+```rust
+let source = compiler.source(text, source_id);
+let arc = compiler.memory(source);
+let unmanaged = compiler.memory_with_profile(
+    source,
+    MemoryProfile::from_preset(MemoryPreset::Unmanaged),
+);
+```
+
+The driver exposes the implemented profiles directly:
+
+```sh
+cargo run -p cielo-driver -- program.cielo --memory unmanaged --dump memory
+cargo run -p cielo-driver -- program.cielo --memory arc-optimized --run-c
+```
+
 ARC owns its managed-value propagation, CFG liveness, borrow-hazard analysis,
 retain/release insertion, optimization, and verification under
 `cielo-memory::refcount`. Its analyses consume CFG values and runtime source

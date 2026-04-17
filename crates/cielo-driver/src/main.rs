@@ -4,7 +4,7 @@ use std::process::Command;
 
 use clap::{Parser, ValueEnum};
 
-use cielo::{Compiler, CompilerConfig};
+use cielo::{Compiler, CompilerConfig, MemoryPreset, MemoryProfile};
 use cielo_base::reporting::render_diagnostic;
 use cielo_base::{ExprId, Interner, SourceId, SymbolId};
 use cielo_frontend::ast::{Item, Program};
@@ -50,6 +50,14 @@ struct Cli {
     #[arg(long, default_value = "gcc")]
     cc: String,
 
+    #[arg(
+        long,
+        value_enum,
+        default_value = "arc-optimized",
+        help = "Select an implemented memory strategy"
+    )]
+    memory: MemoryChoice,
+
     #[arg(long, help = "Persist and diff staging snapshots across rebuilds")]
     staging_diff: bool,
 
@@ -71,13 +79,37 @@ enum DumpKind {
     Memory,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum, Debug)]
+enum MemoryChoice {
+    Unmanaged,
+    ArcRaw,
+    ArcOptimized,
+    ArcNoVerify,
+}
+
+impl MemoryChoice {
+    fn profile(self) -> MemoryProfile {
+        let preset = match self {
+            Self::Unmanaged => MemoryPreset::Unmanaged,
+            Self::ArcRaw => MemoryPreset::ArcRaw,
+            Self::ArcOptimized => MemoryPreset::ArcOptimized,
+            Self::ArcNoVerify => MemoryPreset::ArcNoVerify,
+        };
+        MemoryProfile::from_preset(preset)
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
-    let compiler = Compiler::new(CompilerConfig::default());
-    let target = compiler.config().target;
+    let config = CompilerConfig {
+        memory: cli.memory.profile(),
+        ..CompilerConfig::default()
+    };
+    let compiler = Compiler::new(config);
+    let config = compiler.config();
     println!(
-        "cielo bootstrap ready (target: {}-bit {:?})",
-        target.word_size_bits, target.endianness
+        "cielo bootstrap ready (target: {}-bit {:?}, memory: {:?})",
+        config.target.word_size_bits, config.target.endianness, config.memory.strategy
     );
 
     match &cli.input {

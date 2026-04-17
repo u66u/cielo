@@ -91,25 +91,46 @@ impl Compiler {
     }
 
     pub fn memory(&self, source: SourceFile) -> Arc<MemoryFile> {
-        cielo_db::compile_memory(&self.db, source, self.compile_profile())
+        self.memory_with_profile(source, self.config.memory)
+    }
+
+    pub fn memory_with_profile(
+        &self,
+        source: SourceFile,
+        memory: MemoryProfile,
+    ) -> Arc<MemoryFile> {
+        cielo_db::compile_memory(&self.db, source, self.compile_profile(memory))
     }
 
     pub fn emit(&self, source: SourceFile) -> Arc<EmittedFile> {
-        cielo_db::compile(&self.db, source, self.compile_profile())
+        self.emit_with_profile(source, self.config.memory)
+    }
+
+    pub fn emit_with_profile(&self, source: SourceFile, memory: MemoryProfile) -> Arc<EmittedFile> {
+        cielo_db::compile(&self.db, source, self.compile_profile(memory))
     }
 
     pub fn compile(&self, text: &str, source_id: SourceId) -> Arc<EmittedFile> {
         self.emit(self.source(text, source_id))
     }
 
+    pub fn compile_with_profile(
+        &self,
+        text: &str,
+        source_id: SourceId,
+        memory: MemoryProfile,
+    ) -> Arc<EmittedFile> {
+        self.emit_with_profile(self.source(text, source_id), memory)
+    }
+
     fn target_profile(&self) -> TargetProfile {
         TargetProfile::from(self.config.target)
     }
 
-    fn compile_profile(&self) -> CompileProfile {
+    fn compile_profile(&self, memory: MemoryProfile) -> CompileProfile {
         CompileProfile {
             target: self.target_profile(),
-            memory: self.config.memory,
+            memory,
         }
     }
 }

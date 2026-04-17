@@ -2,6 +2,7 @@
 
 mod facade;
 
+pub use cielo_memory::{ArcConfig, ArcFeatures, MemoryPreset, MemoryProfile, MemoryStrategy};
 pub use facade::{Compiler, CompilerConfig, Endianness, TargetSpec};
 
 pub const RUNTIME_HEADER: &str = cielo_backend_c::RUNTIME_HEADER;
