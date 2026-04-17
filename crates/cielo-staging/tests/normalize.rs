@@ -12,8 +12,9 @@ use cielo_ir::core::{
     PrimitiveTypeRef, StmtKind, StmtNode,
 };
 use cielo_ir::effect::SortedEffectRow;
+use cielo_sema::SemanticTables;
 use cielo_staging::passes::normalize;
-use cielo_staging::pipeline::phases::{ResidualFacts, SemanticTables, StagedCore, StagingReport};
+use cielo_staging::pipeline::phases::{ResidualFacts, StagedCore, StagingReport};
 use cielo_test_support::{PassConfig, PassHarness};
 use helpers::ir::{contains_call_to, contains_if_stmt, reachable_stmt_count};
 

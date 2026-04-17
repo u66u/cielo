@@ -21,8 +21,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::passes::constant_table;
 use crate::pipeline::phases::{
-    BtaTables, CtPropagationTables, Reason, ResidualFacts, SemanticTables, SpecializationStats,
-    Stage, StagedCore,
+    BtaTables, CtPropagationTables, Reason, ResidualFacts, SpecializationStats, Stage, StagedCore,
 };
 use cielo_base::diagnostics::ErrorNode;
 use cielo_base::span::Span;
@@ -31,6 +30,7 @@ use cielo_ir::core::{
     CoreProgram, ExprKind, ExprNode, FunctionDecl, HandlerDef, StmtKind, StmtNode,
 };
 use cielo_ir::effect::SortedEffectRow;
+use cielo_sema::SemanticTables;
 
 const MAX_SPECIALIZATIONS_PER_CALLEE: usize = 8;
 const MAX_TOTAL_SPECIALIZATIONS: usize = 256;

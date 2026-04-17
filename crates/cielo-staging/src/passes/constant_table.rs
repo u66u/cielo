@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::pipeline::phases::{
+use cielo_base::{LinearExprId, SymbolId};
+use cielo_ir::constants::{
     ConstantEmbedStrategy, ConstantEntry, ConstantKey, ConstantTable, CtorFieldKey, CtorLiteralKey,
     ScalarLiteralKey,
 };
-use cielo_base::{LinearExprId, SymbolId};
 use cielo_ir::core::CoreProgram;
 use cielo_ir::linear::LinearProgram;
 use cielo_ir::walk::{IrExprNode, IrProgram};

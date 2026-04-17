@@ -1342,8 +1342,8 @@ fn main() -> Int {
 "#;
 
     let core = compiler.parse_and_lower_to_core(source, SourceId::new(0), &mut interner);
-    let bta = compiler.run_v1_evaluate_classify(core);
-    let residual = compiler.run_v1_residualize_specialize(bta);
+    let bta = compiler.evaluate_classify(core);
+    let residual = compiler.residualize_specialize(bta);
 
     // Verify that specialization actually fired
     assert!(

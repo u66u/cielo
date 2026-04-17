@@ -8,9 +8,10 @@ use cielo_ir::core::{
 };
 use cielo_ir::effect::{EffectProperties, SortedEffectRow};
 use cielo_ir::target::TargetSpec;
+use cielo_sema::SemanticTables;
 use cielo_staging::passes::{bta, ct_eval};
 use cielo_staging::pipeline::phases::{
-    BranchDecision, CtPropagated, MonomorphizationSummary, Monomorphized, SemanticTables,
+    BranchDecision, CtPropagated, MonomorphizationSummary, Monomorphized,
 };
 use cielo_test_support::{PassConfig, PassHarness};
 
@@ -29,7 +30,7 @@ fn main() -> Int {
     let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
-    let staged = compiler.run_v1_ct_eval(core);
+    let staged = compiler.evaluate_constants(core);
 
     let call_exprs = staged
         .program()
@@ -69,7 +70,7 @@ fn main() -> Int {
     let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
-    let staged = compiler.run_v1_ct_eval(core);
+    let staged = compiler.evaluate_constants(core);
 
     let folded_values = staged.ct().ct_cache.values().collect::<Vec<_>>();
     assert!(
@@ -93,7 +94,7 @@ fn main() -> Int {
     let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
-    let staged = compiler.run_v1_ct_eval(core);
+    let staged = compiler.evaluate_constants(core);
 
     let recursive_calls = staged
         .program()
@@ -140,7 +141,7 @@ fn main() -> Int {
     let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
-    let staged = compiler.run_v1_ct_eval(core);
+    let staged = compiler.evaluate_constants(core);
 
     let call_expr = staged
         .program()
@@ -334,7 +335,7 @@ fn main() -> Int {
     let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
-    let staged = compiler.run_v1_ct_eval(core);
+    let staged = compiler.evaluate_constants(core);
 
     let helper_call = staged
         .program()
@@ -370,7 +371,7 @@ fn main() -> Int {
     let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
-    let staged = compiler.run_v1_ct_eval(core);
+    let staged = compiler.evaluate_constants(core);
 
     let helper_call = staged
         .program()
@@ -397,12 +398,12 @@ fn cteval_call_depth_budget_is_deterministic() {
     let mut interner_a = Interner::new();
     let core_a =
         compiler.parse_and_lower_to_core(src.as_str(), SourceId::from_u32(0), &mut interner_a);
-    let staged_a = compiler.run_v1_ct_eval(core_a);
+    let staged_a = compiler.evaluate_constants(core_a);
 
     let mut interner_b = Interner::new();
     let core_b =
         compiler.parse_and_lower_to_core(src.as_str(), SourceId::from_u32(1), &mut interner_b);
-    let staged_b = compiler.run_v1_ct_eval(core_b);
+    let staged_b = compiler.evaluate_constants(core_b);
 
     let root_call_a = staged_a
         .program()
@@ -469,13 +470,13 @@ fn main() -> Int {
     let mut interner_eval = Interner::new();
     let core_eval =
         compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner_eval);
-    let ct_eval_state = compiler.run_v1_ct_eval(core_eval);
+    let ct_eval_state = compiler.evaluate_constants(core_eval);
     let eval_classified = bta::run(ct_eval_state);
 
     let mut interner_base = Interner::new();
     let core_base =
         compiler.parse_and_lower_to_core(src, SourceId::from_u32(1), &mut interner_base);
-    let base_classified = compiler.run_v1_evaluate_classify(core_base);
+    let base_classified = compiler.evaluate_classify(core_base);
 
     assert_eq!(
         eval_classified.bta().stage_of_expr.len(),
@@ -509,13 +510,13 @@ fn main() -> Int {
     let mut interner_eval = Interner::new();
     let core_eval =
         compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner_eval);
-    let ct_eval_state = compiler.run_v1_ct_eval(core_eval);
+    let ct_eval_state = compiler.evaluate_constants(core_eval);
     let eval_classified = bta::run(ct_eval_state);
 
     let mut interner_base = Interner::new();
     let core_base =
         compiler.parse_and_lower_to_core(src, SourceId::from_u32(1), &mut interner_base);
-    let base_classified = compiler.run_v1_evaluate_classify(core_base);
+    let base_classified = compiler.evaluate_classify(core_base);
 
     for (expr_id, baseline_stage) in base_classified.bta().stage_of_expr.iter() {
         if !matches!(baseline_stage, cielo_staging::pipeline::phases::Stage::Ct) {

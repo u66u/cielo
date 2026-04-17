@@ -16,7 +16,7 @@ use cielo_staging::{
     pipeline::phases::{BtaClassified, CtPropagated, StagedCore},
 };
 
-pub use cielo_ir::target::{Endianness, TargetSpec};
+use cielo_ir::target::TargetSpec;
 
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct PassConfig {
@@ -99,7 +99,7 @@ impl PassHarness {
         interner: &mut Interner,
     ) -> StagedCore {
         let core = self.parse_and_lower_to_core(source, source_id, interner);
-        self.run_v1_core_pipeline(core)
+        self.stage_core(core)
     }
 
     pub fn compile_source_to_c(
@@ -113,58 +113,58 @@ impl PassHarness {
         emit_runtime(normalized, interner, self.config.memory)
     }
 
-    pub fn compile_source_v0(
+    pub fn compile_source_baseline(
         &self,
         source: &str,
         source_id: SourceId,
         interner: &mut Interner,
     ) -> StagedCore {
         let core = self.parse_and_lower_to_core(source, source_id, interner);
-        self.run_v0_core_pipeline(core)
+        self.stage_core_baseline(core)
     }
 
-    pub fn compile_source_v0_to_c(
+    pub fn compile_source_baseline_to_c(
         &self,
         source: &str,
         source_id: SourceId,
         interner: &mut Interner,
     ) -> CompiledC {
-        let residual = self.compile_source_v0(source, source_id, interner);
+        let residual = self.compile_source_baseline(source, source_id, interner);
         let residual = handler_specialize::run(residual);
         let normalized = normalize::run(residual);
         emit_runtime(normalized, interner, self.config.memory)
     }
 
-    pub fn run_v1_evaluate_classify(&self, built: LowerOutput) -> BtaClassified {
+    pub fn evaluate_classify(&self, built: LowerOutput) -> BtaClassified {
         let mono = monomorphize::run(typecheck(built));
         comptime::evaluate_classify(mono, self.config.target)
     }
 
-    pub fn run_v1_ct_eval(&self, built: LowerOutput) -> CtPropagated {
+    pub fn evaluate_constants(&self, built: LowerOutput) -> CtPropagated {
         let mono = monomorphize::run(typecheck(built));
         ct_eval::run(mono, self.config.target)
     }
 
-    pub fn run_v1_residualize_specialize(&self, classified: BtaClassified) -> StagedCore {
+    pub fn residualize_specialize(&self, classified: BtaClassified) -> StagedCore {
         comptime::residualize_specialize(classified)
     }
 
-    pub fn run_v1_normalize(&self, residual: StagedCore) -> StagedCore {
+    pub fn normalize(&self, residual: StagedCore) -> StagedCore {
         normalize::run(residual)
     }
 
-    pub fn run_v1_core_pipeline(&self, built: LowerOutput) -> StagedCore {
-        let classified = self.run_v1_evaluate_classify(built);
-        self.run_v1_residualize_specialize(classified)
+    pub fn stage_core(&self, built: LowerOutput) -> StagedCore {
+        let classified = self.evaluate_classify(built);
+        self.residualize_specialize(classified)
     }
 
-    pub fn run_v1_typed_pipeline(&self, typed: TypedCore) -> StagedCore {
+    pub fn stage_typed(&self, typed: TypedCore) -> StagedCore {
         let mono = monomorphize::run(typed);
         let classified = comptime::evaluate_classify(mono, self.config.target);
         comptime::residualize_specialize(classified)
     }
 
-    pub fn run_v0_core_pipeline(&self, built: LowerOutput) -> StagedCore {
+    pub fn stage_core_baseline(&self, built: LowerOutput) -> StagedCore {
         let mono = monomorphize::run(typecheck(built));
         let ct = ct_eval::run(mono, self.config.target);
         residualize::run(bta::run(ct))

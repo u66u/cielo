@@ -29,8 +29,8 @@ fn main() -> Int {
     let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
-    let staged = compiler.run_v1_evaluate_classify(core);
-    let residual = compiler.run_v1_residualize_specialize(staged);
+    let staged = compiler.evaluate_classify(core);
+    let residual = compiler.residualize_specialize(staged);
 
     let counters = staging_pass_counters(&residual);
     assert_eq!(

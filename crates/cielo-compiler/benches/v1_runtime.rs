@@ -331,8 +331,11 @@ fn env_bool(name: &str, default: bool) -> bool {
 fn build_case(case: RuntimeBenchCase, source_id: u32) -> BuiltCase {
     let mut interner = Interner::new();
     let compiler = PassHarness::new(PassConfig::default());
-    let compiled =
-        compiler.compile_source_v0_to_c(case.source, SourceId::from_u32(source_id), &mut interner);
+    let compiled = compiler.compile_source_baseline_to_c(
+        case.source,
+        SourceId::from_u32(source_id),
+        &mut interner,
+    );
     assert!(
         !compiled.residual.diagnostics().has_errors(),
         "runtime benchmark source `{}` should compile without diagnostics errors",

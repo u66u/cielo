@@ -20,13 +20,14 @@ use std::collections::HashSet;
 
 use crate::pipeline::phases::{
     BtaClassified, BtaTables, ClauseDischarge, CtPropagated, HandlerDischarge, Knownness, Reason,
-    SemanticTables, Stage,
+    Stage,
 };
 use cielo_base::{EffectLabelId, ExprId, HandlerId, StmtId};
 use cielo_ir::core::{CoreProgram, ExprKind, StageDirective, StmtKind};
 use cielo_ir::effect::{
     EffectFlags, EffectProperties, SortedEffectRow, first_non_thunkable_effect, is_thunkable,
 };
+use cielo_sema::SemanticTables;
 use cielo_sema::ty::Persistability;
 
 pub fn run(ct: CtPropagated) -> BtaClassified {

@@ -3,14 +3,12 @@ mod helpers;
 
 use cielo_base::Interner;
 use cielo_base::{EffectLabelId, LinearFuncId, SourceId, VarId};
+use cielo_ir::constants::{ConstantEmbedStrategy, ConstantKey, CtorFieldKey, ScalarLiteralKey};
 use cielo_ir::core::Literal;
 use cielo_ir::linear::{
     CallConvention, LinearExpr, LinearFunction, LinearMatchArm, LinearProgram, LinearStmt,
 };
 use cielo_runtime::{cfg_lower, linearize};
-use cielo_staging::pipeline::phases::{
-    ConstantEmbedStrategy, ConstantKey, CtorFieldKey, ScalarLiteralKey,
-};
 use cielo_test_support::{PassConfig, PassHarness};
 use helpers::core::{emit_c_program, emit_pipeline};
 use std::collections::HashSet;
@@ -1682,7 +1680,7 @@ fn compile_source_to_c_without_normalize(
 ) -> cielo_test_support::CompiledC {
     let compiler = PassHarness::new(PassConfig::default());
     let core = compiler.parse_and_lower_to_core(src, source_id, interner);
-    let mut residual = compiler.run_v1_core_pipeline(core);
+    let mut residual = compiler.stage_core(core);
     let sema = residual.sema().clone();
     let linear = {
         let (program, diagnostics) = residual.program_and_diagnostics_mut();

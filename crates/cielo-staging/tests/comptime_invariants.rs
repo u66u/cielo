@@ -38,7 +38,7 @@ fn main() -> Int {
     let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut interner);
-    let staged = compiler.run_v1_evaluate_classify(core);
+    let staged = compiler.evaluate_classify(core);
     let func_count = staged.program().functions().len();
     let expr_count = staged.program().exprs().len();
     let stmt_count = staged.program().stmts().len();
@@ -211,8 +211,8 @@ fn main() -> Int {
     let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(1), &mut interner);
-    let staged = compiler.run_v1_evaluate_classify(core);
-    let residual = compiler.run_v1_residualize_specialize(staged);
+    let staged = compiler.evaluate_classify(core);
+    let residual = compiler.residualize_specialize(staged);
     let func_count = residual.program().functions().len();
     let expr_count = residual.program().exprs().len();
     let stmt_count = residual.program().stmts().len();
@@ -400,12 +400,12 @@ fn main() -> Int {
     let compiler = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(2), &mut interner);
-    let staged = compiler.run_v1_evaluate_classify(core);
-    let residual = compiler.run_v1_residualize_specialize(staged);
+    let staged = compiler.evaluate_classify(core);
+    let residual = compiler.residualize_specialize(staged);
 
     let before_stmt_count = reachable_stmt_count(residual.program());
-    let once = compiler.run_v1_normalize(residual.clone());
-    let twice = compiler.run_v1_normalize(once.clone());
+    let once = compiler.normalize(residual.clone());
+    let twice = compiler.normalize(once.clone());
     let once_stmt_count = reachable_stmt_count(once.program());
     let twice_stmt_count = reachable_stmt_count(twice.program());
 

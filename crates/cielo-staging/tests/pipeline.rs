@@ -9,12 +9,12 @@ use cielo_ir::core::{
 use cielo_ir::effect::SortedEffectRow;
 use cielo_ir::target::TargetSpec;
 use cielo_runtime::{cfg_lower, linearize};
-use cielo_sema::TypedCore;
 use cielo_sema::ty::Persistability;
+use cielo_sema::{SemanticTables, TypedCore};
 use cielo_staging::passes::{bta, ct_propagate, residualize};
 use cielo_staging::pipeline::phases::{
     BranchDecision, BtaClassified, BtaTables, CtPropagationTables, Knownness,
-    MonomorphizationSummary, Monomorphized, Reason, SemanticTables, Stage,
+    MonomorphizationSummary, Monomorphized, Reason, Stage,
 };
 use cielo_test_support::{PassConfig, PassHarness};
 use helpers::core::emit_pipeline;
@@ -2060,7 +2060,7 @@ fn v1_example_contract_oracle_matches_effect_and_staging_intent_split_pipeline()
     );
     assert!(core.program().functions()[4].declared_effects.is_empty());
 
-    let residual = compiler.run_v0_core_pipeline(core);
+    let residual = compiler.stage_core_baseline(core);
     assert_eq!(
         residual.diagnostics().entries().len(),
         0,
@@ -2224,9 +2224,9 @@ fn main() -> Int {
 
     let mut fused_interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut fused_interner);
-    let staged = compiler.run_v1_evaluate_classify(core);
-    let residual = compiler.run_v1_residualize_specialize(staged);
-    let mut normalized = compiler.run_v1_normalize(residual);
+    let staged = compiler.evaluate_classify(core);
+    let residual = compiler.residualize_specialize(staged);
+    let mut normalized = compiler.normalize(residual);
     let sema = normalized.sema().clone();
     let linear = {
         let (program, diagnostics) = normalized.program_and_diagnostics_mut();
@@ -2237,7 +2237,7 @@ fn main() -> Int {
 
     let mut split_interner = Interner::new();
     let split_emitted =
-        compiler.compile_source_v0_to_c(src, SourceId::from_u32(1), &mut split_interner);
+        compiler.compile_source_baseline_to_c(src, SourceId::from_u32(1), &mut split_interner);
 
     assert_eq!(
         fused_emitted.c_source, split_emitted.c_source,
@@ -2265,10 +2265,10 @@ fn main() -> Int {
 
     let mut fused_interner = Interner::new();
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), &mut fused_interner);
-    let fused = compiler.run_v1_evaluate_classify(core);
+    let fused = compiler.evaluate_classify(core);
 
     let mut split_interner = Interner::new();
-    let split = compiler.compile_source_v0(src, SourceId::from_u32(1), &mut split_interner);
+    let split = compiler.compile_source_baseline(src, SourceId::from_u32(1), &mut split_interner);
 
     assert_eq!(
         fused.ct().ct_cache.len(),

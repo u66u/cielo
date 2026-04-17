@@ -29,7 +29,7 @@ fn compile_without_normalize(source: &str) -> cielo_test_support::CompiledC {
     let mut interner = Interner::new();
     let compiler = PassHarness::new(PassConfig::default());
     let core = compiler.parse_and_lower_to_core(source, SourceId::from_u32(0), &mut interner);
-    let mut residual = compiler.run_v1_core_pipeline(core);
+    let mut residual = compiler.stage_core(core);
     let sema = residual.sema().clone();
     let linear = {
         let (program, diagnostics) = residual.program_and_diagnostics_mut();

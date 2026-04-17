@@ -6,8 +6,8 @@ use cielo_base::diagnostics::DiagnosticBag;
 use cielo_ir::core::CoreProgram;
 use cielo_ir::{cfg::CfgProgram, linear::LinearProgram};
 use cielo_memory::{MemoryInput, MemoryProfile};
+use cielo_sema::SemanticTables;
 use cielo_sema::typecheck::typecheck_core;
-use cielo_staging::pipeline::phases::SemanticTables;
 use cielo_staging::pipeline::phases::StagedCore;
 use cielo_test_support::{CompiledC, PassConfig, PassHarness};
 

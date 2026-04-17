@@ -3,10 +3,10 @@ use std::collections::HashMap;
 use cielo_base::densemap::DenseMap;
 use cielo_base::diagnostics::DiagnosticBag;
 use cielo_base::{EffectLabelId, ExprId, FuncId, HandlerId, TypeId, VarId};
-pub use cielo_ir::constants::*;
+use cielo_ir::constants::ConstantTable;
 use cielo_ir::core::{CoreProgram, Literal};
 use cielo_ir::effect::SortedEffectRow;
-pub use cielo_sema::facts::SemanticTables;
+use cielo_sema::SemanticTables;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -91,7 +91,7 @@ fn test_root_cause_rollup_parameter_taint() {
 
     // Stop at the BTA phase so we can inspect the analytical tables
     let core = compiler.parse_and_lower_to_core(source, SourceId::new(0), &mut interner);
-    let bta = compiler.run_v1_evaluate_classify(core);
+    let bta = compiler.evaluate_classify(core);
 
     let rollups = staging_root_causes(bta.program(), bta.bta());
 

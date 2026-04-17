@@ -15,7 +15,7 @@ fn main() -> Int {
 "#;
     let mut interner = Interner::new();
     let compiler = PassHarness::new(PassConfig::default());
-    let residual = compiler.compile_source_v0(src, SourceId::from_u32(0), &mut interner);
+    let residual = compiler.compile_source_baseline(src, SourceId::from_u32(0), &mut interner);
 
     assert_eq!(residual.program().functions().len(), 2);
     assert_eq!(residual.mono().source_to_mono.len(), 2);
