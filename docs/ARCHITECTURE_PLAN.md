@@ -40,7 +40,7 @@ phase's tables.
 
 ```text
 cielo-db/src/database.rs       Salsa storage and profiling
-cielo-db/src/inputs.rs         SourceFile and compile profiles
+cielo-db/src/inputs.rs         source and comptime inputs, compile profiles
 cielo-db/src/artifacts.rs      phase product types
 cielo-db/src/queries/frontend.rs
 cielo-db/src/queries/staging.rs
@@ -58,6 +58,12 @@ function. Salsa records the queries called while it runs, so changing source
 text invalidates parsing and its dependents, while changing only memory
 options leaves parsing, typing, staging, and runtime construction cached.
 
+External files read by `ComptimeReadFiles` are snapshotted into a separate
+`ComptimeInputs` Salsa input before staging is requested. The tracked staging
+query sees only paths and content hashes; it never reads the filesystem. A
+changed file reruns classification and later phases while parsing, lowering,
+typing, and monomorphization remain cached.
+
 The query boundary is deliberately coarse:
 
 - source files for parsing;
@@ -72,8 +78,9 @@ queries, tracked IR nodes, Salsa interners, accumulators, persistence,
 snapshots, or cycle recovery.
 
 Query wrappers call ordinary Rust passes and do not pass `&dyn Db` into those
-passes. Queries return immutable `Arc` products. File writes, C compiler
-invocation, linking, and running programs remain driver operations.
+passes. Queries return immutable `Arc` products. External reads are converted
+to inputs before a tracked query starts. File writes, C compiler invocation,
+linking, and running programs remain driver operations.
 
 `CieloDatabase` records Salsa execution events and exposes query memory
 statistics. This makes cache reuse and memo growth measurable without making

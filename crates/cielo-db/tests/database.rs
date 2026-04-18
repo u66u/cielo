@@ -1,6 +1,9 @@
+use std::sync::Arc;
+
 use cielo_base::SourceId;
 use cielo_db::{
-    CieloDatabase, CompileProfile, SourceFile, TargetProfile, compile, parsed_file, typed_file,
+    CieloDatabase, CompileProfile, SourceFile, TargetProfile, compile, parsed_file, staged_file,
+    typed_file,
 };
 use cielo_memory::{MemoryPreset, MemoryProfile};
 
@@ -11,6 +14,18 @@ fn source(db: &CieloDatabase, text: &str) -> SourceFile {
         "<test>".to_owned(),
         text.to_owned(),
     )
+}
+
+#[test]
+fn semantic_products_share_the_same_interner() {
+    let db = CieloDatabase::default();
+    let source = source(&db, "fn main() {}");
+    let target = TargetProfile::default();
+    let inputs = db.load_comptime_inputs(&[]);
+    let typed = typed_file(&db, source, target);
+    let staged = staged_file(&db, source, target, inputs);
+
+    assert!(Arc::ptr_eq(&typed.interner, &staged.interner));
 }
 
 #[test]
@@ -40,6 +55,7 @@ fn emits_through_the_database_boundary() {
         target: TargetProfile::default(),
         memory: MemoryProfile::from_preset(MemoryPreset::Unmanaged),
     };
-    let emitted = compile(&db, source(&db, "fn main() {}"), profile);
+    let inputs = db.load_comptime_inputs(&[]);
+    let emitted = compile(&db, source(&db, "fn main() {}"), profile, inputs);
     assert!(emitted.c_source.contains("int main(void)"));
 }

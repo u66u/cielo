@@ -16,7 +16,7 @@ macro_rules! file_artifact {
         pub struct $name {
             pub source: SourceId,
             $(pub $field: $ty,)+
-            pub interner: Interner,
+            pub interner: Arc<Interner>,
         }
     };
 }

@@ -8,7 +8,8 @@ use cielo_staging::{
 };
 
 use crate::{
-    ClassifiedFile, Db, MonomorphizedFile, SourceFile, StagedFile, TargetProfile, typed_file,
+    ClassifiedFile, ComptimeInputs, Db, MonomorphizedFile, SourceFile, StagedFile, TargetProfile,
+    typed_file,
 };
 
 #[salsa::tracked(no_eq, returns(clone))]
@@ -31,12 +32,14 @@ pub fn classified_file(
     db: &dyn Db,
     source: SourceFile,
     target: TargetProfile,
+    inputs: ComptimeInputs,
 ) -> Arc<ClassifiedFile> {
     let mono = monomorphized_file(db, source, target);
-    let paths = file_deps::discover(mono.mono.program(), mono.mono.sema());
-    let file_deps = file_deps::snapshot(paths, |path| std::fs::read(path).ok());
-    let classified =
-        comptime::evaluate_classify(mono.mono.clone(), TargetSpec::from(target), file_deps);
+    let classified = comptime::evaluate_classify(
+        mono.mono.clone(),
+        TargetSpec::from(target),
+        inputs.files(db),
+    );
     Arc::new(ClassifiedFile {
         source: mono.source,
         classified,
@@ -45,12 +48,23 @@ pub fn classified_file(
 }
 
 #[salsa::tracked(no_eq, returns(clone))]
-pub fn staged_file(db: &dyn Db, source: SourceFile, target: TargetProfile) -> Arc<StagedFile> {
-    let classified = classified_file(db, source, target);
+pub fn staged_file(
+    db: &dyn Db,
+    source: SourceFile,
+    target: TargetProfile,
+    inputs: ComptimeInputs,
+) -> Arc<StagedFile> {
+    let classified = classified_file(db, source, target, inputs);
     let staged: StagedCore = comptime::residualize_specialize(classified.classified.clone());
     Arc::new(StagedFile {
         source: classified.source,
         staged,
         interner: classified.interner.clone(),
     })
+}
+
+#[salsa::tracked(no_eq, returns(clone))]
+pub fn comptime_paths(db: &dyn Db, source: SourceFile, target: TargetProfile) -> Arc<Vec<String>> {
+    let mono = monomorphized_file(db, source, target);
+    Arc::new(file_deps::discover(mono.mono.program(), mono.mono.sema()))
 }

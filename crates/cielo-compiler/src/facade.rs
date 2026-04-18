@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use cielo_base::SourceId;
 use cielo_db::{
-    CieloDatabase, CompileProfile, CoreFile, EmittedFile, MemoryFile, ParsedFile, RuntimeFile,
-    SourceFile, StagedFile, TargetProfile, TypedFile,
+    CieloDatabase, CompileProfile, ComptimeInputs, CoreFile, EmittedFile, MemoryFile, ParsedFile,
+    RuntimeFile, SourceFile, StagedFile, TargetProfile, TypedFile,
 };
 use cielo_memory::MemoryProfile;
 
@@ -75,19 +75,39 @@ impl Compiler {
     }
 
     pub fn classified(&self, source: SourceFile) -> Arc<cielo_db::ClassifiedFile> {
-        cielo_db::classified_file(&self.db, source, self.target_profile())
+        cielo_db::classified_file(
+            &self.db,
+            source,
+            self.target_profile(),
+            self.comptime_inputs(source),
+        )
     }
 
     pub fn staged(&self, source: SourceFile) -> Arc<StagedFile> {
-        cielo_db::staged_file(&self.db, source, self.target_profile())
+        cielo_db::staged_file(
+            &self.db,
+            source,
+            self.target_profile(),
+            self.comptime_inputs(source),
+        )
     }
 
     pub fn linear(&self, source: SourceFile) -> Arc<cielo_db::LinearFile> {
-        cielo_db::linear_file(&self.db, source, self.target_profile())
+        cielo_db::linear_file(
+            &self.db,
+            source,
+            self.target_profile(),
+            self.comptime_inputs(source),
+        )
     }
 
     pub fn runtime(&self, source: SourceFile) -> Arc<RuntimeFile> {
-        cielo_db::runtime_file(&self.db, source, self.target_profile())
+        cielo_db::runtime_file(
+            &self.db,
+            source,
+            self.target_profile(),
+            self.comptime_inputs(source),
+        )
     }
 
     pub fn memory(&self, source: SourceFile) -> Arc<MemoryFile> {
@@ -99,7 +119,12 @@ impl Compiler {
         source: SourceFile,
         memory: MemoryProfile,
     ) -> Arc<MemoryFile> {
-        cielo_db::compile_memory(&self.db, source, self.compile_profile(memory))
+        cielo_db::compile_memory(
+            &self.db,
+            source,
+            self.compile_profile(memory),
+            self.comptime_inputs(source),
+        )
     }
 
     pub fn emit(&self, source: SourceFile) -> Arc<EmittedFile> {
@@ -107,7 +132,12 @@ impl Compiler {
     }
 
     pub fn emit_with_profile(&self, source: SourceFile, memory: MemoryProfile) -> Arc<EmittedFile> {
-        cielo_db::compile(&self.db, source, self.compile_profile(memory))
+        cielo_db::compile(
+            &self.db,
+            source,
+            self.compile_profile(memory),
+            self.comptime_inputs(source),
+        )
     }
 
     pub fn compile(&self, text: &str, source_id: SourceId) -> Arc<EmittedFile> {
@@ -125,6 +155,11 @@ impl Compiler {
 
     fn target_profile(&self) -> TargetProfile {
         TargetProfile::from(self.config.target)
+    }
+
+    fn comptime_inputs(&self, source: SourceFile) -> ComptimeInputs {
+        let paths = cielo_db::comptime_paths(&self.db, source, self.target_profile());
+        self.db.load_comptime_inputs(paths.as_slice())
     }
 
     fn compile_profile(&self, memory: MemoryProfile) -> CompileProfile {

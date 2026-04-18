@@ -1,5 +1,6 @@
 use cielo_ir::target::{Endianness, TargetSpec};
 use cielo_memory::MemoryProfile;
+use cielo_staging::pipeline::phases::CtFileDep;
 
 #[salsa::input]
 #[derive(Debug)]
@@ -10,6 +11,13 @@ pub struct SourceFile {
     pub path: String,
     #[returns(deref)]
     pub text: String,
+}
+
+#[salsa::input]
+#[derive(Debug)]
+pub struct ComptimeInputs {
+    #[returns(clone)]
+    pub files: Vec<CtFileDep>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

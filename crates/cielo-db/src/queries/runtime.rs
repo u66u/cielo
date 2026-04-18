@@ -2,11 +2,16 @@ use std::sync::Arc;
 
 use cielo_runtime::{assemble_program, cfg_lower, linearize};
 
-use crate::{Db, LinearFile, RuntimeFile, SourceFile, TargetProfile, staged_file};
+use crate::{ComptimeInputs, Db, LinearFile, RuntimeFile, SourceFile, TargetProfile, staged_file};
 
 #[salsa::tracked(no_eq, returns(clone))]
-pub fn linear_file(db: &dyn Db, source: SourceFile, target: TargetProfile) -> Arc<LinearFile> {
-    let staged = staged_file(db, source, target);
+pub fn linear_file(
+    db: &dyn Db,
+    source: SourceFile,
+    target: TargetProfile,
+    inputs: ComptimeInputs,
+) -> Arc<LinearFile> {
+    let staged = staged_file(db, source, target, inputs);
     let mut staged_core = cielo_staging::passes::normalize::run(staged.staged.clone());
     let sema = staged_core.sema().clone();
     let linear = {
@@ -22,8 +27,13 @@ pub fn linear_file(db: &dyn Db, source: SourceFile, target: TargetProfile) -> Ar
 }
 
 #[salsa::tracked(no_eq, returns(clone))]
-pub fn runtime_file(db: &dyn Db, source: SourceFile, target: TargetProfile) -> Arc<RuntimeFile> {
-    let linear = linear_file(db, source, target);
+pub fn runtime_file(
+    db: &dyn Db,
+    source: SourceFile,
+    target: TargetProfile,
+    inputs: ComptimeInputs,
+) -> Arc<RuntimeFile> {
+    let linear = linear_file(db, source, target, inputs);
     let cfg = cfg_lower::run(&linear.linear);
     let runtime = assemble_program(
         cfg,

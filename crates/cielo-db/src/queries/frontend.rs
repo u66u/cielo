@@ -18,14 +18,14 @@ pub fn parsed_file(db: &dyn Db, source: SourceFile) -> Arc<ParsedFile> {
         path: source.path(db),
         ast: parsed.program,
         diagnostics: parsed.diagnostics,
-        interner,
+        interner: Arc::new(interner),
     })
 }
 
 #[salsa::tracked(no_eq, returns(clone))]
 pub fn core_file(db: &dyn Db, source: SourceFile, target: TargetProfile) -> Arc<CoreFile> {
     let parsed = parsed_file(db, source);
-    let mut interner = parsed.interner.clone();
+    let mut interner = parsed.interner.as_ref().clone();
     let main = interner.intern("main");
     let builtins = TargetBuiltinSymbols::intern(&mut interner);
     let lowered = lower_program(
@@ -37,7 +37,7 @@ pub fn core_file(db: &dyn Db, source: SourceFile, target: TargetProfile) -> Arc<
     Arc::new(CoreFile {
         source: parsed.source,
         core: LowerOutput::new(lowered.program, diagnostics),
-        interner,
+        interner: Arc::new(interner),
     })
 }
 

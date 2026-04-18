@@ -1,4 +1,9 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+use cielo_staging::{file_deps, pipeline::phases::CtFileDep};
+
+use crate::ComptimeInputs;
 
 #[salsa::db]
 pub trait Db: salsa::Database {}
@@ -22,6 +27,7 @@ pub struct QueryMemoryStats {
 pub struct CieloDatabase {
     storage: salsa::Storage<Self>,
     events: Arc<Mutex<Vec<QueryEvent>>>,
+    comptime_inputs: Arc<Mutex<HashMap<Vec<CtFileDep>, ComptimeInputs>>>,
 }
 
 impl Default for CieloDatabase {
@@ -41,6 +47,7 @@ impl Default for CieloDatabase {
         Self {
             storage: salsa::Storage::new(Some(callback)),
             events,
+            comptime_inputs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -65,6 +72,22 @@ impl CieloDatabase {
             .collect::<Vec<_>>();
         stats.sort_by(|lhs, rhs| lhs.query.cmp(&rhs.query));
         stats
+    }
+
+    /// Read external comptime dependencies before entering a tracked query.
+    /// Equal snapshots reuse the same Salsa input identity.
+    pub fn load_comptime_inputs(&self, paths: &[String]) -> ComptimeInputs {
+        let snapshot = file_deps::snapshot(paths.iter().cloned(), |path| std::fs::read(path).ok());
+        let mut inputs = self
+            .comptime_inputs
+            .lock()
+            .expect("comptime input cache mutex poisoned");
+        if let Some(input) = inputs.get(&snapshot).copied() {
+            return input;
+        }
+        let input = ComptimeInputs::new(self, snapshot.clone());
+        inputs.insert(snapshot, input);
+        input
     }
 }
 

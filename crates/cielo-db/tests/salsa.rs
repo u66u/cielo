@@ -9,18 +9,19 @@ fn source_changes_flow_through_the_real_pipeline() {
     let mut db = CieloDatabase::default();
     let source = SourceFile::new(&db, 0, "memory.cielo".to_owned(), "fn main() {}".to_owned());
     let profile = CompileProfile::default();
+    let inputs = db.load_comptime_inputs(&[]);
 
-    let first = compile(&db, source, profile);
+    let first = compile(&db, source, profile, inputs);
     assert!(!first.c_source.is_empty());
     assert!(!db.take_query_events().is_empty());
 
-    let _cached = compile(&db, source, profile);
+    let _cached = compile(&db, source, profile, inputs);
     assert!(db.take_query_events().is_empty());
 
     source
         .set_text(&mut db)
         .to("fn main() {}\nfn helper() {}".to_owned());
-    let _second = compile(&db, source, profile);
+    let _second = compile(&db, source, profile, inputs);
     assert!(
         db.take_query_events()
             .iter()
@@ -33,7 +34,8 @@ fn changing_memory_config_does_not_rerun_runtime_queries() {
     let db = CieloDatabase::default();
     let source = SourceFile::new(&db, 0, "memory.cielo".to_owned(), "fn main() {}".to_owned());
     let profile = CompileProfile::default();
-    let _arc = compile_memory(&db, source, profile);
+    let inputs = db.load_comptime_inputs(&[]);
+    let _arc = compile_memory(&db, source, profile, inputs);
     let arc_events = db.take_query_events();
     assert!(
         arc_events
@@ -50,7 +52,7 @@ fn changing_memory_config_does_not_rerun_runtime_queries() {
         memory: MemoryProfile::from_preset(cielo_memory::MemoryPreset::Unmanaged),
         ..profile
     };
-    let _unmanaged = compile_memory(&db, source, off);
+    let _unmanaged = compile_memory(&db, source, off, inputs);
     let events = db.take_query_events();
     assert!(
         events
@@ -78,7 +80,8 @@ fn changing_memory_config_does_not_rerun_runtime_queries() {
 fn query_memory_stats_include_real_products() {
     let db = CieloDatabase::default();
     let source = SourceFile::new(&db, 0, "memory.cielo".to_owned(), "fn main() {}".to_owned());
-    let _ = compile(&db, source, CompileProfile::default());
+    let inputs = db.load_comptime_inputs(&[]);
+    let _ = compile(&db, source, CompileProfile::default(), inputs);
     assert!(
         db.query_memory_stats()
             .iter()
@@ -90,8 +93,9 @@ fn query_memory_stats_include_real_products() {
 fn staging_and_runtime_have_separate_coarse_queries() {
     let db = CieloDatabase::default();
     let source = SourceFile::new(&db, 0, "memory.cielo".to_owned(), "fn main() {}".to_owned());
+    let inputs = db.load_comptime_inputs(&[]);
 
-    let _staged = staged_file(&db, source, CompileProfile::default().target);
+    let _staged = staged_file(&db, source, CompileProfile::default().target, inputs);
     let staged_events = db.take_query_events();
     assert!(
         staged_events
@@ -104,7 +108,7 @@ fn staging_and_runtime_have_separate_coarse_queries() {
             .any(|event| event.description.contains("classified_file"))
     );
 
-    let _linear = linear_file(&db, source, CompileProfile::default().target);
+    let _linear = linear_file(&db, source, CompileProfile::default().target, inputs);
     let linear_events = db.take_query_events();
     assert!(
         linear_events

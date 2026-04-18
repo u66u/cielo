@@ -10,5 +10,5 @@ mod queries;
 
 pub use artifacts::*;
 pub use database::{CieloDatabase, Db, QueryEvent, QueryMemoryStats};
-pub use inputs::{CompileProfile, SourceFile, TargetProfile};
+pub use inputs::{CompileProfile, ComptimeInputs, SourceFile, TargetProfile};
 pub use queries::*;
