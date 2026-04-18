@@ -135,7 +135,7 @@ impl MonomorphizationSummary {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Default, Serialize, Deserialize)]
 pub struct CtFileDep {
     pub path: String,
     pub content_hash: String,

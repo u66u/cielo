@@ -4,6 +4,8 @@
 //! drives ordinary pass functions so a component test can stop at, or alter,
 //! any boundary without adding test entry points to the compiler facade.
 
+use std::fs;
+
 use cielo_base::{DiagnosticBag, Interner, SourceId};
 use cielo_frontend::{ParseOutput, parse_source};
 use cielo_ir::{cfg::CfgProgram, core::CoreProgram, linear::LinearProgram};
@@ -12,8 +14,9 @@ use cielo_memory::{MemoryInput, MemoryPreset, MemoryProfile, MemoryReport};
 use cielo_runtime::{assemble_program, cfg_lower, linearize};
 use cielo_sema::{TypedCore, check_core};
 use cielo_staging::{
+    file_deps,
     passes::{bta, comptime, ct_eval, handler_specialize, monomorphize, normalize, residualize},
-    pipeline::phases::{BtaClassified, CtPropagated, StagedCore},
+    pipeline::phases::{BtaClassified, CtFileDep, CtPropagated, Monomorphized, StagedCore},
 };
 
 use cielo_ir::target::TargetSpec;
@@ -137,12 +140,14 @@ impl PassHarness {
 
     pub fn evaluate_classify(&self, built: LowerOutput) -> BtaClassified {
         let mono = monomorphize::run(typecheck(built));
-        comptime::evaluate_classify(mono, self.config.target)
+        let file_deps = snapshot_file_deps(&mono);
+        comptime::evaluate_classify(mono, self.config.target, file_deps)
     }
 
     pub fn evaluate_constants(&self, built: LowerOutput) -> CtPropagated {
         let mono = monomorphize::run(typecheck(built));
-        ct_eval::run(mono, self.config.target)
+        let file_deps = snapshot_file_deps(&mono);
+        ct_eval::run(mono, self.config.target, file_deps)
     }
 
     pub fn residualize_specialize(&self, classified: BtaClassified) -> StagedCore {
@@ -160,15 +165,22 @@ impl PassHarness {
 
     pub fn stage_typed(&self, typed: TypedCore) -> StagedCore {
         let mono = monomorphize::run(typed);
-        let classified = comptime::evaluate_classify(mono, self.config.target);
+        let file_deps = snapshot_file_deps(&mono);
+        let classified = comptime::evaluate_classify(mono, self.config.target, file_deps);
         comptime::residualize_specialize(classified)
     }
 
     pub fn stage_core_baseline(&self, built: LowerOutput) -> StagedCore {
         let mono = monomorphize::run(typecheck(built));
-        let ct = ct_eval::run(mono, self.config.target);
+        let file_deps = snapshot_file_deps(&mono);
+        let ct = ct_eval::run(mono, self.config.target, file_deps);
         residualize::run(bta::run(ct))
     }
+}
+
+fn snapshot_file_deps(mono: &Monomorphized) -> Vec<CtFileDep> {
+    let paths = file_deps::discover(mono.program(), mono.sema());
+    file_deps::snapshot(paths, |path| fs::read(path).ok())
 }
 
 fn typecheck(built: LowerOutput) -> TypedCore {

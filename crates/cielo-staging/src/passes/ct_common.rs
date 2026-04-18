@@ -1,15 +1,10 @@
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::Read;
-use std::path::Path;
 
-use crate::pipeline::phases::{BranchDecision, CtCacheKey, CtEvalStats, CtFileDep};
+use crate::pipeline::phases::{BranchDecision, CtCacheKey, CtEvalStats};
 use cielo_base::densemap::DenseMap;
 use cielo_base::{EffectLabelId, ExprId};
 use cielo_ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, OpCategory, UnaryOp};
-use cielo_ir::effect::EffectFlags;
 use cielo_ir::target::{Endianness, TargetSpec};
-use cielo_sema::SemanticTables;
 
 pub(super) const EVALUATOR_POLICY: &str = "v1-int-wrap-litnorm";
 
@@ -354,70 +349,4 @@ pub(super) fn build_cache_key(target: TargetSpec) -> CtCacheKey {
         evaluator_policy: EVALUATOR_POLICY.to_owned(),
         compiler_version: crate::CIELO_VERSION.to_owned(),
     }
-}
-
-pub(super) fn collect_file_deps(program: &CoreProgram, sema: &SemanticTables) -> Vec<CtFileDep> {
-    let mut deps = Vec::new();
-    let mut seen = HashSet::new();
-
-    for stmt in program.stmts() {
-        let cielo_ir::core::StmtKind::Perform { effect, args, .. } = &stmt.kind else {
-            continue;
-        };
-        let is_ct_only = sema
-            .effect_properties
-            .get(effect)
-            .is_some_and(|properties| properties.flags.contains(EffectFlags::CT_ONLY));
-        if !is_ct_only {
-            continue;
-        }
-        let Some(first_arg) = args.first() else {
-            continue;
-        };
-        let Some(ExprKind::Literal(Literal::String(path))) =
-            program.expr(*first_arg).map(|expr| &expr.kind)
-        else {
-            continue;
-        };
-
-        let normalized = normalize_path(path);
-        let hash = hash_file_or_missing(&normalized);
-        let key = format!("{normalized}:{hash}");
-        if !seen.insert(key) {
-            continue;
-        }
-
-        deps.push(CtFileDep {
-            path: normalized,
-            content_hash: hash,
-        });
-    }
-
-    deps
-}
-
-fn normalize_path(path: &str) -> String {
-    let raw = Path::new(path);
-    raw.canonicalize()
-        .unwrap_or_else(|_| raw.to_path_buf())
-        .to_string_lossy()
-        .into_owned()
-}
-
-fn hash_file_or_missing(path: &str) -> String {
-    let mut file = match File::open(path) {
-        Ok(file) => file,
-        Err(_) => return "missing".to_owned(),
-    };
-    let mut hasher = blake3::Hasher::new();
-    let mut buf = [0u8; 16 * 1024];
-    loop {
-        let read = match file.read(&mut buf) {
-            Ok(0) => break,
-            Ok(read) => read,
-            Err(_) => return "missing".to_owned(),
-        };
-        hasher.update(&buf[..read]);
-    }
-    hasher.finalize().to_hex().to_string()
 }

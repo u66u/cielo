@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::passes::ct_common;
-use crate::pipeline::phases::{CtPropagated, CtPropagationTables, Monomorphized};
+use crate::pipeline::phases::{CtFileDep, CtPropagated, CtPropagationTables, Monomorphized};
 use cielo_base::densemap::DenseMap;
 use cielo_base::{ExprId, FuncId, StmtId, VarId};
 use cielo_ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, StageDirective, UnaryOp};
@@ -9,12 +9,12 @@ use cielo_ir::target::TargetSpec;
 
 const MAX_CALL_EVAL_DEPTH: usize = 32;
 
-pub fn run(mono: Monomorphized, target: TargetSpec) -> CtPropagated {
+pub fn run(mono: Monomorphized, target: TargetSpec, file_deps: Vec<CtFileDep>) -> CtPropagated {
     ct_common::assert_pre_staging_effects_concrete(mono.program());
 
     let mut ct = CtPropagationTables::default();
     ct.cache_key = ct_common::build_cache_key(target);
-    ct.file_deps = ct_common::collect_file_deps(mono.program(), mono.sema());
+    ct.file_deps = file_deps;
     let (ct_cache, eval_stats) = ct_common::compute_ct_cache(mono.program(), target);
     ct.ct_cache = ct_cache;
     ct.eval_stats = eval_stats;

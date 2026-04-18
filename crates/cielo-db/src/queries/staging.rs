@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use cielo_ir::target::TargetSpec;
 use cielo_staging::{
+    file_deps,
     passes::{comptime, monomorphize},
     pipeline::phases::StagedCore,
 };
@@ -32,7 +33,10 @@ pub fn classified_file(
     target: TargetProfile,
 ) -> Arc<ClassifiedFile> {
     let mono = monomorphized_file(db, source, target);
-    let classified = comptime::evaluate_classify(mono.mono.clone(), TargetSpec::from(target));
+    let paths = file_deps::discover(mono.mono.program(), mono.mono.sema());
+    let file_deps = file_deps::snapshot(paths, |path| std::fs::read(path).ok());
+    let classified =
+        comptime::evaluate_classify(mono.mono.clone(), TargetSpec::from(target), file_deps);
     Arc::new(ClassifiedFile {
         source: mono.source,
         classified,

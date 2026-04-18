@@ -1,13 +1,17 @@
 use crate::passes::{bta, ct_eval, handler_specialize, residualize};
 use crate::pipeline::phases::{
-    BranchDecision, BtaClassified, Monomorphized, Reason, Stage, StagedCore,
+    BranchDecision, BtaClassified, CtFileDep, Monomorphized, Reason, Stage, StagedCore,
 };
 use cielo_ir::target::TargetSpec;
 use std::collections::HashSet;
 
 /// v1 fused stage A: Evaluate+Classify.
-pub fn evaluate_classify(mono: Monomorphized, target: TargetSpec) -> BtaClassified {
-    let ct = ct_eval::run(mono, target);
+pub fn evaluate_classify(
+    mono: Monomorphized,
+    target: TargetSpec,
+    file_deps: Vec<CtFileDep>,
+) -> BtaClassified {
+    let ct = ct_eval::run(mono, target, file_deps);
     let classified = bta::run(ct);
     assert_evaluate_classify_invariants(&classified);
     classified

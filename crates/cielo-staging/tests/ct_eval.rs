@@ -541,7 +541,7 @@ fn run_ct_eval_on_program(program: CoreProgram, target: TargetSpec) -> CtPropaga
         sema,
         MonomorphizationSummary::default(),
     );
-    ct_eval::run(mono, target)
+    ct_eval::run(mono, target, Vec::new())
 }
 
 fn add_pure_int_function(

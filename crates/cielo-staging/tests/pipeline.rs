@@ -76,7 +76,7 @@ fn staging_boundary_rejects_non_concrete_effect_rows() {
     let mono = Monomorphized::new(program, diagnostics, sema, mono_summary);
 
     let panic = std::panic::catch_unwind(|| {
-        let _ = ct_propagate::run(mono, TargetSpec::default());
+        let _ = ct_propagate::run(mono, TargetSpec::default(), Vec::new());
     });
     assert!(
         panic.is_err(),
@@ -363,7 +363,7 @@ fn ct_propagate_collects_stable_eval_stats_oracle() {
         sema,
         MonomorphizationSummary::default(),
     );
-    let ct = ct_propagate::run(mono, PassConfig::default().target);
+    let ct = ct_propagate::run(mono, PassConfig::default().target, Vec::new());
     let stats = ct.ct().eval_stats;
 
     assert_eq!(
@@ -462,7 +462,7 @@ fn ct_propagate_tracks_host_float_folds_explicitly() {
         sema,
         MonomorphizationSummary::default(),
     );
-    let ct = ct_propagate::run(mono, PassConfig::default().target);
+    let ct = ct_propagate::run(mono, PassConfig::default().target, Vec::new());
     let stats = ct.ct().eval_stats;
 
     assert_eq!(
@@ -588,7 +588,7 @@ fn ct_propagate_folds_float_binary_surface_and_counts_host_float_folds() {
         sema,
         MonomorphizationSummary::default(),
     );
-    let ct = ct_propagate::run(mono, PassConfig::default().target);
+    let ct = ct_propagate::run(mono, PassConfig::default().target, Vec::new());
     let stats = ct.ct().eval_stats;
 
     assert_eq!(ct.ct().ct_cache.get(&add), Some(&Literal::Float(1.75)));
@@ -712,7 +712,7 @@ fn ct_propagate_folds_non_numeric_equality_and_leaves_mixed_types_unresolved() {
         sema,
         MonomorphizationSummary::default(),
     );
-    let ct = ct_propagate::run(mono, PassConfig::default().target);
+    let ct = ct_propagate::run(mono, PassConfig::default().target, Vec::new());
     let stats = ct.ct().eval_stats;
 
     assert_eq!(ct.ct().ct_cache.get(&bool_eq), Some(&Literal::Bool(false)));
@@ -813,7 +813,7 @@ fn ct_propagate_skips_non_finite_host_float_folds() {
         sema,
         MonomorphizationSummary::default(),
     );
-    let ct = ct_propagate::run(mono, PassConfig::default().target);
+    let ct = ct_propagate::run(mono, PassConfig::default().target, Vec::new());
     let stats = ct.ct().eval_stats;
 
     assert_eq!(

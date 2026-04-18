@@ -4,6 +4,7 @@
 //! the frontend, Core IR, and semantic facts through their public contracts;
 //! it does not mirror their module trees.
 
+pub mod file_deps;
 pub mod passes;
 pub mod pipeline;
 
