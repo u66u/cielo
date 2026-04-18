@@ -85,7 +85,15 @@ fn main() -> Int { let value = Wrap(1); consume(value) }
         0,
         "a unique last-use argument should sink without a retain"
     );
-    assert!(compiled.memory.arc.eliminated_move_pairs > 0);
+    assert!(
+        compiled
+            .memory
+            .reference_counting()
+            .expect("ARC test must select reference counting")
+            .arc
+            .eliminated_move_pairs
+            > 0
+    );
 }
 
 #[test]
@@ -101,7 +109,17 @@ fn main() -> Int { let value = Wrap(1); consume(value) }
     assert!(arc_op_count(&raw, CfgArcOpKind::Retain) > 0);
     assert!(arc_op_count(&raw, CfgArcOpKind::Release) > 0);
     assert_eq!(arc_op_count(&optimized, CfgArcOpKind::Retain), 0);
-    assert!(optimized.memory.arc.eliminated_move_pairs > raw.memory.arc.eliminated_move_pairs);
+    let raw_stats = raw
+        .memory
+        .reference_counting()
+        .expect("raw profile must select reference counting")
+        .arc;
+    let optimized_stats = optimized
+        .memory
+        .reference_counting()
+        .expect("optimized profile must select reference counting")
+        .arc;
+    assert!(optimized_stats.eliminated_move_pairs > raw_stats.eliminated_move_pairs);
 }
 
 #[test]

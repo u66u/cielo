@@ -1,12 +1,19 @@
 //! Passthrough memory lowering for programs managed by external means.
 
-use crate::{MemoryInput, MemoryProgram, MemoryReport};
+use cielo_base::DiagnosticBag;
+use cielo_ir::cfg::CfgProgram;
 
-pub fn lower(input: MemoryInput<'_>) -> MemoryProgram {
-    MemoryProgram {
+use crate::MemoryInput;
+
+#[derive(Clone, Debug)]
+pub struct UnmanagedProgram {
+    pub(super) cfg: CfgProgram,
+    pub(super) diagnostics: DiagnosticBag,
+}
+
+pub fn lower(input: MemoryInput<'_>) -> UnmanagedProgram {
+    UnmanagedProgram {
         cfg: input.runtime.cfg.clone(),
         diagnostics: input.runtime.diagnostics.clone(),
-        report: MemoryReport::default(),
-        emit_arc_trace_comments: false,
     }
 }

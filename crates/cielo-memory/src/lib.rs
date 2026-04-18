@@ -1,6 +1,5 @@
 //! Memory management over the self-contained runtime artifact.
 
-use cielo_base::DiagnosticBag;
 use cielo_ir::cfg::CfgProgram;
 use cielo_ir::runtime::RuntimeProgram;
 
@@ -9,34 +8,100 @@ pub mod refcount;
 pub mod unmanaged;
 
 pub use config::{ArcConfig, ArcFeatures, MemoryPreset, MemoryProfile, MemoryStrategy};
-pub use refcount::ArcStats;
 pub use refcount::borrow_hazard::BorrowHazardReport;
 pub use refcount::verify::CfgArcVerifyStats;
+pub use refcount::{ArcStats, ReferenceCountingProgram, ReferenceCountingReport};
+pub use unmanaged::UnmanagedProgram;
 
 #[derive(Clone, Copy)]
 pub struct MemoryInput<'a> {
     pub runtime: &'a RuntimeProgram,
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct MemoryReport {
-    pub arc: ArcStats,
-    pub verifier: Option<CfgArcVerifyStats>,
-    pub borrow_hazards: BorrowHazardReport,
+#[derive(Clone, Debug)]
+pub enum MemoryProgram {
+    Unmanaged(UnmanagedProgram),
+    ReferenceCounting(ReferenceCountingProgram),
 }
 
 #[derive(Clone, Debug)]
-pub struct MemoryProgram {
+pub enum MemoryReport {
+    Unmanaged,
+    ReferenceCounting(ReferenceCountingReport),
+}
+
+impl MemoryReport {
+    pub fn reference_counting(&self) -> Option<&ReferenceCountingReport> {
+        match self {
+            Self::Unmanaged => None,
+            Self::ReferenceCounting(report) => Some(report),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct MemoryProgramParts {
     pub cfg: CfgProgram,
-    pub diagnostics: DiagnosticBag,
+    pub diagnostics: cielo_base::DiagnosticBag,
     pub report: MemoryReport,
-    pub emit_arc_trace_comments: bool,
+    pub emit_trace_comments: bool,
+}
+
+impl MemoryProgram {
+    pub fn cfg(&self) -> &CfgProgram {
+        match self {
+            Self::Unmanaged(program) => &program.cfg,
+            Self::ReferenceCounting(program) => &program.cfg,
+        }
+    }
+
+    pub fn diagnostics(&self) -> &cielo_base::DiagnosticBag {
+        match self {
+            Self::Unmanaged(program) => &program.diagnostics,
+            Self::ReferenceCounting(program) => &program.diagnostics,
+        }
+    }
+
+    pub fn emit_trace_comments(&self) -> bool {
+        match self {
+            Self::Unmanaged(_) => false,
+            Self::ReferenceCounting(program) => program.emit_trace_comments,
+        }
+    }
+
+    pub fn report(&self) -> MemoryReport {
+        match self {
+            Self::Unmanaged(_) => MemoryReport::Unmanaged,
+            Self::ReferenceCounting(program) => {
+                MemoryReport::ReferenceCounting(program.report.clone())
+            }
+        }
+    }
+
+    pub fn into_parts(self) -> MemoryProgramParts {
+        match self {
+            Self::Unmanaged(program) => MemoryProgramParts {
+                cfg: program.cfg,
+                diagnostics: program.diagnostics,
+                report: MemoryReport::Unmanaged,
+                emit_trace_comments: false,
+            },
+            Self::ReferenceCounting(program) => MemoryProgramParts {
+                cfg: program.cfg,
+                diagnostics: program.diagnostics,
+                report: MemoryReport::ReferenceCounting(program.report),
+                emit_trace_comments: program.emit_trace_comments,
+            },
+        }
+    }
 }
 
 pub fn lower(input: MemoryInput<'_>, profile: MemoryProfile) -> MemoryProgram {
     match profile.strategy {
-        MemoryStrategy::Unmanaged => unmanaged::lower(input),
-        MemoryStrategy::ReferenceCounting(config) => refcount::lower(input, config),
+        MemoryStrategy::Unmanaged => MemoryProgram::Unmanaged(unmanaged::lower(input)),
+        MemoryStrategy::ReferenceCounting(config) => {
+            MemoryProgram::ReferenceCounting(refcount::lower(input, config))
+        }
     }
 }
 

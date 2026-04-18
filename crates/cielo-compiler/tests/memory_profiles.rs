@@ -1,4 +1,4 @@
-use cielo::{Compiler, CompilerConfig, MemoryPreset, MemoryProfile, MemoryStrategy};
+use cielo::{Compiler, CompilerConfig, MemoryPreset, MemoryProfile, MemoryReport, MemoryStrategy};
 use cielo_base::SourceId;
 
 #[test]
@@ -21,7 +21,7 @@ fn one_compiler_reuses_runtime_for_multiple_memory_profiles() {
         compiler.memory_with_profile(source, MemoryProfile::from_preset(MemoryPreset::Unmanaged));
     let events = compiler.database().take_query_events();
 
-    assert_eq!(unmanaged.memory.report.arc, Default::default());
+    assert!(matches!(unmanaged.memory.report(), MemoryReport::Unmanaged));
     assert!(
         events
             .iter()

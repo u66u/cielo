@@ -31,7 +31,11 @@ fn main() -> Int {
         .features
         .insert(ArcFeatures::EMIT_TRACE_COMMENTS);
     let compiled = compile_source_to_c_with_config(src, config);
-    let arc_stats = compiled.memory.arc;
+    let arc_stats = compiled
+        .memory
+        .reference_counting()
+        .expect("ARC test must select reference counting")
+        .arc;
     assert!(
         arc_stats.final_retain_ops + arc_stats.final_release_ops > 0,
         "fixture must produce ARC ops before C emission validation"

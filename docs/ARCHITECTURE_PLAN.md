@@ -210,6 +210,20 @@ retain/release insertion, optimization, and verification under
 `cielo-memory::refcount`. Its analyses consume CFG values and runtime source
 spans, not semantic tables.
 
+The output is strategy-shaped as well:
+
+```rust
+enum MemoryProgram {
+    Unmanaged(UnmanagedProgram),
+    ReferenceCounting(ReferenceCountingProgram),
+}
+```
+
+`ReferenceCountingProgram` owns its ARC report, verifier result, borrow-hazard
+report, and trace setting. `UnmanagedProgram` has none of those fields. Common
+consumers use `MemoryProgram::cfg()` and `emit_trace_comments()`, so adding a
+real collector does not grow a struct full of unrelated optional ARC fields.
+
 When a second real strategy is implemented, add a sibling module with its own
 input facts, analyses, report, and query branch. Do not add a placeholder
 variant today and do not force unrelated strategies into an ARC-shaped plan.

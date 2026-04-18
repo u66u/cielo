@@ -16,7 +16,11 @@ fn main() -> Int {
     let mut interner = Interner::new();
     let compiler = PassHarness::new(PassConfig::default());
     let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
-    let stats = compiled.memory.arc;
+    let stats = compiled
+        .memory
+        .reference_counting()
+        .expect("ARC test must select reference counting")
+        .arc;
 
     assert!(
         stats.planned_retain_ops >= stats.final_retain_ops,

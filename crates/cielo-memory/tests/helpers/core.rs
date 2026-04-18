@@ -64,12 +64,13 @@ pub fn emit_pipeline(
         residual.diagnostics().clone(),
     );
     let managed = cielo_memory::lower(MemoryInput { runtime: &runtime }, memory);
+    let managed = managed.into_parts();
     *residual.diagnostics_mut() = managed.diagnostics;
     let c_source = cielo_backend_c::emit(
         &managed.cfg,
         interner,
         &runtime.constants,
-        managed.emit_arc_trace_comments,
+        managed.emit_trace_comments,
     );
     CompiledC {
         residual,

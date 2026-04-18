@@ -1,11 +1,16 @@
 //! Reference-counting analysis and lowering.
 
-use crate::{ArcConfig, BorrowHazardReport, MemoryInput, MemoryProgram, MemoryReport};
+use cielo_base::DiagnosticBag;
+use cielo_ir::cfg::CfgProgram;
+
+use crate::{ArcConfig, BorrowHazardReport, MemoryInput};
 
 pub mod analysis;
 pub mod borrow_hazard;
 pub mod passes;
 pub mod verify;
+
+use verify::CfgArcVerifyStats;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct ArcStats {
@@ -18,7 +23,22 @@ pub struct ArcStats {
     pub final_release_ops: u32,
 }
 
-pub fn lower(input: MemoryInput<'_>, config: ArcConfig) -> MemoryProgram {
+#[derive(Clone, Debug, Default)]
+pub struct ReferenceCountingReport {
+    pub arc: ArcStats,
+    pub verifier: Option<CfgArcVerifyStats>,
+    pub borrow_hazards: BorrowHazardReport,
+}
+
+#[derive(Clone, Debug)]
+pub struct ReferenceCountingProgram {
+    pub(super) cfg: CfgProgram,
+    pub(super) diagnostics: DiagnosticBag,
+    pub(super) report: ReferenceCountingReport,
+    pub(super) emit_trace_comments: bool,
+}
+
+pub fn lower(input: MemoryInput<'_>, config: ArcConfig) -> ReferenceCountingProgram {
     let mut cfg = input.runtime.cfg.clone();
     let mut diagnostics = input.runtime.diagnostics.clone();
     let managed_values = analysis::managed::classify(&cfg, &input.runtime.values);
@@ -33,15 +53,15 @@ pub fn lower(input: MemoryInput<'_>, config: ArcConfig) -> MemoryProgram {
         .verify_enabled()
         .then(|| verify::verify(&cfg, &mut diagnostics));
 
-    MemoryProgram {
+    ReferenceCountingProgram {
         cfg,
         diagnostics,
-        report: MemoryReport {
+        report: ReferenceCountingReport {
             arc,
             verifier,
             borrow_hazards,
         },
-        emit_arc_trace_comments: config.emit_trace_enabled(),
+        emit_trace_comments: config.emit_trace_enabled(),
     }
 }
 

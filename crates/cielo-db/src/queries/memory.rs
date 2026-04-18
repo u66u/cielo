@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use cielo_backend_c as backend_c;
-use cielo_memory::{ArcConfig, MemoryInput, MemoryProfile, MemoryStrategy};
+use cielo_memory::{ArcConfig, MemoryInput, MemoryProfile, MemoryProgram, MemoryStrategy};
 
 use crate::{CompileProfile, Db, EmittedFile, MemoryFile, SourceFile, TargetProfile, runtime_file};
 
@@ -27,9 +27,9 @@ pub fn unmanaged_memory_file(
     target: TargetProfile,
 ) -> Arc<MemoryFile> {
     let runtime = runtime_file(db, source, target);
-    let memory = cielo_memory::unmanaged::lower(MemoryInput {
+    let memory = MemoryProgram::Unmanaged(cielo_memory::unmanaged::lower(MemoryInput {
         runtime: &runtime.runtime,
-    });
+    }));
     Arc::new(MemoryFile { runtime, memory })
 }
 
@@ -41,12 +41,12 @@ pub fn refcount_memory_file(
     config: ArcConfig,
 ) -> Arc<MemoryFile> {
     let runtime = runtime_file(db, source, target);
-    let memory = cielo_memory::refcount::lower(
+    let memory = MemoryProgram::ReferenceCounting(cielo_memory::refcount::lower(
         MemoryInput {
             runtime: &runtime.runtime,
         },
         config,
-    );
+    ));
     Arc::new(MemoryFile { runtime, memory })
 }
 
@@ -59,10 +59,10 @@ pub fn emitted_file(
 ) -> Arc<EmittedFile> {
     let memory = memory_file(db, source, target, memory);
     let c_source = backend_c::emit(
-        &memory.memory.cfg,
+        memory.memory.cfg(),
         &memory.runtime.interner,
         &memory.runtime.runtime.constants,
-        memory.memory.emit_arc_trace_comments,
+        memory.memory.emit_trace_comments(),
     );
     Arc::new(EmittedFile { memory, c_source })
 }
