@@ -19,6 +19,19 @@ use super::analysis::{
 };
 use super::types::{ClauseConvention, ResumeContext, ResumeQualifier};
 
+struct LoweringInput<'a> {
+    program: &'a CoreProgram,
+    fn_names: &'a HashMap<FuncId, SymbolId>,
+    sema: &'a SemanticTables,
+}
+
+struct LoweringState<'a> {
+    diagnostics: &'a mut DiagnosticBag,
+    linear: &'a mut LinearProgram,
+    expr_map: &'a mut [Option<LinearExprId>],
+    stmt_map: &'a mut [Option<LinearStmtId>],
+}
+
 pub(super) fn lower_program(
     program: &CoreProgram,
     sema: &SemanticTables,
@@ -41,82 +54,70 @@ pub(super) fn lower_program(
         .enumerate()
         .map(|(dense_idx, source_id)| (source_id, LinearFuncId::new(dense_idx)))
         .collect();
-
-    for source_id in reachable {
-        let Some(function) = program.function(source_id) else {
-            continue;
-        };
-        let body = lower_stmt(
-            program,
-            function.body,
-            &fn_names,
-            sema,
+    let input = LoweringInput {
+        program,
+        fn_names: &fn_names,
+        sema,
+    };
+    {
+        let mut state = LoweringState {
             diagnostics,
-            &mut linear,
-            &mut expr_map,
-            &mut stmt_map,
-        );
-        let dense_id = dense_id_by_source
-            .get(&source_id)
-            .copied()
-            .unwrap_or(LinearFuncId::INVALID);
-        linear.functions.push(LinearFunction {
-            id: dense_id,
-            name: function.name,
-            params: function.params.clone(),
-            body,
-        });
-    }
+            linear: &mut linear,
+            expr_map: &mut expr_map,
+            stmt_map: &mut stmt_map,
+        };
 
-    linear.entrypoints = program
-        .entrypoints()
-        .iter()
-        .filter_map(|source| dense_id_by_source.get(source).copied())
-        .collect();
+        for source_id in reachable {
+            let Some(function) = program.function(source_id) else {
+                continue;
+            };
+            let body = lower_stmt(&input, function.body, &mut state);
+            let dense_id = dense_id_by_source
+                .get(&source_id)
+                .copied()
+                .unwrap_or(LinearFuncId::INVALID);
+            state.linear.functions.push(LinearFunction {
+                id: dense_id,
+                name: function.name,
+                params: function.params.clone(),
+                body,
+            });
+        }
+
+        state.linear.entrypoints = program
+            .entrypoints()
+            .iter()
+            .filter_map(|source| dense_id_by_source.get(source).copied())
+            .collect();
+    }
     linear
 }
 
 fn lower_stmt(
-    program: &CoreProgram,
+    input: &LoweringInput<'_>,
     stmt_id: StmtId,
-    fn_names: &HashMap<FuncId, SymbolId>,
-    sema: &SemanticTables,
-    diagnostics: &mut DiagnosticBag,
-    linear: &mut LinearProgram,
-    expr_map: &mut [Option<LinearExprId>],
-    stmt_map: &mut [Option<LinearStmtId>],
+    state: &mut LoweringState<'_>,
 ) -> LinearStmtId {
-    if let Some(id) = stmt_map.get(stmt_id.index()).copied().flatten() {
+    if let Some(id) = state.stmt_map.get(stmt_id.index()).copied().flatten() {
         return id;
     }
 
-    let Some(stmt) = program.stmt(stmt_id) else {
-        let id = linear.push_stmt(LinearStmt::Error);
-        stmt_map[stmt_id.index()] = Some(id);
+    let Some(stmt) = input.program.stmt(stmt_id) else {
+        let id = state.linear.push_stmt(LinearStmt::Error);
+        state.stmt_map[stmt_id.index()] = Some(id);
         return id;
     };
 
     let kind = match &stmt.kind {
-        StmtKind::Return(expr) => {
-            LinearStmt::Return(lower_expr(program, *expr, fn_names, linear, expr_map))
-        }
+        StmtKind::Return(expr) => LinearStmt::Return(lower_expr(input, *expr, state)),
         StmtKind::Let {
             binding,
             value,
             next,
         } => LinearStmt::Let {
             binding: *binding,
-            value: lower_expr(program, *value, fn_names, linear, expr_map),
-            next: lower_stmt(
-                program,
-                *next,
-                fn_names,
-                sema,
-                diagnostics,
-                linear,
-                expr_map,
-                stmt_map,
-            ),
+            value: lower_expr(input, *value, state),
+            next: lower_stmt(input, *next, state),
         },
         StmtKind::Val {
             binding,
@@ -124,26 +125,8 @@ fn lower_stmt(
             next,
         } => LinearStmt::Val {
             binding: *binding,
-            value: lower_stmt(
-                program,
-                *value,
-                fn_names,
-                sema,
-                diagnostics,
-                linear,
-                expr_map,
-                stmt_map,
-            ),
-            next: lower_stmt(
-                program,
-                *next,
-                fn_names,
-                sema,
-                diagnostics,
-                linear,
-                expr_map,
-                stmt_map,
-            ),
+            value: lower_stmt(input, *value, state),
+            next: lower_stmt(input, *next, state),
         },
         StmtKind::Call {
             result,
@@ -153,8 +136,8 @@ fn lower_stmt(
             next,
             ..
         } => {
-            let callee_name = fn_names.get(callee).copied().unwrap_or_else(|| {
-                diagnostics.error(
+            let callee_name = input.fn_names.get(callee).copied().unwrap_or_else(|| {
+                state.diagnostics.error(
                     "LINEARIZE_UNKNOWN_CALLEE",
                     "Could not resolve function id while lowering call to linear IR",
                     stmt.span,
@@ -164,24 +147,15 @@ fn lower_stmt(
             let lowered_args = args
                 .iter()
                 .copied()
-                .map(|arg| lower_expr(program, arg, fn_names, linear, expr_map))
+                .map(|arg| lower_expr(input, arg, state))
                 .collect();
-            let lowered_next = lower_stmt(
-                program,
-                *next,
-                fn_names,
-                sema,
-                diagnostics,
-                linear,
-                expr_map,
-                stmt_map,
-            );
+            let lowered_next = lower_stmt(input, *next, state);
             linear_call_stmt(
                 *result,
                 callee_name,
                 lowered_args,
                 lowered_next,
-                classify_call_convention(effects, sema),
+                classify_call_convention(effects, input.sema),
             )
         }
         StmtKind::If {
@@ -189,63 +163,25 @@ fn lower_stmt(
             then_branch,
             else_branch,
         } => LinearStmt::If {
-            cond: lower_expr(program, *cond, fn_names, linear, expr_map),
-            then_branch: lower_stmt(
-                program,
-                *then_branch,
-                fn_names,
-                sema,
-                diagnostics,
-                linear,
-                expr_map,
-                stmt_map,
-            ),
-            else_branch: lower_stmt(
-                program,
-                *else_branch,
-                fn_names,
-                sema,
-                diagnostics,
-                linear,
-                expr_map,
-                stmt_map,
-            ),
+            cond: lower_expr(input, *cond, state),
+            then_branch: lower_stmt(input, *then_branch, state),
+            else_branch: lower_stmt(input, *else_branch, state),
         },
         StmtKind::Match {
             scrutinee,
             arms,
             default,
         } => LinearStmt::Match {
-            scrutinee: lower_expr(program, *scrutinee, fn_names, linear, expr_map),
+            scrutinee: lower_expr(input, *scrutinee, state),
             arms: arms
                 .iter()
                 .map(|arm| LinearMatchArm {
                     tag: arm.tag,
                     binders: arm.binders.clone(),
-                    body: lower_stmt(
-                        program,
-                        arm.body,
-                        fn_names,
-                        sema,
-                        diagnostics,
-                        linear,
-                        expr_map,
-                        stmt_map,
-                    ),
+                    body: lower_stmt(input, arm.body, state),
                 })
                 .collect(),
-            default: default.map(|default_stmt| {
-                lower_stmt(
-                    program,
-                    default_stmt,
-                    fn_names,
-                    sema,
-                    diagnostics,
-                    linear,
-                    expr_map,
-                    stmt_map,
-                )
-            }),
+            default: default.map(|default_stmt| lower_stmt(input, default_stmt, state)),
         },
         StmtKind::Perform {
             result,
@@ -260,124 +196,74 @@ fn lower_stmt(
             args: args
                 .iter()
                 .copied()
-                .map(|arg| lower_expr(program, arg, fn_names, linear, expr_map))
+                .map(|arg| lower_expr(input, arg, state))
                 .collect(),
-            next: lower_stmt(
-                program,
-                *next,
-                fn_names,
-                sema,
-                diagnostics,
-                linear,
-                expr_map,
-                stmt_map,
-            ),
+            next: lower_stmt(input, *next, state),
         },
         StmtKind::Resume { next, .. } => {
-            diagnostics.error(
+            state.diagnostics.error(
                 "LINEARIZE_RESUME_OUTSIDE_HANDLER",
                 "Encountered `resume` outside a handler-lowering context",
                 stmt.span,
             );
-            return lower_stmt(
-                program,
-                *next,
-                fn_names,
-                sema,
-                diagnostics,
-                linear,
-                expr_map,
-                stmt_map,
-            );
+            return lower_stmt(input, *next, state);
         }
         StmtKind::Handle {
             handler,
             body,
             next,
         } => {
-            if let Some(handler_def) = program.handlers().get(handler.index()) {
-                let is_dead_handler = !stmt_effect_row_contains(sema, *body, handler_def.effect);
-                if is_dead_handler && is_identity_handler_return_clause(program, handler_def) {
-                    diagnostics.note(
+            if let Some(handler_def) = input.program.handlers().get(handler.index()) {
+                let is_dead_handler =
+                    !stmt_effect_row_contains(input.sema, *body, handler_def.effect);
+                if is_dead_handler && is_identity_handler_return_clause(input.program, handler_def)
+                {
+                    state.diagnostics.note(
                         "LINEARIZE_DEAD_HANDLER_ELIMINATED",
                         "Elided handler with empty handled-effect intersection and identity return clause",
                         stmt.span,
                     );
-                    let lowered_body = lower_stmt(
-                        program,
-                        *body,
-                        fn_names,
-                        sema,
-                        diagnostics,
-                        linear,
-                        expr_map,
-                        stmt_map,
-                    );
+                    let lowered_body = lower_stmt(input, *body, state);
                     if let Some(next_stmt) = next {
-                        let lowered_next = lower_stmt(
-                            program,
-                            *next_stmt,
-                            fn_names,
-                            sema,
-                            diagnostics,
-                            linear,
-                            expr_map,
-                            stmt_map,
-                        );
-                        let lowered = linear.push_stmt(LinearStmt::Val {
+                        let lowered_next = lower_stmt(input, *next_stmt, state);
+                        let lowered = state.linear.push_stmt(LinearStmt::Val {
                             binding: handler_def.return_param,
                             value: lowered_body,
                             next: lowered_next,
                         });
-                        stmt_map[stmt_id.index()] = Some(lowered);
+                        state.stmt_map[stmt_id.index()] = Some(lowered);
                         return lowered;
                     }
-                    stmt_map[stmt_id.index()] = Some(lowered_body);
+                    state.stmt_map[stmt_id.index()] = Some(lowered_body);
                     return lowered_body;
                 }
 
-                let lowered_body = lower_stmt_under_handler(
-                    program,
-                    *body,
-                    handler_def,
-                    fn_names,
-                    sema,
-                    diagnostics,
-                    linear,
-                    expr_map,
-                    stmt_map,
-                    None,
-                );
-                if linear_stmt_contains_perform_effect(linear, lowered_body, handler_def.effect) {
-                    diagnostics.error(
+                let lowered_body = lower_stmt_under_handler(input, *body, handler_def, state, None);
+                if linear_stmt_contains_perform_effect(
+                    state.linear,
+                    lowered_body,
+                    handler_def.effect,
+                ) {
+                    state.diagnostics.error(
                         "LINEARIZE_HANDLED_EFFECT_LEAK",
                         "Handled effect perform leaked across linearize boundary",
                         stmt.span,
                     );
                 }
                 if let Some(next_stmt) = next {
-                    let lowered_next = lower_stmt(
-                        program,
-                        *next_stmt,
-                        fn_names,
-                        sema,
-                        diagnostics,
-                        linear,
-                        expr_map,
-                        stmt_map,
-                    );
-                    let lowered = linear.push_stmt(LinearStmt::Val {
+                    let lowered_next = lower_stmt(input, *next_stmt, state);
+                    let lowered = state.linear.push_stmt(LinearStmt::Val {
                         binding: handler_def.return_param,
                         value: lowered_body,
                         next: lowered_next,
                     });
-                    stmt_map[stmt_id.index()] = Some(lowered);
+                    state.stmt_map[stmt_id.index()] = Some(lowered);
                     return lowered;
                 }
-                stmt_map[stmt_id.index()] = Some(lowered_body);
+                state.stmt_map[stmt_id.index()] = Some(lowered_body);
                 return lowered_body;
             } else {
-                diagnostics.error(
+                state.diagnostics.error(
                     "LINEARIZE_UNKNOWN_HANDLER",
                     "Could not resolve handler id while lowering to linear IR",
                     stmt.span,
@@ -385,96 +271,41 @@ fn lower_stmt(
                 let effect = cielo_base::ids::EffectLabelId::INVALID;
                 LinearStmt::Handle {
                     effect,
-                    body: lower_stmt(
-                        program,
-                        *body,
-                        fn_names,
-                        sema,
-                        diagnostics,
-                        linear,
-                        expr_map,
-                        stmt_map,
-                    ),
-                    next: next.map(|next_stmt| {
-                        lower_stmt(
-                            program,
-                            next_stmt,
-                            fn_names,
-                            sema,
-                            diagnostics,
-                            linear,
-                            expr_map,
-                            stmt_map,
-                        )
-                    }),
+                    body: lower_stmt(input, *body, state),
+                    next: next.map(|next_stmt| lower_stmt(input, next_stmt, state)),
                 }
             }
         }
         StmtKind::Stage { stage, body, next } => LinearStmt::Stage {
             stage: *stage,
-            body: lower_stmt(
-                program,
-                *body,
-                fn_names,
-                sema,
-                diagnostics,
-                linear,
-                expr_map,
-                stmt_map,
-            ),
-            next: next.map(|next_stmt| {
-                lower_stmt(
-                    program,
-                    next_stmt,
-                    fn_names,
-                    sema,
-                    diagnostics,
-                    linear,
-                    expr_map,
-                    stmt_map,
-                )
-            }),
+            body: lower_stmt(input, *body, state),
+            next: next.map(|next_stmt| lower_stmt(input, next_stmt, state)),
         },
         StmtKind::Hole { .. } => LinearStmt::Hole,
         StmtKind::Error(_) => LinearStmt::Error,
     };
 
-    let id = linear.push_stmt_at(kind, stmt.span);
-    stmt_map[stmt_id.index()] = Some(id);
+    let id = state.linear.push_stmt_at(kind, stmt.span);
+    state.stmt_map[stmt_id.index()] = Some(id);
     id
 }
 
-#[allow(clippy::too_many_arguments)]
 fn lower_stmt_under_handler(
-    program: &CoreProgram,
+    input: &LoweringInput<'_>,
     stmt_id: StmtId,
     handler: &HandlerDef,
-    fn_names: &HashMap<FuncId, SymbolId>,
-    sema: &SemanticTables,
-    diagnostics: &mut DiagnosticBag,
-    linear: &mut LinearProgram,
-    expr_map: &mut [Option<LinearExprId>],
-    stmt_map: &mut [Option<LinearStmtId>],
+    state: &mut LoweringState<'_>,
     resume_ctx: Option<ResumeContext>,
 ) -> LinearStmtId {
-    let Some(stmt) = program.stmt(stmt_id) else {
-        return linear.push_stmt(LinearStmt::Error);
+    let Some(stmt) = input.program.stmt(stmt_id) else {
+        return state.linear.push_stmt(LinearStmt::Error);
     };
 
     match &stmt.kind {
         StmtKind::Return(expr) => {
-            let ret_value = lower_expr(program, *expr, fn_names, linear, expr_map);
-            let lowered_return = lower_stmt(
-                program,
-                handler.return_body,
-                fn_names,
-                sema,
-                diagnostics,
-                linear,
-                expr_map,
-                stmt_map,
-            );
-            linear.push_stmt(LinearStmt::Let {
+            let ret_value = lower_expr(input, *expr, state);
+            let lowered_return = lower_stmt(input, handler.return_body, state);
+            state.linear.push_stmt(LinearStmt::Let {
                 binding: handler.return_param,
                 value: ret_value,
                 next: lowered_return,
@@ -493,9 +324,9 @@ fn lower_stmt_under_handler(
                 .iter()
                 .find(|candidate| candidate.operation == *operation)
             {
-                let resume_analysis = analyze_clause_resume(program, clause);
+                let resume_analysis = analyze_clause_resume(input.program, clause);
                 if clause.resume_param.is_some() {
-                    diagnostics.note(
+                    state.diagnostics.note(
                         "LINEARIZE_RESUME_QUALIFIER",
                         format!(
                             "handler clause resume qualifier: {} (min={}, max={}, tail={})",
@@ -508,7 +339,7 @@ fn lower_stmt_under_handler(
                     );
                 }
                 if matches!(resume_analysis.qualifier, ResumeQualifier::Multi) {
-                    diagnostics.error(
+                    state.diagnostics.error(
                         "LINEARIZE_MULTI_SHOT_RESUME",
                         "Handler clause resumes the continuation more than once; v1 supports single-shot resumptions only",
                         clause.span,
@@ -516,7 +347,7 @@ fn lower_stmt_under_handler(
                 }
                 let clause_convention = classify_clause_convention(clause, resume_analysis);
                 if clause.resume_param.is_some() {
-                    diagnostics.note(
+                    state.diagnostics.note(
                         "LINEARIZE_RESUME_LOWERING_GATE",
                         format!(
                             "handler clause lowering gate: {} path selected (reason: {})",
@@ -532,37 +363,14 @@ fn lower_stmt_under_handler(
                     continuation: *next,
                     clause_convention,
                 });
-                lower_matching_clause(
-                    program,
-                    clause,
-                    args,
-                    handler,
-                    clause_resume_ctx,
-                    fn_names,
-                    sema,
-                    diagnostics,
-                    linear,
-                    expr_map,
-                    stmt_map,
-                )
+                lower_matching_clause(input, clause, args, handler, clause_resume_ctx, state)
             } else {
-                diagnostics.error(
+                state.diagnostics.error(
                     "LINEARIZE_MISSING_HANDLER_CLAUSE",
                     "Missing handler clause for performed operation",
                     stmt.span,
                 );
-                lower_stmt_under_handler(
-                    program,
-                    *next,
-                    handler,
-                    fn_names,
-                    sema,
-                    diagnostics,
-                    linear,
-                    expr_map,
-                    stmt_map,
-                    resume_ctx,
-                )
+                lower_stmt_under_handler(input, *next, handler, state, resume_ctx)
             }
         }
         StmtKind::Resume {
@@ -572,40 +380,19 @@ fn lower_stmt_under_handler(
             next,
         } => {
             let Some(active_ctx) = resume_ctx.filter(|ctx| *resume == ctx.resume_var) else {
-                diagnostics.error(
+                state.diagnostics.error(
                     "LINEARIZE_RESUME_OUTSIDE_CLAUSE",
                     "`resume` used outside the active handler clause context",
                     stmt.span,
                 );
-                return lower_stmt_under_handler(
-                    program,
-                    *next,
-                    handler,
-                    fn_names,
-                    sema,
-                    diagnostics,
-                    linear,
-                    expr_map,
-                    stmt_map,
-                    resume_ctx,
-                );
+                return lower_stmt_under_handler(input, *next, handler, state, resume_ctx);
             };
 
-            let continuation = lower_stmt_under_handler(
-                program,
-                active_ctx.continuation,
-                handler,
-                fn_names,
-                sema,
-                diagnostics,
-                linear,
-                expr_map,
-                stmt_map,
-                None,
-            );
+            let continuation =
+                lower_stmt_under_handler(input, active_ctx.continuation, handler, state, None);
             let continuation = if let Some(perform_var) = active_ctx.perform_result {
-                let arg_expr = lower_expr(program, *arg, fn_names, linear, expr_map);
-                linear.push_stmt(LinearStmt::Let {
+                let arg_expr = lower_expr(input, *arg, state);
+                state.linear.push_stmt(LinearStmt::Let {
                     binding: perform_var,
                     value: arg_expr,
                     next: continuation,
@@ -614,7 +401,7 @@ fn lower_stmt_under_handler(
                 continuation
             };
 
-            if is_identity_return_of_var(program, *next, *result)
+            if is_identity_return_of_var(input.program, *next, *result)
                 && matches!(active_ctx.clause_convention, ClauseConvention::Direct)
             {
                 return continuation;
@@ -623,26 +410,15 @@ fn lower_stmt_under_handler(
             if matches!(active_ctx.clause_convention, ClauseConvention::Direct) {
                 // Direct clauses must resume in tail position. Preserve a conservative fallback
                 // if earlier rewrites invalidate the syntactic guarantee.
-                diagnostics.error(
+                state.diagnostics.error(
                     "LINEARIZE_DIRECT_RESUME_NON_TAIL",
                     "Direct handler clause resume is not in tail position; lowering as control path",
                     stmt.span,
                 );
             }
 
-            let lowered_next = lower_stmt_under_handler(
-                program,
-                *next,
-                handler,
-                fn_names,
-                sema,
-                diagnostics,
-                linear,
-                expr_map,
-                stmt_map,
-                None,
-            );
-            linear.push_stmt(LinearStmt::Val {
+            let lowered_next = lower_stmt_under_handler(input, *next, handler, state, None);
+            state.linear.push_stmt(LinearStmt::Val {
                 binding: *result,
                 value: continuation,
                 next: lowered_next,
@@ -653,20 +429,9 @@ fn lower_stmt_under_handler(
             value,
             next,
         } => {
-            let lowered_next = lower_stmt_under_handler(
-                program,
-                *next,
-                handler,
-                fn_names,
-                sema,
-                diagnostics,
-                linear,
-                expr_map,
-                stmt_map,
-                resume_ctx,
-            );
-            let lowered_value = lower_expr(program, *value, fn_names, linear, expr_map);
-            linear.push_stmt(LinearStmt::Let {
+            let lowered_next = lower_stmt_under_handler(input, *next, handler, state, resume_ctx);
+            let lowered_value = lower_expr(input, *value, state);
+            state.linear.push_stmt(LinearStmt::Let {
                 binding: *binding,
                 value: lowered_value,
                 next: lowered_next,
@@ -677,31 +442,9 @@ fn lower_stmt_under_handler(
             value,
             next,
         } => {
-            let lowered_value = lower_stmt_under_handler(
-                program,
-                *value,
-                handler,
-                fn_names,
-                sema,
-                diagnostics,
-                linear,
-                expr_map,
-                stmt_map,
-                resume_ctx,
-            );
-            let lowered_next = lower_stmt_under_handler(
-                program,
-                *next,
-                handler,
-                fn_names,
-                sema,
-                diagnostics,
-                linear,
-                expr_map,
-                stmt_map,
-                resume_ctx,
-            );
-            linear.push_stmt(LinearStmt::Val {
+            let lowered_value = lower_stmt_under_handler(input, *value, handler, state, resume_ctx);
+            let lowered_next = lower_stmt_under_handler(input, *next, handler, state, resume_ctx);
+            state.linear.push_stmt(LinearStmt::Val {
                 binding: *binding,
                 value: lowered_value,
                 next: lowered_next,
@@ -715,37 +458,26 @@ fn lower_stmt_under_handler(
             next,
             ..
         } => {
-            let callee_name = fn_names.get(callee).copied().unwrap_or_else(|| {
-                diagnostics.error(
+            let callee_name = input.fn_names.get(callee).copied().unwrap_or_else(|| {
+                state.diagnostics.error(
                     "LINEARIZE_UNKNOWN_CALLEE",
                     "Could not resolve function id while lowering call to linear IR",
                     stmt.span,
                 );
                 SymbolId::INVALID
             });
-            let lowered_next = lower_stmt_under_handler(
-                program,
-                *next,
-                handler,
-                fn_names,
-                sema,
-                diagnostics,
-                linear,
-                expr_map,
-                stmt_map,
-                resume_ctx,
-            );
+            let lowered_next = lower_stmt_under_handler(input, *next, handler, state, resume_ctx);
             let lowered_args = args
                 .iter()
                 .copied()
-                .map(|arg| lower_expr(program, arg, fn_names, linear, expr_map))
+                .map(|arg| lower_expr(input, arg, state))
                 .collect();
-            linear.push_stmt(linear_call_stmt(
+            state.linear.push_stmt(linear_call_stmt(
                 *result,
                 callee_name,
                 lowered_args,
                 lowered_next,
-                classify_call_convention(effects, sema),
+                classify_call_convention(effects, input.sema),
             ))
         }
         StmtKind::If {
@@ -753,32 +485,12 @@ fn lower_stmt_under_handler(
             then_branch,
             else_branch,
         } => {
-            let then_lowered = lower_stmt_under_handler(
-                program,
-                *then_branch,
-                handler,
-                fn_names,
-                sema,
-                diagnostics,
-                linear,
-                expr_map,
-                stmt_map,
-                resume_ctx,
-            );
-            let else_lowered = lower_stmt_under_handler(
-                program,
-                *else_branch,
-                handler,
-                fn_names,
-                sema,
-                diagnostics,
-                linear,
-                expr_map,
-                stmt_map,
-                resume_ctx,
-            );
-            let lowered_cond = lower_expr(program, *cond, fn_names, linear, expr_map);
-            linear.push_stmt(LinearStmt::If {
+            let then_lowered =
+                lower_stmt_under_handler(input, *then_branch, handler, state, resume_ctx);
+            let else_lowered =
+                lower_stmt_under_handler(input, *else_branch, handler, state, resume_ctx);
+            let lowered_cond = lower_expr(input, *cond, state);
+            state.linear.push_stmt(LinearStmt::If {
                 cond: lowered_cond,
                 then_branch: then_lowered,
                 else_branch: else_lowered,
@@ -794,36 +506,14 @@ fn lower_stmt_under_handler(
                 .map(|arm| LinearMatchArm {
                     tag: arm.tag,
                     binders: arm.binders.clone(),
-                    body: lower_stmt_under_handler(
-                        program,
-                        arm.body,
-                        handler,
-                        fn_names,
-                        sema,
-                        diagnostics,
-                        linear,
-                        expr_map,
-                        stmt_map,
-                        resume_ctx,
-                    ),
+                    body: lower_stmt_under_handler(input, arm.body, handler, state, resume_ctx),
                 })
                 .collect();
             let lowered_default = default.map(|default_stmt| {
-                lower_stmt_under_handler(
-                    program,
-                    default_stmt,
-                    handler,
-                    fn_names,
-                    sema,
-                    diagnostics,
-                    linear,
-                    expr_map,
-                    stmt_map,
-                    resume_ctx,
-                )
+                lower_stmt_under_handler(input, default_stmt, handler, state, resume_ctx)
             });
-            let lowered_scrutinee = lower_expr(program, *scrutinee, fn_names, linear, expr_map);
-            linear.push_stmt(LinearStmt::Match {
+            let lowered_scrutinee = lower_expr(input, *scrutinee, state);
+            state.linear.push_stmt(LinearStmt::Match {
                 scrutinee: lowered_scrutinee,
                 arms: lowered_arms,
                 default: lowered_default,
@@ -836,24 +526,13 @@ fn lower_stmt_under_handler(
             args,
             next,
         } => {
-            let lowered_next = lower_stmt_under_handler(
-                program,
-                *next,
-                handler,
-                fn_names,
-                sema,
-                diagnostics,
-                linear,
-                expr_map,
-                stmt_map,
-                resume_ctx,
-            );
+            let lowered_next = lower_stmt_under_handler(input, *next, handler, state, resume_ctx);
             let lowered_args = args
                 .iter()
                 .copied()
-                .map(|arg| lower_expr(program, arg, fn_names, linear, expr_map))
+                .map(|arg| lower_expr(input, arg, state))
                 .collect();
-            linear.push_stmt(LinearStmt::Perform {
+            state.linear.push_stmt(LinearStmt::Perform {
                 result: *result,
                 effect: *effect,
                 operation: *operation,
@@ -861,79 +540,32 @@ fn lower_stmt_under_handler(
                 next: lowered_next,
             })
         }
-        StmtKind::Handle { .. } => lower_stmt(
-            program,
-            stmt_id,
-            fn_names,
-            sema,
-            diagnostics,
-            linear,
-            expr_map,
-            stmt_map,
-        ),
+        StmtKind::Handle { .. } => lower_stmt(input, stmt_id, state),
         StmtKind::Stage { stage, body, next } => {
-            let lowered_body = lower_stmt_under_handler(
-                program,
-                *body,
-                handler,
-                fn_names,
-                sema,
-                diagnostics,
-                linear,
-                expr_map,
-                stmt_map,
-                resume_ctx,
-            );
+            let lowered_body = lower_stmt_under_handler(input, *body, handler, state, resume_ctx);
             let lowered_next = next.map(|next_stmt| {
-                lower_stmt_under_handler(
-                    program,
-                    next_stmt,
-                    handler,
-                    fn_names,
-                    sema,
-                    diagnostics,
-                    linear,
-                    expr_map,
-                    stmt_map,
-                    resume_ctx,
-                )
+                lower_stmt_under_handler(input, next_stmt, handler, state, resume_ctx)
             });
-            linear.push_stmt(LinearStmt::Stage {
+            state.linear.push_stmt(LinearStmt::Stage {
                 stage: *stage,
                 body: lowered_body,
                 next: lowered_next,
             })
         }
-        StmtKind::Hole { .. } => linear.push_stmt(LinearStmt::Hole),
-        StmtKind::Error(_) => linear.push_stmt(LinearStmt::Error),
+        StmtKind::Hole { .. } => state.linear.push_stmt(LinearStmt::Hole),
+        StmtKind::Error(_) => state.linear.push_stmt(LinearStmt::Error),
     }
 }
 
 fn lower_matching_clause(
-    program: &CoreProgram,
+    input: &LoweringInput<'_>,
     clause: &HandlerClause,
     args: &[ExprId],
     handler: &HandlerDef,
     resume_ctx: Option<ResumeContext>,
-    fn_names: &HashMap<FuncId, SymbolId>,
-    sema: &SemanticTables,
-    diagnostics: &mut DiagnosticBag,
-    linear: &mut LinearProgram,
-    expr_map: &mut [Option<LinearExprId>],
-    stmt_map: &mut [Option<LinearStmtId>],
+    state: &mut LoweringState<'_>,
 ) -> LinearStmtId {
-    let clause_body = lower_stmt_under_handler(
-        program,
-        clause.body,
-        handler,
-        fn_names,
-        sema,
-        diagnostics,
-        linear,
-        expr_map,
-        stmt_map,
-        resume_ctx,
-    );
+    let clause_body = lower_stmt_under_handler(input, clause.body, handler, state, resume_ctx);
     let mut current = clause_body;
 
     for (param, arg) in clause
@@ -943,8 +575,8 @@ fn lower_matching_clause(
         .zip(args.iter().copied())
         .rev()
     {
-        let arg_expr = lower_expr(program, arg, fn_names, linear, expr_map);
-        current = linear.push_stmt(LinearStmt::Let {
+        let arg_expr = lower_expr(input, arg, state);
+        current = state.linear.push_stmt(LinearStmt::Let {
             binding: param,
             value: arg_expr,
             next: current,
@@ -955,19 +587,17 @@ fn lower_matching_clause(
 }
 
 fn lower_expr(
-    program: &CoreProgram,
+    input: &LoweringInput<'_>,
     expr_id: ExprId,
-    fn_names: &HashMap<FuncId, SymbolId>,
-    linear: &mut LinearProgram,
-    expr_map: &mut [Option<LinearExprId>],
+    state: &mut LoweringState<'_>,
 ) -> LinearExprId {
-    if let Some(id) = expr_map.get(expr_id.index()).copied().flatten() {
+    if let Some(id) = state.expr_map.get(expr_id.index()).copied().flatten() {
         return id;
     }
 
-    let Some(expr) = program.expr(expr_id) else {
-        let id = linear.push_expr(LinearExpr::Error);
-        expr_map[expr_id.index()] = Some(id);
+    let Some(expr) = input.program.expr(expr_id) else {
+        let id = state.linear.push_expr(LinearExpr::Error);
+        state.expr_map[expr_id.index()] = Some(id);
         return id;
     };
 
@@ -976,19 +606,23 @@ fn lower_expr(
         ExprKind::Literal(lit) => LinearExpr::Literal(lit.clone()),
         ExprKind::Unary { op, expr } => LinearExpr::Unary {
             op: *op,
-            expr: lower_expr(program, *expr, fn_names, linear, expr_map),
+            expr: lower_expr(input, *expr, state),
         },
         ExprKind::Binary { op, lhs, rhs } => LinearExpr::Binary {
             op: *op,
-            lhs: lower_expr(program, *lhs, fn_names, linear, expr_map),
-            rhs: lower_expr(program, *rhs, fn_names, linear, expr_map),
+            lhs: lower_expr(input, *lhs, state),
+            rhs: lower_expr(input, *rhs, state),
         },
         ExprKind::PureCall { callee, args } => LinearExpr::PureCall {
-            callee: fn_names.get(callee).copied().unwrap_or(SymbolId::INVALID),
+            callee: input
+                .fn_names
+                .get(callee)
+                .copied()
+                .unwrap_or(SymbolId::INVALID),
             args: args
                 .iter()
                 .copied()
-                .map(|arg| lower_expr(program, arg, fn_names, linear, expr_map))
+                .map(|arg| lower_expr(input, arg, state))
                 .collect(),
         },
         ExprKind::MakeStruct { ty, fields } => LinearExpr::MakeStruct {
@@ -996,7 +630,7 @@ fn lower_expr(
             fields: fields
                 .iter()
                 .copied()
-                .map(|field| lower_expr(program, field, fn_names, linear, expr_map))
+                .map(|field| lower_expr(input, field, state))
                 .collect(),
         },
         ExprKind::MakeEnum {
@@ -1009,14 +643,14 @@ fn lower_expr(
             fields: fields
                 .iter()
                 .copied()
-                .map(|field| lower_expr(program, field, fn_names, linear, expr_map))
+                .map(|field| lower_expr(input, field, state))
                 .collect(),
         },
         ExprKind::Error(_) => LinearExpr::Error,
     };
 
-    let id = linear.push_expr(kind);
-    expr_map[expr_id.index()] = Some(id);
+    let id = state.linear.push_expr(kind);
+    state.expr_map[expr_id.index()] = Some(id);
     id
 }
 
