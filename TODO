@@ -1,0 +1,1 @@
+PrimitiveTypeRef should actually just reference PrimitiveType instead of being repeated, same principle for other `Ref`s
