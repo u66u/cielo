@@ -53,17 +53,8 @@ impl From<TargetProfile> for TargetSpec {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct CompileProfile {
     pub target: TargetProfile,
     pub memory: MemoryProfile,
-}
-
-impl Default for CompileProfile {
-    fn default() -> Self {
-        Self {
-            target: TargetProfile::default(),
-            memory: MemoryProfile::default(),
-        }
-    }
 }

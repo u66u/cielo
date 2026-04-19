@@ -856,11 +856,13 @@ fn eval_stmt(
         } => eval_perform(
             program,
             ct,
-            *effect,
-            *operation,
-            args.as_slice(),
-            *result,
-            *next,
+            PerformSite {
+                effect: *effect,
+                operation: *operation,
+                args,
+                result: *result,
+                next: *next,
+            },
             env,
             handler_stack,
             continuations,
@@ -924,33 +926,37 @@ fn eval_stmt(
     }
 }
 
+struct PerformSite<'a> {
+    effect: cielo_base::EffectLabelId,
+    operation: SymbolId,
+    args: &'a [ExprId],
+    result: Option<VarId>,
+    next: StmtId,
+}
+
 fn eval_perform(
     program: &CoreProgram,
     ct: &CtPropagationTables,
-    effect: cielo_base::EffectLabelId,
-    operation: SymbolId,
-    args: &[ExprId],
-    result: Option<VarId>,
-    next: StmtId,
+    site: PerformSite<'_>,
     env: &mut HashMap<VarId, OracleValue>,
-    handler_stack: &mut Vec<HandlerFrame>,
+    handler_stack: &mut [HandlerFrame],
     continuations: &mut Vec<Continuation>,
 ) -> Option<OracleValue> {
-    let mut arg_values = Vec::with_capacity(args.len());
-    for arg in args {
+    let mut arg_values = Vec::with_capacity(site.args.len());
+    for arg in site.args {
         arg_values.push(eval_expr(program, ct, *arg, env)?);
     }
 
     let mut selected = None;
     for (idx, frame) in handler_stack.iter().enumerate().rev() {
         let handler_def = program.handlers().get(frame.handler.index())?;
-        if handler_def.effect != effect {
+        if handler_def.effect != site.effect {
             continue;
         }
         if let Some(clause_idx) = handler_def
             .clauses
             .iter()
-            .position(|clause| clause.operation == operation)
+            .position(|clause| clause.operation == site.operation)
         {
             selected = Some((idx, frame.clone(), clause_idx));
             break;
@@ -967,9 +973,9 @@ fn eval_perform(
     let continuation_id = continuations.len();
     continuations.push(Continuation {
         env: env.clone(),
-        handler_stack: handler_stack.clone(),
-        next,
-        result,
+        handler_stack: handler_stack.to_vec(),
+        next: site.next,
+        result: site.result,
         used: false,
     });
 

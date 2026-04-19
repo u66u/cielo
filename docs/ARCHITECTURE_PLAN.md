@@ -134,12 +134,9 @@ memory crate receives only this product. It does not receive Core,
 Production dependencies point down this DAG:
 
 ```text
-cielo-base
-  <- cielo-frontend
-  <- cielo-ir
-
-cielo-base + cielo-frontend + cielo-ir
-  <- cielo-lowering
+cielo-base <- cielo-frontend
+cielo-base <- cielo-ir
+cielo-base + cielo-frontend + cielo-ir <- cielo-lowering
 
 cielo-base + cielo-ir <- cielo-sema <- cielo-staging
 cielo-base + cielo-ir + cielo-sema <- cielo-runtime
@@ -282,6 +279,11 @@ cargo run -p cielo-driver -- \
 The database tests cover cache reuse, source invalidation, strategy-specific
 memory dispatch, reuse of runtime products, and query memory statistics.
 Runtime and memory tests exercise the firewall directly.
+
+`cielo-compiler/tests/architecture.rs` enforces the structural promises: only
+the database uses Salsa, memory and the C backend depend only on base/IR,
+the workspace root has no `src/`, and crate sources contain no compatibility
+directories, `include!` scaffolding, or embedded test modules.
 
 There are no compatibility namespaces, unused boundary summaries, empty
 scaffolding directories, or alternate production compiler paths remaining.
