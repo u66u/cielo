@@ -16,6 +16,14 @@ enum {
 /* ABI policy: major=breaking layout/signature changes, minor=additive
  * compatible, patch=behavior-only fixes. */
 
+/* Every unrecoverable runtime condition routes here. Returning a sentinel
+ * value instead would be indistinguishable from a legitimate result. */
+_Noreturn static void cielo_trap(const char *what) {
+  fflush(stdout);
+  fprintf(stderr, "cielo: %s\n", what);
+  abort();
+}
+
 typedef enum {
   CV_UNIT = 0,
   CV_BOOL = 1,
@@ -320,10 +328,18 @@ static inline CieloValue cv_mul(CieloValue a, CieloValue b) {
   return cv_int(a.as.i * b.as.i);
 }
 static inline CieloValue cv_div(CieloValue a, CieloValue b) {
-  return cv_int(b.as.i == 0 ? 0 : a.as.i / b.as.i);
+  if (b.as.i == 0)
+    cielo_trap("divide by zero");
+  if (a.as.i == INT64_MIN && b.as.i == -1)
+    cielo_trap("integer division overflow");
+  return cv_int(a.as.i / b.as.i);
 }
 static inline CieloValue cv_mod(CieloValue a, CieloValue b) {
-  return cv_int(b.as.i == 0 ? 0 : a.as.i % b.as.i);
+  if (b.as.i == 0)
+    cielo_trap("modulo by zero");
+  if (a.as.i == INT64_MIN && b.as.i == -1)
+    return cv_int(0);
+  return cv_int(a.as.i % b.as.i);
 }
 static inline CieloValue cv_eq(CieloValue a, CieloValue b) {
   if (a.tag != b.tag)
@@ -485,9 +501,7 @@ static CieloValue cielo_make_ctor(const char *ty, const char *variant,
                                   size_t argc, const CieloValue *fields) {
   CieloCtor *ctor = (CieloCtor *)malloc(sizeof(CieloCtor));
   if (ctor == NULL) {
-    for (size_t i = 0; fields != NULL && i < argc; i++)
-      cielo_arc_release(fields[i]);
-    return cv_unit();
+    cielo_trap("out of memory allocating constructor");
   }
 
   ctor->arc = (CieloArcHeader)CIELO_ARC_OWNED_HEADER;
@@ -500,9 +514,7 @@ static CieloValue cielo_make_ctor(const char *ty, const char *variant,
     ctor->fields = (CieloValue *)malloc(sizeof(CieloValue) * argc);
     if (ctor->fields == NULL) {
       free(ctor);
-      for (size_t i = 0; fields != NULL && i < argc; i++)
-        cielo_arc_release(fields[i]);
-      return cv_unit();
+      cielo_trap("out of memory allocating constructor fields");
     }
     if (fields != NULL) {
       /* Constructor arguments are sink arguments. The generated CFG inserts a
