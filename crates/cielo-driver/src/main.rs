@@ -50,6 +50,9 @@ struct Cli {
     #[arg(long, default_value = "gcc")]
     cc: String,
 
+    #[arg(long, default_value = "2", help = "Optimization level passed to --cc")]
+    opt_level: String,
+
     #[arg(
         long,
         value_enum,
@@ -289,6 +292,7 @@ fn save_emitted_c(cli: &Cli, c_source: &str) {
 fn compile_and_run_c(cli: &Cli) {
     let compile_status = match Command::new(&cli.cc)
         .arg("-std=c11")
+        .arg(format!("-O{}", cli.opt_level))
         .arg(&cli.c_out)
         .arg("-o")
         .arg(&cli.bin_out)
