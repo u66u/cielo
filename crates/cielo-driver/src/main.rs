@@ -5,6 +5,7 @@ use std::process::Command;
 use clap::{Parser, ValueEnum};
 
 use cielo::{Compiler, CompilerConfig, MemoryPreset, MemoryProfile};
+use cielo_base::diagnostics::DiagnosticBag;
 use cielo_base::reporting::render_diagnostic;
 use cielo_base::{ExprId, Interner, SourceId, SymbolId};
 use cielo_frontend::ast::{Item, Program};
@@ -188,12 +189,17 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
         return;
     }
 
+    let linear = compiler.linear(db_source);
     if should_dump(cli, DumpKind::Linear) {
-        println!(
-            "=== Linear IR ===\n{:#?}",
-            compiler.linear(db_source).linear
-        );
+        println!("=== Linear IR ===\n{:#?}", linear.linear);
     }
+    let linear_diagnostics = linear.staged.diagnostics();
+    if linear_diagnostics.has_errors() {
+        report_diagnostics(&source_name, &source, linear_diagnostics);
+        eprintln!("stopping after linearization because diagnostics contain errors");
+        std::process::exit(1);
+    }
+
     let runtime = compiler.runtime(db_source);
     if should_dump(cli, DumpKind::Cfg) {
         println!("=== CFG IR ===\n{:#?}", runtime.runtime.cfg);
@@ -655,7 +661,11 @@ fn print_case_summary(name: &str, source_name: &str, source: &str, residual: &St
         residual.diagnostics().entries().len()
     );
 
-    for diag in residual.diagnostics().entries() {
+    report_diagnostics(source_name, source, residual.diagnostics());
+}
+
+fn report_diagnostics(source_name: &str, source: &str, diagnostics: &DiagnosticBag) {
+    for diag in diagnostics.entries() {
         let rendered = render_diagnostic(diag, source_name, source);
         if rendered.trim().is_empty() {
             println!(
