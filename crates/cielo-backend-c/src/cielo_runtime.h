@@ -128,6 +128,16 @@ typedef struct {
 
 static CieloArcStats g_cielo_arc_stats = {0};
 
+/* Counter updates are stores to a fixed global, so the C compiler must treat
+ * every retain/release as observable and cannot fold away pairs the ARC pass
+ * already proved dead. Tests and the differential harness define
+ * CIELO_ARC_STATS; benchmarks and release builds leave it off. */
+#ifdef CIELO_ARC_STATS
+#define CIELO_ARC_COUNT(FIELD) (g_cielo_arc_stats.FIELD++)
+#else
+#define CIELO_ARC_COUNT(FIELD) ((void)0)
+#endif
+
 static inline uint32_t cielo_runtime_abi_version(void) {
   return (uint32_t)CIELO_RUNTIME_ABI_VERSION;
 }
@@ -160,61 +170,102 @@ static inline bool cielo_arc_is_immortal_ctor(const CieloCtor *ctor) {
   return ctor != NULL && (ctor->arc.flags & CIELO_ARC_FLAG_IMMORTAL) != 0u;
 }
 
+/* UINT32_MAX is a saturation sentinel: once reached the true count is
+ * unknown, so the object is pinned for the rest of the process. Retain and
+ * release must agree on that, or a saturated object is freed early. */
+static inline bool cielo_arc_is_pinned(const CieloCtor *ctor) {
+  return cielo_arc_is_immortal_ctor(ctor) || ctor->arc.refcount == 0u ||
+         ctor->arc.refcount == UINT32_MAX;
+}
+
 static inline void cielo_arc_retain(CieloValue value) {
   if (!cielo_arc_is_managed(value))
     return;
   CieloCtor *ctor = value.as.ctor;
-  if (cielo_arc_is_immortal_ctor(ctor))
+  if (cielo_arc_is_pinned(ctor))
     return;
-  uint32_t count = ctor->arc.refcount;
-  if (count == 0u || count == UINT32_MAX)
-    return;
-  ctor->arc.refcount = count + 1u;
-  g_cielo_arc_stats.retain_calls++;
+  ctor->arc.refcount++;
+  CIELO_ARC_COUNT(retain_calls);
 }
 
 static inline bool cielo_arc_dec_is_last(CieloValue value) {
   if (!cielo_arc_is_managed(value))
     return false;
   CieloCtor *ctor = value.as.ctor;
-  if (cielo_arc_is_immortal_ctor(ctor))
-    return false;
-  if (ctor->arc.refcount == 0u)
+  if (cielo_arc_is_pinned(ctor))
     return false;
   ctor->arc.refcount--;
   return ctor->arc.refcount == 0u;
 }
 
-static inline void cielo_arc_destroy_and_dispose(CieloValue value);
+static void cielo_arc_destroy_and_dispose(CieloValue value);
 
 static inline void cielo_arc_release(CieloValue value) {
   if (!cielo_arc_is_managed(value))
     return;
-  g_cielo_arc_stats.release_calls++;
+  CIELO_ARC_COUNT(release_calls);
   if (!cielo_arc_dec_is_last(value))
     return;
-  g_cielo_arc_stats.release_last_calls++;
+  CIELO_ARC_COUNT(release_last_calls);
   cielo_arc_destroy_and_dispose(value);
 }
 
-static inline void cielo_arc_destroy_and_dispose(CieloValue value) {
+/* Destruction walks an explicit worklist rather than recursing: a recursive
+ * destructor overflows the C stack on a structure whose depth is a function
+ * of the input, which for a list is just its length. */
+typedef struct {
+  CieloCtor **items;
+  size_t len;
+  size_t cap;
+} CieloDropStack;
+
+static void cielo_drop_stack_push(CieloDropStack *stack, CieloCtor *ctor) {
+  if (stack->len == stack->cap) {
+    size_t cap = stack->cap ? stack->cap * 2u : 16u;
+    CieloCtor **items =
+        (CieloCtor **)realloc(stack->items, cap * sizeof(CieloCtor *));
+    if (items == NULL)
+      cielo_trap("out of memory growing drop stack");
+    stack->items = items;
+    stack->cap = cap;
+  }
+  stack->items[stack->len++] = ctor;
+}
+
+static void cielo_arc_destroy_and_dispose(CieloValue value) {
   if (!cielo_arc_is_managed(value))
     return;
-  CieloCtor *ctor = value.as.ctor;
-  if (cielo_arc_is_immortal_ctor(ctor))
+  if (cielo_arc_is_immortal_ctor(value.as.ctor))
     return;
-  CieloValue *fields = ctor->fields;
-  size_t argc = ctor->argc;
-  ctor->fields = NULL;
-  ctor->argc = 0u;
-  for (size_t i = 0; i < argc; i++) {
-    cielo_arc_release(fields[i]);
+
+  CieloDropStack stack = {NULL, 0u, 0u};
+  cielo_drop_stack_push(&stack, value.as.ctor);
+
+  while (stack.len > 0u) {
+    CieloCtor *ctor = stack.items[--stack.len];
+    CieloValue *fields = ctor->fields;
+    size_t argc = ctor->argc;
+    ctor->fields = NULL;
+    ctor->argc = 0u;
+
+    for (size_t i = 0; i < argc; i++) {
+      CieloValue field = fields[i];
+      if (!cielo_arc_is_managed(field))
+        continue;
+      CIELO_ARC_COUNT(release_calls);
+      if (!cielo_arc_dec_is_last(field))
+        continue;
+      CIELO_ARC_COUNT(release_last_calls);
+      cielo_drop_stack_push(&stack, field.as.ctor);
+    }
+
+    if (fields != NULL)
+      free(fields);
+    CIELO_ARC_COUNT(ctor_frees);
+    free(ctor);
   }
-  if (fields != NULL) {
-    free(fields);
-  }
-  g_cielo_arc_stats.ctor_frees++;
-  free(ctor);
+
+  free(stack.items);
 }
 
 static inline bool cielo_ctor_is_variant(CieloValue value,
@@ -234,22 +285,32 @@ static inline CieloValue cielo_ctor_field(CieloValue value, size_t index) {
   return value.as.ctor->fields[index];
 }
 
-/* Move a field out of an owned constructor. Clearing the slot is the runtime
+/* Move a field out of a constructor. Clearing the slot is the runtime
  * equivalent of Nim's `wasMoved`: destroying the parent no longer decrements
- * the transferred field. */
+ * the transferred field.
+ *
+ * The ARC pass picks Move from intraprocedural liveness, which proves the
+ * parent is dead *here*, not that it is unique. Clearing the slot of a shared
+ * or pooled parent corrupts every other holder, so the destructive path is
+ * gated on uniqueness at runtime and degrades to a borrow otherwise. */
 static inline CieloValue cielo_ctor_take_field(CieloValue value, size_t index) {
   if (value.tag != CV_CTOR || value.as.ctor == NULL)
     return cv_unit();
-  if (index >= value.as.ctor->argc || value.as.ctor->fields == NULL)
+  CieloCtor *ctor = value.as.ctor;
+  if (index >= ctor->argc || ctor->fields == NULL)
     return cv_unit();
-  CieloValue result = value.as.ctor->fields[index];
-  value.as.ctor->fields[index] = cv_unit();
+  CieloValue result = ctor->fields[index];
+  if (cielo_arc_is_immortal_ctor(ctor) || ctor->arc.refcount != 1u) {
+    cielo_arc_retain(result);
+    return result;
+  }
+  ctor->fields[index] = cv_unit();
   return result;
 }
 
 static inline uint32_t cielo_handler_push(uint32_t effect) {
   if (g_cielo_handler_depth >= CIELO_HANDLER_STACK_MAX)
-    return 0;
+    cielo_trap("handler stack overflow");
   uint32_t capability_id = g_cielo_next_capability_id++;
   if (capability_id == 0) {
     capability_id = g_cielo_next_capability_id++;
@@ -278,14 +339,21 @@ cielo_handler_push_with_evidence(uint32_t effect, CieloEvidence *evidence) {
   return capability_id;
 }
 
+/* Unwinds to and including the named frame. An id that is not on the stack
+ * would otherwise unwind everything and leave the depth at zero, silently
+ * discharging every enclosing handler. */
 static inline void cielo_handler_pop(uint32_t capability_id) {
   if (capability_id == 0)
     return;
-  while (g_cielo_handler_depth > 0) {
-    g_cielo_handler_depth--;
-    if (g_cielo_handlers[g_cielo_handler_depth].capability_id == capability_id)
+  size_t depth = g_cielo_handler_depth;
+  while (depth > 0) {
+    depth--;
+    if (g_cielo_handlers[depth].capability_id == capability_id) {
+      g_cielo_handler_depth = depth;
       return;
+    }
   }
+  cielo_trap("handler pop for a capability that is not on the stack");
 }
 
 static inline uint32_t cielo_handler_find_capability(uint32_t effect) {
@@ -341,40 +409,90 @@ static inline CieloValue cv_mod(CieloValue a, CieloValue b) {
     return cv_int(0);
   return cv_int(a.as.i % b.as.i);
 }
-static inline CieloValue cv_eq(CieloValue a, CieloValue b) {
+static inline const char *cielo_cstr0(const char *s) { return s ? s : ""; }
+
+static bool cv_equal(CieloValue a, CieloValue b) {
   if (a.tag != b.tag)
-    return cv_bool(0);
+    return false;
   switch (a.tag) {
   case CV_UNIT:
-    return cv_bool(1);
+    return true;
   case CV_BOOL:
-    return cv_bool(a.as.b == b.as.b);
+    return a.as.b == b.as.b;
   case CV_INT:
-    return cv_bool(a.as.i == b.as.i);
+    return a.as.i == b.as.i;
   case CV_FLOAT:
-    return cv_bool(a.as.f == b.as.f);
+    return a.as.f == b.as.f;
   case CV_CHAR:
-    return cv_bool(a.as.c == b.as.c);
+    return a.as.c == b.as.c;
   case CV_STRING:
-    return cv_bool(a.as.s == b.as.s);
+    return strcmp(cielo_cstr0(a.as.s), cielo_cstr0(b.as.s)) == 0;
+  case CV_CTOR:
+    break;
   }
-  return cv_bool(0);
+  /* Constructors compare structurally. Cielo values are immutable and built
+   * bottom-up, so the heap is a DAG and this always terminates. */
+  const CieloCtor *x = a.as.ctor;
+  const CieloCtor *y = b.as.ctor;
+  if (x == y)
+    return true;
+  if (x == NULL || y == NULL)
+    return false;
+  if (x->argc != y->argc)
+    return false;
+  if (strcmp(cielo_cstr0(x->variant), cielo_cstr0(y->variant)) != 0)
+    return false;
+  for (size_t i = 0; i < x->argc; i++) {
+    if (!cv_equal(x->fields[i], y->fields[i]))
+      return false;
+  }
+  return true;
+}
+
+static inline CieloValue cv_eq(CieloValue a, CieloValue b) {
+  return cv_bool(cv_equal(a, b));
 }
 static inline CieloValue cv_ne(CieloValue a, CieloValue b) {
-  CieloValue eq = cv_eq(a, b);
-  return cv_bool(!eq.as.b);
+  return cv_bool(!cv_equal(a, b));
 }
+
+/* Total order within a tag. Ordering across tags is a type error the
+ * frontend is responsible for rejecting. */
+static inline int cv_ordering(CieloValue a, CieloValue b) {
+  if (a.tag != b.tag)
+    cielo_trap("ordering comparison between different types");
+  switch (a.tag) {
+  case CV_INT:
+    return a.as.i < b.as.i ? -1 : (a.as.i > b.as.i ? 1 : 0);
+  case CV_FLOAT:
+    return a.as.f < b.as.f ? -1 : (a.as.f > b.as.f ? 1 : 0);
+  case CV_CHAR:
+    return a.as.c < b.as.c ? -1 : (a.as.c > b.as.c ? 1 : 0);
+  case CV_BOOL:
+    return (int)a.as.b - (int)b.as.b;
+  case CV_STRING: {
+    int r = strcmp(cielo_cstr0(a.as.s), cielo_cstr0(b.as.s));
+    return r < 0 ? -1 : (r > 0 ? 1 : 0);
+  }
+  case CV_UNIT:
+    return 0;
+  case CV_CTOR:
+    break;
+  }
+  cielo_trap("ordering comparison on a constructor value");
+}
+
 static inline CieloValue cv_lt(CieloValue a, CieloValue b) {
-  return cv_bool(a.as.i < b.as.i);
+  return cv_bool(cv_ordering(a, b) < 0);
 }
 static inline CieloValue cv_le(CieloValue a, CieloValue b) {
-  return cv_bool(a.as.i <= b.as.i);
+  return cv_bool(cv_ordering(a, b) <= 0);
 }
 static inline CieloValue cv_gt(CieloValue a, CieloValue b) {
-  return cv_bool(a.as.i > b.as.i);
+  return cv_bool(cv_ordering(a, b) > 0);
 }
 static inline CieloValue cv_ge(CieloValue a, CieloValue b) {
-  return cv_bool(a.as.i >= b.as.i);
+  return cv_bool(cv_ordering(a, b) >= 0);
 }
 static inline CieloValue cv_and(CieloValue a, CieloValue b) {
   return cv_bool(cv_truthy(a) && cv_truthy(b));
@@ -382,8 +500,6 @@ static inline CieloValue cv_and(CieloValue a, CieloValue b) {
 static inline CieloValue cv_or(CieloValue a, CieloValue b) {
   return cv_bool(cv_truthy(a) || cv_truthy(b));
 }
-
-static inline const char *cielo_cstr0(const char *s) { return s ? s : ""; }
 
 #define CASE_PUTS(TAG, STR_EXPR)                                               \
   case TAG:                                                                    \
@@ -527,7 +643,7 @@ static CieloValue cielo_make_ctor(const char *ty, const char *variant,
     }
   }
 
-  g_cielo_arc_stats.ctor_allocations++;
+  CIELO_ARC_COUNT(ctor_allocations);
   CieloValue out = {.tag = CV_CTOR};
   out.as.ctor = ctor;
   return out;

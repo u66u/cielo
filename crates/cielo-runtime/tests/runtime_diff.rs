@@ -1175,6 +1175,7 @@ fn compile_and_run_c_exit_code(case_name: &str, c_source: &str) -> i32 {
 
     let compile = Command::new(c_compiler_command())
         .arg("-std=c11")
+        .arg("-DCIELO_ARC_STATS")
         .arg(c_path.as_path())
         .arg("-o")
         .arg(bin_path.as_path())
