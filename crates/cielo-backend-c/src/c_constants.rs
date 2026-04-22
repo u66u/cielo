@@ -73,13 +73,14 @@ impl CConstantPools {
                     };
                     writeln!(
                         result.declarations,
-                        "static CieloCtor {ctor_symbol} = {{ .arc = CIELO_ARC_IMMORTAL_HEADER, .ty = \"{}\", .variant = \"{}\", .argc = {}, .fields = {fields_ref} }};",
+                        "static CieloCtor {ctor_symbol} = {{ .arc = CIELO_ARC_IMMORTAL_HEADER, .ty = \"{}\", .variant = \"{}\", .variant_tag = {}u, .argc = {}, .fields = {fields_ref} }};",
                         escape(interner.resolve(key.ty).unwrap_or("unknown")),
                         if key.variant.is_valid() {
                             escape(interner.resolve(key.variant).unwrap_or("unknown"))
                         } else {
                             String::new()
                         },
+                        key.variant.as_u32(),
                         key.fields.len()
                     )
                     .expect("in-memory write");
@@ -154,9 +155,10 @@ fn render_field(
             };
             writeln!(
                 declarations,
-                "static CieloCtor {ctor_symbol} = {{ .arc = CIELO_ARC_IMMORTAL_HEADER, .ty = \"{}\", .variant = \"{}\", .argc = {}, .fields = {fields_ref} }};",
+                "static CieloCtor {ctor_symbol} = {{ .arc = CIELO_ARC_IMMORTAL_HEADER, .ty = \"{}\", .variant = \"{}\", .variant_tag = {}u, .argc = {}, .fields = {fields_ref} }};",
                 escape(interner.resolve(key.ty).unwrap_or("unknown")),
                 escape(interner.resolve(key.variant).unwrap_or("unknown")),
+                key.variant.as_u32(),
                 key.fields.len()
             )
             .expect("in-memory write");

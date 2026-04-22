@@ -240,7 +240,8 @@ fn emit_terminator(
                 let keyword = if idx == 0 { "if" } else { "else if" };
                 writeln!(
                     out,
-                    "    {keyword} (cielo_ctor_is_variant({match_temp}, \"{}\")) {{",
+                    "    {keyword} (cielo_ctor_is_variant({match_temp}, {}u)) {{ /* {} */",
+                    arm.tag.as_u32(),
                     escape(&symbol_text(cx.interner, arm.tag))
                 )
                 .expect("in-memory write");
@@ -425,13 +426,14 @@ fn emit_ctor(ty: SymbolId, variant: SymbolId, fields: &[CfgExprId], cx: &mut Emi
         format!("(CieloValue[]){{{}}}", fields.join(", "))
     };
     format!(
-        "cielo_make_ctor(\"{}\", \"{}\", {}, {array})",
+        "cielo_make_ctor(\"{}\", \"{}\", {}u, {}, {array})",
         escape(&symbol_text(cx.interner, ty)),
         if variant.is_valid() {
             escape(&symbol_text(cx.interner, variant))
         } else {
             String::new()
         },
+        variant.as_u32(),
         fields.len()
     )
 }

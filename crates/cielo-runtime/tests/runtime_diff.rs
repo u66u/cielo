@@ -662,10 +662,10 @@ fn arc_runtime_release_frees_nested_ctor_graph() {
 
 int main(void) {{
     cielo_arc_stats_reset();
-    CieloValue left = cielo_make_ctor("Leaf", "L", 0u, NULL);
-    CieloValue right = cielo_make_ctor("Leaf", "R", 0u, NULL);
+    CieloValue left = cielo_make_ctor("Leaf", "L", 1u, 0u, NULL);
+    CieloValue right = cielo_make_ctor("Leaf", "R", 2u, 0u, NULL);
     CieloValue fields[2] = {{left, right}};
-    CieloValue pair = cielo_make_ctor("Pair", "Mk", 2u, fields);
+    CieloValue pair = cielo_make_ctor("Pair", "Mk", 3u, 2u, fields);
 
     CieloArcStats after_alloc = cielo_arc_stats_snapshot();
     if (after_alloc.ctor_allocations != 3u || after_alloc.ctor_frees != 0u) {{
@@ -710,7 +710,7 @@ fn arc_runtime_dec_is_last_and_immortal_ctor_are_safe() {
 
 int main(void) {{
     cielo_arc_stats_reset();
-    CieloValue value = cielo_make_ctor("Leaf", "One", 0u, NULL);
+    CieloValue value = cielo_make_ctor("Leaf", "One", 1u, 0u, NULL);
     CieloValue alias = value;
     cielo_arc_retain(alias);
 
@@ -731,6 +731,7 @@ int main(void) {{
         .arc = CIELO_ARC_IMMORTAL_HEADER,
         .ty = "Immortal",
         .variant = "Root",
+        .variant_tag = 9u,
         .argc = 0u,
         .fields = NULL
     }};

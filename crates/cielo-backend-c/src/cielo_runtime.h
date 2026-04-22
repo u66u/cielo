@@ -52,8 +52,12 @@ typedef struct {
 
 typedef struct {
   CieloArcHeader arc;
+  /* `ty` and `variant` exist for cv_print and debugging only. Dispatch uses
+   * `variant_tag`, the interner SymbolId of the variant, which is unique
+   * within a compilation unit by construction. */
   const char *ty;
   const char *variant;
+  uint32_t variant_tag;
   size_t argc;
   CieloValue *fields;
 } CieloCtor;
@@ -259,8 +263,7 @@ static void cielo_arc_destroy_and_dispose(CieloValue value) {
       cielo_drop_stack_push(&stack, field.as.ctor);
     }
 
-    if (fields != NULL)
-      free(fields);
+    /* `fields` points into the tail of `ctor`; one free covers both. */
     CIELO_ARC_COUNT(ctor_frees);
     free(ctor);
   }
@@ -269,12 +272,9 @@ static void cielo_arc_destroy_and_dispose(CieloValue value) {
 }
 
 static inline bool cielo_ctor_is_variant(CieloValue value,
-                                         const char *variant) {
-  if (value.tag != CV_CTOR || value.as.ctor == NULL)
-    return false;
-  if (value.as.ctor->variant == NULL || variant == NULL)
-    return false;
-  return strcmp(value.as.ctor->variant, variant) == 0;
+                                         uint32_t variant_tag) {
+  return value.tag == CV_CTOR && value.as.ctor != NULL &&
+         value.as.ctor->variant_tag == variant_tag;
 }
 
 static inline CieloValue cielo_ctor_field(CieloValue value, size_t index) {
@@ -438,9 +438,7 @@ static bool cv_equal(CieloValue a, CieloValue b) {
     return true;
   if (x == NULL || y == NULL)
     return false;
-  if (x->argc != y->argc)
-    return false;
-  if (strcmp(cielo_cstr0(x->variant), cielo_cstr0(y->variant)) != 0)
+  if (x->argc != y->argc || x->variant_tag != y->variant_tag)
     return false;
   for (size_t i = 0; i < x->argc; i++) {
     if (!cv_equal(x->fields[i], y->fields[i]))
@@ -613,9 +611,19 @@ static CieloValue cielo_perform_scoped(uint32_t effect,
   return cv_unit();
 }
 
+/* One allocation per constructor: the field array lives in the tail of the
+ * same block. `CieloCtor` and `CieloValue` share the platform's maximum
+ * scalar alignment, so `ctor + 1` is correctly aligned for CieloValue.
+ *
+ * Pooled immortal constructors keep pointing at their own static field
+ * arrays. Destruction never frees `fields` separately, which is sound
+ * because immortal constructors are never destroyed and heap constructors
+ * always carry their fields inline. */
 static CieloValue cielo_make_ctor(const char *ty, const char *variant,
-                                  size_t argc, const CieloValue *fields) {
-  CieloCtor *ctor = (CieloCtor *)malloc(sizeof(CieloCtor));
+                                  uint32_t variant_tag, size_t argc,
+                                  const CieloValue *fields) {
+  CieloCtor *ctor =
+      (CieloCtor *)malloc(sizeof(CieloCtor) + argc * sizeof(CieloValue));
   if (ctor == NULL) {
     cielo_trap("out of memory allocating constructor");
   }
@@ -623,15 +631,11 @@ static CieloValue cielo_make_ctor(const char *ty, const char *variant,
   ctor->arc = (CieloArcHeader)CIELO_ARC_OWNED_HEADER;
   ctor->ty = ty;
   ctor->variant = variant;
+  ctor->variant_tag = variant_tag;
   ctor->argc = argc;
-  ctor->fields = NULL;
+  ctor->fields = argc > 0 ? (CieloValue *)(ctor + 1) : NULL;
 
   if (argc > 0) {
-    ctor->fields = (CieloValue *)malloc(sizeof(CieloValue) * argc);
-    if (ctor->fields == NULL) {
-      free(ctor);
-      cielo_trap("out of memory allocating constructor fields");
-    }
     if (fields != NULL) {
       /* Constructor arguments are sink arguments. The generated CFG inserts a
        * retain only for fields that remain live at the call site. */

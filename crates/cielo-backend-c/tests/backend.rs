@@ -434,7 +434,7 @@ fn main() -> Int {
     assert!(
         !compiled
             .c_source
-            .contains("cielo_make_ctor(\"Pair\", \"Mk\", 2"),
+            .contains("cielo_make_ctor(\"Pair\", \"Mk\", "),
         "pooled repeated ctor literals should avoid repeated heap ctor construction"
     );
 }
@@ -495,7 +495,7 @@ fn c_emitter_pools_repeated_runtime_ctor_literals_with_float_fields() {
         "pooled ctor field table should preserve float field payloads"
     );
     assert!(
-        !emitted.contains("cielo_make_ctor(\"PairF\", \"Mk\", 2"),
+        !emitted.contains("cielo_make_ctor(\"PairF\", \"Mk\", "),
         "pooled repeated float ctor literals should avoid repeated inline ctor construction"
     );
 }
@@ -556,7 +556,7 @@ fn main() -> Int {
     assert!(
         !compiled
             .c_source
-            .contains("cielo_make_ctor(\"Boxed\", \"Wrap\", 2"),
+            .contains("cielo_make_ctor(\"Boxed\", \"Wrap\", "),
         "pooled nested ctor literals should avoid inline outer ctor construction"
     );
 }
@@ -587,7 +587,7 @@ fn main() -> Int {
     assert!(
         compiled
             .c_source
-            .contains("cielo_make_ctor(\"Pair\", \"Mk\", 2"),
+            .contains("cielo_make_ctor(\"Pair\", \"Mk\", "),
         "single-use ctor literal should still lower via inline ctor helper call"
     );
 }
@@ -638,7 +638,7 @@ fn main() -> Int {
     assert!(
         !compiled
             .c_source
-            .contains("cielo_make_ctor(\"Blob\", \"Mk\", 24"),
+            .contains("cielo_make_ctor(\"Blob\", \"Mk\", "),
         "pooled large single-use ctor literal should not fall back to inline ctor creation"
     );
 }
@@ -674,7 +674,7 @@ fn main() -> Int {{
     assert!(
         compiled
             .c_source
-            .contains("cielo_make_ctor(\"Pair\", \"Mk\", 2"),
+            .contains("cielo_make_ctor(\"Pair\", \"Mk\", "),
         "oversized pooled candidates should fall back to inline constructor creation"
     );
 }
@@ -732,7 +732,7 @@ fn c_emitter_limits_ctor_pool_by_compilation_unit_budget() {
     assert!(
         compiled
             .c_source
-            .contains("cielo_make_ctor(\"Blob\", \"Mk\", 32"),
+            .contains("cielo_make_ctor(\"Blob\", \"Mk\", "),
         "when pool budget is saturated, remaining ctor literals should stay inline"
     );
 }
