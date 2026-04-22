@@ -30,7 +30,7 @@ use cielo_base::span::Span;
 use cielo_base::{ExprId, FuncId, HandlerId, StmtId, VarId};
 use cielo_ir::core::{CoreProgram, ExprKind, ExprNode, MatchArm, StmtKind, StmtNode};
 use cielo_ir::function_graph::collect_reachable_functions;
-use cielo_sema::typecheck::typecheck_core;
+use cielo_sema::typecheck::typecheck_residual_core;
 
 const MAX_SHRINK_ITERS: usize = 16;
 const MAX_SPEC_INLINE_STMTS: usize = 6;
@@ -41,7 +41,7 @@ pub fn run(residual: StagedCore) -> StagedCore {
     shrink_to_fixpoint(&mut program);
     speculative_inline_once(&mut program);
     shrink_to_fixpoint(&mut program);
-    let sema = typecheck_core(&program, &mut diagnostics);
+    let sema = typecheck_residual_core(&program, &mut diagnostics);
     facts.constant_table = constant_table::build_for_core(&program);
     StagedCore::new(program, diagnostics, sema, facts, report)
 }

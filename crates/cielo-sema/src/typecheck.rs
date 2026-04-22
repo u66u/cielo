@@ -311,7 +311,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn run(mut self) -> SemanticTables {
+    fn run(mut self, conformance: EffectConformance) -> SemanticTables {
         for template in &mut self.function_templates {
             if template.ret.is_none() {
                 template.inferred_ret_var = Some(self.infer.fresh_var());
@@ -364,7 +364,38 @@ impl<'a> TypeChecker<'a> {
         sema.ownership_of_var = self.classify_var_ownership(&sema);
 
         infer_stmt_effects(self.program, &mut sema.effects_of_stmt);
+        if conformance == EffectConformance::Check {
+            self.enforce_declared_effects(&sema);
+        }
         sema
+    }
+
+    /// Errors when a function performs an effect its `with` row omits.
+    /// Unreported, the effect stays out of the row and later dead-code
+    /// elimination drops the perform, including its output.
+    fn enforce_declared_effects(&mut self, sema: &SemanticTables) {
+        let functions = self.program.functions();
+        for (idx, function) in functions.iter().enumerate() {
+            let Some(inferred) = sema.effects_of_stmt.get(function.body.index()) else {
+                continue;
+            };
+            let undeclared = inferred.subtract(&function.declared_effects);
+            if undeclared.is_empty() {
+                continue;
+            }
+            let labels = undeclared
+                .iter()
+                .map(|effect| format!("e{}", effect.as_u32()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.diagnostics.error(
+                "SEMA_UNDECLARED_EFFECT",
+                format!(
+                    "function f{idx} performs undeclared effect(s) {labels}; add them to its `with` row"
+                ),
+                function.span,
+            );
+        }
     }
 
     fn classify_var_ownership(&self, sema: &SemanticTables) -> DenseMap<VarId, OwnershipClass> {
@@ -1277,7 +1308,23 @@ impl<'a> TypeChecker<'a> {
 }
 
 pub fn typecheck_core(program: &CoreProgram, diagnostics: &mut DiagnosticBag) -> SemanticTables {
-    TypeChecker::new(program, diagnostics).run()
+    TypeChecker::new(program, diagnostics).run(EffectConformance::Check)
+}
+
+/// Typechecks Core that has already been through residualization, which erases
+/// every `declared_effects` row. Effect conformance cannot be checked there
+/// because the declarations it compares against are gone.
+pub fn typecheck_residual_core(
+    program: &CoreProgram,
+    diagnostics: &mut DiagnosticBag,
+) -> SemanticTables {
+    TypeChecker::new(program, diagnostics).run(EffectConformance::Skip)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum EffectConformance {
+    Check,
+    Skip,
 }
 
 fn build_function_templates(

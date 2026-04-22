@@ -319,6 +319,88 @@ fn main() -> Int {
 }
 
 #[test]
+fn reports_effect_performed_without_declaration() {
+    let src = r#"
+effect Console { fn print(s: String) -> Int }
+fn helper() -> Int {
+  do Console.print("side effect");
+  1
+}
+fn main() -> Int {
+  helper()
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    assert!(
+        diagnostics
+            .entries()
+            .iter()
+            .any(|d| d.code == "SEMA_UNDECLARED_EFFECT"),
+        "performing an effect outside the declared row must be an error, \
+         otherwise dead-code elimination silently drops the perform"
+    );
+}
+
+#[test]
+fn accepts_effect_listed_in_the_declared_row() {
+    let src = r#"
+effect Console { fn print(s: String) -> Int }
+fn helper() -> Int with Console {
+  do Console.print("side effect");
+  1
+}
+fn main() -> Int with Console {
+  helper()
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    assert!(
+        !diagnostics
+            .entries()
+            .iter()
+            .any(|d| d.code == "SEMA_UNDECLARED_EFFECT"),
+        "a declared effect must not be reported as undeclared"
+    );
+}
+
+#[test]
+fn accepts_effect_discharged_by_an_enclosing_handler() {
+    let src = r#"
+effect Console { fn print(s: String) -> Int }
+fn helper() -> Int with Console {
+  do Console.print("side effect");
+  1
+}
+fn main() -> Int {
+  let out = handle { helper() } with Console {
+    | print(s) => 100
+  };
+  out
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    assert!(
+        !diagnostics
+            .entries()
+            .iter()
+            .any(|d| d.code == "SEMA_UNDECLARED_EFFECT"),
+        "`main` does not declare Console because the handler discharges it"
+    );
+}
+
+#[test]
 fn reports_effect_argument_type_mismatch() {
     let src = r#"
 effect Console { fn print(s: String) -> () }
