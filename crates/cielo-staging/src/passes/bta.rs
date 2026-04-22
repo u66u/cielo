@@ -752,10 +752,13 @@ fn find_stmt_runtime_reason(
     None
 }
 
+/// Reports a change only when the reason actually moves. Rewriting
+/// `UnclassifiedRuntime` with itself is a no-op, and counting it as progress
+/// stops the fixpoint from converging.
 fn refine_expr_stage(expr_id: ExprId, reason: Reason, bta: &mut BtaTables) -> bool {
     match bta.stage_of_expr.get(&expr_id).copied() {
         Some(Stage::Ct) => false,
-        Some(Stage::Rt(Reason::UnclassifiedRuntime)) => {
+        Some(Stage::Rt(Reason::UnclassifiedRuntime)) if reason != Reason::UnclassifiedRuntime => {
             bta.stage_of_expr.insert(expr_id, Stage::Rt(reason));
             true
         }
@@ -770,7 +773,7 @@ fn refine_expr_stage(expr_id: ExprId, reason: Reason, bta: &mut BtaTables) -> bo
 fn refine_var_stage(var_id: cielo_base::VarId, reason: Reason, bta: &mut BtaTables) -> bool {
     match bta.stage_of_var.get(&var_id).copied() {
         Some(Stage::Ct) => false,
-        Some(Stage::Rt(Reason::UnclassifiedRuntime)) => {
+        Some(Stage::Rt(Reason::UnclassifiedRuntime)) if reason != Reason::UnclassifiedRuntime => {
             bta.stage_of_var.insert(var_id, Stage::Rt(reason));
             true
         }
