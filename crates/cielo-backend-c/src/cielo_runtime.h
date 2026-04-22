@@ -16,8 +16,8 @@ enum {
 /* ABI policy: major=breaking layout/signature changes, minor=additive
  * compatible, patch=behavior-only fixes. */
 
-/* Every unrecoverable runtime condition routes here. Returning a sentinel
- * value instead would be indistinguishable from a legitimate result. */
+/* Unrecoverable faults abort here. A sentinel return would be
+ * indistinguishable from a real result. */
 _Noreturn static void cielo_trap(const char *what) {
   fflush(stdout);
   fprintf(stderr, "cielo: %s\n", what);
@@ -52,9 +52,8 @@ typedef struct {
 
 typedef struct {
   CieloArcHeader arc;
-  /* `ty` and `variant` exist for cv_print and debugging only. Dispatch uses
-   * `variant_tag`, the interner SymbolId of the variant, which is unique
-   * within a compilation unit by construction. */
+  /* `ty` and `variant` are for cv_print and debugging only. Dispatch uses
+   * `variant_tag`, the variant's SymbolId, unique per compilation unit. */
   const char *ty;
   const char *variant;
   uint32_t variant_tag;
@@ -132,10 +131,9 @@ typedef struct {
 
 static CieloArcStats g_cielo_arc_stats = {0};
 
-/* Counter updates are stores to a fixed global, so the C compiler must treat
- * every retain/release as observable and cannot fold away pairs the ARC pass
- * already proved dead. Tests and the differential harness define
- * CIELO_ARC_STATS; benchmarks and release builds leave it off. */
+/* Counting makes every retain/release observable, so the C compiler cannot
+ * fold away pairs the ARC pass already proved dead. On for tests, off for
+ * benchmarks and release builds. */
 #ifdef CIELO_ARC_STATS
 #define CIELO_ARC_COUNT(FIELD) (g_cielo_arc_stats.FIELD++)
 #else
@@ -174,9 +172,8 @@ static inline bool cielo_arc_is_immortal_ctor(const CieloCtor *ctor) {
   return ctor != NULL && (ctor->arc.flags & CIELO_ARC_FLAG_IMMORTAL) != 0u;
 }
 
-/* UINT32_MAX is a saturation sentinel: once reached the true count is
- * unknown, so the object is pinned for the rest of the process. Retain and
- * release must agree on that, or a saturated object is freed early. */
+/* A saturated count is no longer accurate, so the object is pinned. Retain
+ * and release must agree, or a saturated object gets freed early. */
 static inline bool cielo_arc_is_pinned(const CieloCtor *ctor) {
   return cielo_arc_is_immortal_ctor(ctor) || ctor->arc.refcount == 0u ||
          ctor->arc.refcount == UINT32_MAX;
@@ -214,9 +211,8 @@ static inline void cielo_arc_release(CieloValue value) {
   cielo_arc_destroy_and_dispose(value);
 }
 
-/* Destruction walks an explicit worklist rather than recursing: a recursive
- * destructor overflows the C stack on a structure whose depth is a function
- * of the input, which for a list is just its length. */
+/* Destruction uses an explicit worklist. Recursing would overflow the C
+ * stack on any structure as deep as its input is long. */
 typedef struct {
   CieloCtor **items;
   size_t len;
@@ -285,14 +281,13 @@ static inline CieloValue cielo_ctor_field(CieloValue value, size_t index) {
   return value.as.ctor->fields[index];
 }
 
-/* Move a field out of a constructor. Clearing the slot is the runtime
- * equivalent of Nim's `wasMoved`: destroying the parent no longer decrements
- * the transferred field.
+/* Move a field out of a constructor. Clearing the slot is Nim's `wasMoved`:
+ * destroying the parent no longer decrements the transferred field.
  *
  * The ARC pass picks Move from intraprocedural liveness, which proves the
- * parent is dead *here*, not that it is unique. Clearing the slot of a shared
- * or pooled parent corrupts every other holder, so the destructive path is
- * gated on uniqueness at runtime and degrades to a borrow otherwise. */
+ * parent is dead here, not that it is unique. Clearing a shared or pooled
+ * parent would corrupt the other holders, so check uniqueness first and fall
+ * back to a borrow. */
 static inline CieloValue cielo_ctor_take_field(CieloValue value, size_t index) {
   if (value.tag != CV_CTOR || value.as.ctor == NULL)
     return cv_unit();
@@ -340,8 +335,7 @@ cielo_handler_push_with_evidence(uint32_t effect, CieloEvidence *evidence) {
 }
 
 /* Unwinds to and including the named frame. An id that is not on the stack
- * would otherwise unwind everything and leave the depth at zero, silently
- * discharging every enclosing handler. */
+ * would otherwise unwind to zero, discharging every enclosing handler. */
 static inline void cielo_handler_pop(uint32_t capability_id) {
   if (capability_id == 0)
     return;
@@ -430,8 +424,8 @@ static bool cv_equal(CieloValue a, CieloValue b) {
   case CV_CTOR:
     break;
   }
-  /* Constructors compare structurally. Cielo values are immutable and built
-   * bottom-up, so the heap is a DAG and this always terminates. */
+  /* Constructors compare structurally. Values are immutable and built
+   * bottom-up, so the heap is a DAG and this terminates. */
   const CieloCtor *x = a.as.ctor;
   const CieloCtor *y = b.as.ctor;
   if (x == y)
@@ -454,8 +448,8 @@ static inline CieloValue cv_ne(CieloValue a, CieloValue b) {
   return cv_bool(!cv_equal(a, b));
 }
 
-/* Total order within a tag. Ordering across tags is a type error the
- * frontend is responsible for rejecting. */
+/* Orders values of the same tag. Mixed tags are a type error the frontend
+ * should have rejected. */
 static inline int cv_ordering(CieloValue a, CieloValue b) {
   if (a.tag != b.tag)
     cielo_trap("ordering comparison between different types");
@@ -611,14 +605,13 @@ static CieloValue cielo_perform_scoped(uint32_t effect,
   return cv_unit();
 }
 
-/* One allocation per constructor: the field array lives in the tail of the
- * same block. `CieloCtor` and `CieloValue` share the platform's maximum
- * scalar alignment, so `ctor + 1` is correctly aligned for CieloValue.
+/* One allocation per constructor: fields live in the tail of the same block.
+ * CieloCtor and CieloValue share the platform's max scalar alignment, so
+ * `ctor + 1` is aligned.
  *
- * Pooled immortal constructors keep pointing at their own static field
- * arrays. Destruction never frees `fields` separately, which is sound
- * because immortal constructors are never destroyed and heap constructors
- * always carry their fields inline. */
+ * Pooled constructors keep their own static field arrays, but they are
+ * immortal and never destroyed, so destruction can always assume fields are
+ * inline and free the block once. */
 static CieloValue cielo_make_ctor(const char *ty, const char *variant,
                                   uint32_t variant_tag, size_t argc,
                                   const CieloValue *fields) {
