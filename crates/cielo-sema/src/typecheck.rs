@@ -370,9 +370,9 @@ impl<'a> TypeChecker<'a> {
         sema
     }
 
-    /// Errors when a function performs an effect its `with` row omits.
-    /// Unreported, the effect stays out of the row and later dead-code
-    /// elimination drops the perform, including its output.
+    /// An effect missing from the `with` row leaves the row empty, and
+    /// `normalize` treats a perform with an empty row as dead code. Without
+    /// this error the perform is silently deleted along with its output.
     fn enforce_declared_effects(&mut self, sema: &SemanticTables) {
         let functions = self.program.functions();
         for (idx, function) in functions.iter().enumerate() {
@@ -1311,9 +1311,9 @@ pub fn typecheck_core(program: &CoreProgram, diagnostics: &mut DiagnosticBag) ->
     TypeChecker::new(program, diagnostics).run(EffectConformance::Check)
 }
 
-/// Typechecks Core that has already been through residualization, which erases
-/// every `declared_effects` row. Effect conformance cannot be checked there
-/// because the declarations it compares against are gone.
+/// For Core that has been through residualization, which erases every
+/// `declared_effects` row. Conformance cannot be checked there: the
+/// declarations it would compare against are gone.
 pub fn typecheck_residual_core(
     program: &CoreProgram,
     diagnostics: &mut DiagnosticBag,

@@ -43,6 +43,50 @@ pub(super) fn stmt_effect_row_contains(
         .is_some_and(|row| row.contains(effect))
 }
 
+/// True when `effect` reaches `root` through a call rather than a lexical
+/// `Perform`. Inlining only rewrites performs it can see, so an effect coming
+/// from a callee is never discharged. `Call.effects` is already transitive, so
+/// no call-graph walk is needed.
+pub(super) fn core_stmt_calls_performing_effect(
+    program: &CoreProgram,
+    root: StmtId,
+    effect: EffectLabelId,
+) -> bool {
+    let mut stack = vec![root];
+    let mut seen = HashSet::new();
+    while let Some(stmt_id) = stack.pop() {
+        if !seen.insert(stmt_id) {
+            continue;
+        }
+        let Some(stmt) = program.stmt(stmt_id) else {
+            continue;
+        };
+        match &stmt.kind {
+            StmtKind::Call { effects, .. } if effects.contains(effect) => return true,
+            StmtKind::Handle {
+                handler,
+                body,
+                next,
+            } => {
+                let discharged_by_inner = program
+                    .handlers()
+                    .get(handler.index())
+                    .is_some_and(|inner| inner.effect == effect);
+                if !discharged_by_inner {
+                    stack.push(*body);
+                }
+                if let Some(next_stmt) = next {
+                    stack.push(*next_stmt);
+                }
+                continue;
+            }
+            _ => {}
+        }
+        stack.extend(stmt.child_stmts());
+    }
+    false
+}
+
 pub(super) fn linear_stmt_contains_perform_effect(
     program: &LinearProgram,
     root: LinearStmtId,

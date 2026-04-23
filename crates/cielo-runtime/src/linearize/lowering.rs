@@ -13,9 +13,9 @@ use cielo_ir::linear::{
 use cielo_sema::SemanticTables;
 
 use super::analysis::{
-    analyze_clause_resume, classify_clause_convention, is_identity_handler_return_clause,
-    is_identity_return_of_var, linear_stmt_contains_perform_effect, resume_convention_reason,
-    stmt_effect_row_contains,
+    analyze_clause_resume, classify_clause_convention, core_stmt_calls_performing_effect,
+    is_identity_handler_return_clause, is_identity_return_of_var,
+    linear_stmt_contains_perform_effect, resume_convention_reason, stmt_effect_row_contains,
 };
 use super::types::{ClauseConvention, ResumeContext, ResumeQualifier};
 
@@ -238,6 +238,13 @@ fn lower_stmt(
                     return lowered_body;
                 }
 
+                if core_stmt_calls_performing_effect(input.program, *body, handler_def.effect) {
+                    state.diagnostics.error(
+                        "LINEARIZE_HANDLED_EFFECT_LEAK",
+                        "Handled effect is performed inside a callee, which handler inlining cannot discharge",
+                        stmt.span,
+                    );
+                }
                 let lowered_body = lower_stmt_under_handler(input, *body, handler_def, state, None);
                 if linear_stmt_contains_perform_effect(
                     state.linear,
