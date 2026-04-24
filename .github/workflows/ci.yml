@@ -1,0 +1,58 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: fmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test --workspace --no-fail-fast
+
+      # The suite validates emitted C by substring, so nothing else catches a
+      # program that compiles but does not run.
+      - name: compile and run examples
+        run: |
+          set -eu
+          status=0
+          for case in \
+            v1_test:1 \
+            v1_resume_control:10 \
+            v1_resume_tail:10 \
+            v0_adt:0 \
+            v0_effect_handle:0 \
+            v0_arith_stage:42 \
+            v0_effect_call_and_stage:3
+          do
+            name=${case%:*}
+            want=${case#*:}
+            out=$(cargo run -q -p cielo-driver -- \
+              "crates/cielo-compiler/examples/$name.cielo" --run-c \
+              --c-out "/tmp/$name.c" --bin-out "/tmp/$name.bin")
+            got=$(printf '%s\n' "$out" | sed -n 's/^program exit status: //p' | tail -1)
+            if [ "$got" != "$want" ]; then
+              echo "$name: expected exit $want, got ${got:-<none>}"
+              status=1
+            else
+              echo "$name: exit $got"
+            fi
+          done
+          exit $status
