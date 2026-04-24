@@ -10,6 +10,7 @@ use cielo_base::reporting::render_diagnostic;
 use cielo_base::{ExprId, Interner, SourceId, SymbolId};
 use cielo_frontend::ast::{Item, Program};
 use cielo_ir::core::CoreProgram;
+use cielo_ir::linear::LinearProgram;
 use cielo_staging::pipeline::ct_invalidation::{
     CtDepSnapshot, CtInvalidationReason, diff as diff_ct_invalidation,
     load_snapshot as load_ct_snapshot, save_snapshot as save_ct_snapshot,
@@ -61,6 +62,9 @@ struct Cli {
         help = "Select an implemented memory strategy"
     )]
     memory: MemoryChoice,
+
+    #[arg(long, help = "Report whether each handle site was compiled away")]
+    erasure_report: bool,
 
     #[arg(long, help = "Persist and diff staging snapshots across rebuilds")]
     staging_diff: bool,
@@ -174,6 +178,7 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
         || should_dump(cli, DumpKind::Cfg)
         || cli.emit_c
         || cli.run_c
+        || cli.erasure_report
         || should_dump(cli, DumpKind::C);
     if residual.diagnostics().has_errors() {
         if need_runtime {
@@ -192,6 +197,9 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
     let linear = compiler.linear(db_source);
     if should_dump(cli, DumpKind::Linear) {
         println!("=== Linear IR ===\n{:#?}", linear.linear);
+    }
+    if cli.erasure_report {
+        print_erasure_report(&source_name, &source, &linear.linear);
     }
     let linear_diagnostics = linear.staged.diagnostics();
     if linear_diagnostics.has_errors() {
@@ -662,6 +670,50 @@ fn print_case_summary(name: &str, source_name: &str, source: &str, residual: &St
     );
 
     report_diagnostics(source_name, source, residual.diagnostics());
+}
+
+fn print_erasure_report(source_name: &str, source: &str, linear: &LinearProgram) {
+    println!("=== Handler Erasure ===");
+    if linear.handler_sites.is_empty() {
+        println!("  no handle sites");
+        return;
+    }
+    for site in &linear.handler_sites {
+        let (line, column) = line_and_column(source, site.span.start);
+        println!(
+            "  {source_name}:{line}:{column}  e{}  {}",
+            site.effect.as_u32(),
+            site.outcome.as_str()
+        );
+    }
+    let erased = linear
+        .handler_sites
+        .iter()
+        .filter(|site| site.outcome.erased())
+        .count();
+    let total = linear.handler_sites.len();
+    println!(
+        "  erased {erased}/{total} ({:.0}%)",
+        (erased as f64 / total as f64) * 100.0
+    );
+}
+
+fn line_and_column(source: &str, offset: u32) -> (usize, usize) {
+    let offset = offset as usize;
+    let mut line = 1;
+    let mut column = 1;
+    for (idx, ch) in source.char_indices() {
+        if idx >= offset {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+    }
+    (line, column)
 }
 
 fn report_diagnostics(source_name: &str, source: &str, diagnostics: &DiagnosticBag) {

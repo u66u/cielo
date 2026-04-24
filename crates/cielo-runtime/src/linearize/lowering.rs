@@ -1,14 +1,17 @@
 use std::collections::HashMap;
 
+use cielo_base::Span;
 use cielo_base::diagnostics::DiagnosticBag;
 use cielo_base::ids::{
-    ExprId, FuncId, LinearExprId, LinearFuncId, LinearStmtId, StmtId, SymbolId, VarId,
+    EffectLabelId, ExprId, FuncId, LinearExprId, LinearFuncId, LinearStmtId, StmtId, SymbolId,
+    VarId,
 };
 use cielo_ir::core::{CoreProgram, ExprKind, HandlerClause, HandlerDef, StmtKind};
 use cielo_ir::effect::{SortedEffectRow, is_thunkable};
 use cielo_ir::function_graph::collect_reachable_functions;
 use cielo_ir::linear::{
-    CallConvention, LinearExpr, LinearFunction, LinearMatchArm, LinearProgram, LinearStmt,
+    CallConvention, HandlerOutcome, HandlerSite, LinearExpr, LinearFunction, LinearMatchArm,
+    LinearProgram, LinearStmt,
 };
 use cielo_sema::SemanticTables;
 
@@ -42,6 +45,16 @@ struct LoweringState<'a> {
     linear: &'a mut LinearProgram,
     expr_map: &'a mut [Option<LinearExprId>],
     stmt_map: &'a mut [Option<LinearStmtId>],
+}
+
+impl LoweringState<'_> {
+    fn record_handler(&mut self, effect: EffectLabelId, span: Span, outcome: HandlerOutcome) {
+        self.linear.handler_sites.push(HandlerSite {
+            effect,
+            span,
+            outcome,
+        });
+    }
 }
 
 pub(super) fn lower_program(
@@ -237,6 +250,7 @@ fn lower_stmt(
                         "Elided handler with empty handled-effect intersection and identity return clause",
                         stmt.span,
                     );
+                    state.record_handler(handler_def.effect, stmt.span, HandlerOutcome::Dead);
                     let lowered_body = lower_stmt(input, *body, state);
                     if let Some(next_stmt) = next {
                         let lowered_next = lower_stmt(input, *next_stmt, state);
@@ -252,12 +266,14 @@ fn lower_stmt(
                     return lowered_body;
                 }
 
+                let mut outcome = HandlerOutcome::Inlined;
                 if core_stmt_calls_performing_effect(input.program, *body, handler_def.effect) {
                     state.diagnostics.error(
                         "LINEARIZE_HANDLED_EFFECT_LEAK",
                         "Handled effect is performed inside a callee, which handler inlining cannot discharge",
                         stmt.span,
                     );
+                    outcome = HandlerOutcome::EscapedThroughCall;
                 }
                 let lowered_body = lower_stmt_under_handler(input, *body, handler_def, state, None);
                 if linear_stmt_contains_perform_effect(
@@ -270,7 +286,9 @@ fn lower_stmt(
                         "Handled effect perform leaked across linearize boundary",
                         stmt.span,
                     );
+                    outcome = HandlerOutcome::LeakedAfterInlining;
                 }
+                state.record_handler(handler_def.effect, stmt.span, outcome);
                 if let Some(next_stmt) = next {
                     let lowered_next = lower_stmt(input, *next_stmt, state);
                     let lowered = state.linear.push_stmt(LinearStmt::Val {
@@ -290,6 +308,7 @@ fn lower_stmt(
                     stmt.span,
                 );
                 let effect = cielo_base::ids::EffectLabelId::INVALID;
+                state.record_handler(effect, stmt.span, HandlerOutcome::UnresolvedHandler);
                 LinearStmt::Handle {
                     effect,
                     body: lower_stmt(input, *body, state),

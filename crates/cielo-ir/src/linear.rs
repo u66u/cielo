@@ -13,8 +13,45 @@ pub enum CallConvention {
 pub struct LinearProgram {
     pub functions: Vec<LinearFunction>,
     pub entrypoints: Vec<LinearFuncId>,
+    /// One entry per `handle` site, in lowering order.
+    pub handler_sites: Vec<HandlerSite>,
     exprs: Vec<LinearExprNode>,
     stmts: Vec<LinearStmtNode>,
+}
+
+/// Outcome of trying to compile a `handle` site away. Only `Inlined` and
+/// `Dead` leave no handler behind at runtime; the rest are failures that used
+/// to be indistinguishable from success in the emitted C.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HandlerOutcome {
+    Inlined,
+    Dead,
+    EscapedThroughCall,
+    LeakedAfterInlining,
+    UnresolvedHandler,
+}
+
+impl HandlerOutcome {
+    pub fn erased(self) -> bool {
+        matches!(self, Self::Inlined | Self::Dead)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Inlined => "inlined",
+            Self::Dead => "dead, eliminated",
+            Self::EscapedThroughCall => "not erased: effect performed in a callee",
+            Self::LeakedAfterInlining => "not erased: perform survived inlining",
+            Self::UnresolvedHandler => "not erased: handler could not be resolved",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct HandlerSite {
+    pub effect: EffectLabelId,
+    pub span: Span,
+    pub outcome: HandlerOutcome,
 }
 
 impl LinearProgram {
