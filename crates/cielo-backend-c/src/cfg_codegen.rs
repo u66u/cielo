@@ -4,7 +4,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Write;
 
 use crate::c_constants::CConstantPools;
-use cielo_base::ids::{CfgBlockId, CfgExprId, CfgHandlerId, CfgValueId, EffectLabelId, SymbolId};
+use cielo_base::ids::{
+    CfgBlockId, CfgExprId, CfgFuncId, CfgHandlerId, CfgValueId, EffectLabelId, SymbolId,
+};
 use cielo_base::symbols::Interner;
 use cielo_ir::cfg::{
     CfgArcOp, CfgArcOpKind, CfgCallConvention, CfgExpr, CfgFunction, CfgInstruction, CfgProgram,
@@ -39,7 +41,7 @@ pub fn emit(
 
     let names = function_names(program, interner);
     for function in &program.functions {
-        emit_signature(&mut out, function, &names[&function.name]);
+        emit_signature(&mut out, function, &names[&function.id]);
         out.push_str(";\n");
     }
     out.push('\n');
@@ -53,13 +55,15 @@ pub fn emit(
     out
 }
 
-fn function_names(program: &CfgProgram, interner: &Interner) -> HashMap<SymbolId, String> {
+/// Keyed by id, not name: handler specialization clones a function without
+/// renaming it, so several functions share one name symbol.
+fn function_names(program: &CfgProgram, interner: &Interner) -> HashMap<CfgFuncId, String> {
     program
         .functions
         .iter()
         .map(|function| {
             (
-                function.name,
+                function.id,
                 format!(
                     "cielo_fn_{}_{}",
                     sanitize(symbol_text(interner, function.name)),
@@ -85,12 +89,12 @@ fn emit_function(
     out: &mut String,
     program: &CfgProgram,
     function: &CfgFunction,
-    names: &HashMap<SymbolId, String>,
+    names: &HashMap<CfgFuncId, String>,
     interner: &Interner,
     pools: &CConstantPools,
     arc_trace: bool,
 ) {
-    emit_signature(out, function, &names[&function.name]);
+    emit_signature(out, function, &names[&function.id]);
     out.push_str(" {\n");
     let params = function.params.iter().copied().collect::<HashSet<_>>();
     for value in reachable_values(program, function.entry) {
@@ -279,17 +283,18 @@ fn emit_terminator(
         }
         CfgTerminator::Call {
             convention,
-            callee,
+            callee_fn,
             args,
             result,
             target,
+            ..
         } => {
             let args = materialize_args(out, args, cx);
             let callee = cx
                 .names
-                .get(callee)
+                .get(callee_fn)
                 .cloned()
-                .unwrap_or_else(|| format!("cielo_missing_fn_{}", callee.as_u32()));
+                .unwrap_or_else(|| format!("cielo_missing_fn_{}", callee_fn.as_u32()));
             let call = format!(
                 "{}({callee}({}))",
                 call_wrapper(*convention),
@@ -388,12 +393,14 @@ fn emit_expr(expression: CfgExprId, cx: &mut EmitCx<'_>) -> String {
             emit_expr(*lhs, cx),
             emit_expr(*rhs, cx)
         ),
-        CfgExpr::PureCall { callee, args } => {
+        CfgExpr::PureCall {
+            callee_fn, args, ..
+        } => {
             let name = cx
                 .names
-                .get(callee)
+                .get(callee_fn)
                 .cloned()
-                .unwrap_or_else(|| format!("cielo_missing_fn_{}", callee.as_u32()));
+                .unwrap_or_else(|| format!("cielo_missing_fn_{}", callee_fn.as_u32()));
             let args = args
                 .iter()
                 .map(|arg| emit_expr(*arg, cx))
@@ -729,14 +736,14 @@ fn builtin_print_symbol(program: &CfgProgram, interner: &Interner) -> Option<Sym
         })
 }
 
-fn emit_main(out: &mut String, program: &CfgProgram, names: &HashMap<SymbolId, String>) {
+fn emit_main(out: &mut String, program: &CfgProgram, names: &HashMap<CfgFuncId, String>) {
     let Some(entry) = program.entrypoints.first().copied() else {
         return;
     };
     let Some(function) = program.functions.get(entry.index()) else {
         return;
     };
-    let Some(name) = names.get(&function.name) else {
+    let Some(name) = names.get(&function.id) else {
         return;
     };
     out.push_str("int main(void) {\n");
@@ -799,7 +806,7 @@ fn float_literal(value: f64) -> String {
 
 struct EmitCx<'a> {
     program: &'a CfgProgram,
-    names: &'a HashMap<SymbolId, String>,
+    names: &'a HashMap<CfgFuncId, String>,
     interner: &'a Interner,
     pools: &'a CConstantPools,
     active_handlers: HashMap<CfgBlockId, Vec<(CfgHandlerId, EffectLabelId)>>,

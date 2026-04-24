@@ -1,4 +1,4 @@
-use cielo_base::{DiagnosticBag, SourceId, Span, SymbolId};
+use cielo_base::{CfgFuncId, DiagnosticBag, SourceId, Span, SymbolId};
 use cielo_ir::cfg::{
     CfgCallConvention, CfgExpr, CfgInstruction, CfgMatchArm, CfgProgram, CfgProjectionMode,
     CfgTerminator,
@@ -118,6 +118,7 @@ fn shared_values_crossing_calls_are_escape_hazards() {
         CfgTerminator::Call {
             convention: CfgCallConvention::Direct,
             callee: SymbolId::from_u32(4),
+            callee_fn: CfgFuncId::from_u32(0),
             args: vec![shared_expr],
             result,
             target,

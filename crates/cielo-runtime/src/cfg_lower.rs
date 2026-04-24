@@ -65,6 +65,11 @@ impl<'a> Lowerer<'a> {
 
     fn lower(mut self) -> CfgProgram {
         let functions = self.linear.functions.clone();
+        // Assign ids before lowering any body, so a call to a function that has
+        // not been lowered yet still resolves.
+        for (index, function) in functions.iter().enumerate() {
+            self.functions.insert(function.id, CfgFuncId::new(index));
+        }
         for function in functions {
             // Statement sharing is preserved within a function. Keeping the
             // cache function-local also prevents accidental cross-function
@@ -86,7 +91,7 @@ impl<'a> Lowerer<'a> {
             );
 
             let id = CfgFuncId::new(self.cfg.functions.len());
-            self.functions.insert(function.id, id);
+            debug_assert_eq!(self.functions.get(&function.id).copied(), Some(id));
             self.cfg.functions.push(CfgFunction {
                 id,
                 name: function.name,
@@ -142,8 +147,13 @@ impl<'a> Lowerer<'a> {
                 lhs: self.lower_expr(lhs),
                 rhs: self.lower_expr(rhs),
             },
-            Some(LinearExpr::PureCall { callee, args }) => CfgExpr::PureCall {
+            Some(LinearExpr::PureCall {
                 callee,
+                callee_fn,
+                args,
+            }) => CfgExpr::PureCall {
+                callee,
+                callee_fn: self.cfg_func_id(callee_fn),
                 args: args.into_iter().map(|arg| self.lower_expr(arg)).collect(),
             },
             Some(LinearExpr::MakeStruct { ty, fields }) => CfgExpr::MakeStruct {
@@ -229,12 +239,14 @@ impl<'a> Lowerer<'a> {
             LinearStmt::PureCall {
                 result,
                 callee,
+                callee_fn,
                 args,
                 next,
             } => self.lower_call(
                 id,
                 result,
                 callee,
+                callee_fn,
                 args,
                 next,
                 exit,
@@ -243,12 +255,14 @@ impl<'a> Lowerer<'a> {
             LinearStmt::DirectCall {
                 result,
                 callee,
+                callee_fn,
                 args,
                 next,
             } => self.lower_call(
                 id,
                 result,
                 callee,
+                callee_fn,
                 args,
                 next,
                 exit,
@@ -257,12 +271,14 @@ impl<'a> Lowerer<'a> {
             LinearStmt::ControlCall {
                 result,
                 callee,
+                callee_fn,
                 args,
                 next,
             } => self.lower_call(
                 id,
                 result,
                 callee,
+                callee_fn,
                 args,
                 next,
                 exit,
@@ -481,12 +497,20 @@ impl<'a> Lowerer<'a> {
         entry
     }
 
+    fn cfg_func_id(&self, callee: LinearFuncId) -> CfgFuncId {
+        self.functions
+            .get(&callee)
+            .copied()
+            .unwrap_or(CfgFuncId::INVALID)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn lower_call(
         &mut self,
         id: LinearStmtId,
         result: VarId,
         callee: cielo_base::ids::SymbolId,
+        callee_fn: LinearFuncId,
         args: Vec<LinearExprId>,
         next: LinearStmtId,
         exit: Exit,
@@ -509,6 +533,7 @@ impl<'a> Lowerer<'a> {
             CfgTerminator::Call {
                 convention,
                 callee,
+                callee_fn: self.cfg_func_id(callee_fn),
                 args,
                 result,
                 target: continuation,

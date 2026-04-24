@@ -141,6 +141,7 @@ pub enum LinearExpr {
     },
     PureCall {
         callee: SymbolId,
+        callee_fn: LinearFuncId,
         args: Vec<LinearExprId>,
     },
     MakeStruct {
@@ -178,18 +179,21 @@ pub enum LinearStmt {
     PureCall {
         result: VarId,
         callee: SymbolId,
+        callee_fn: LinearFuncId,
         args: Vec<LinearExprId>,
         next: LinearStmtId,
     },
     DirectCall {
         result: VarId,
         callee: SymbolId,
+        callee_fn: LinearFuncId,
         args: Vec<LinearExprId>,
         next: LinearStmtId,
     },
     ControlCall {
         result: VarId,
         callee: SymbolId,
+        callee_fn: LinearFuncId,
         args: Vec<LinearExprId>,
         next: LinearStmtId,
     },

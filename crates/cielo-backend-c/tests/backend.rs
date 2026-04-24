@@ -32,6 +32,47 @@ fn main() -> Int {
     assert!(compiled.residual.diagnostics().entries().is_empty());
 }
 
+/// Handler specialization clones a callee without renaming it, so two
+/// specializations share one name symbol. Keying emitted names by that symbol
+/// produced `redefinition of` at the second specialization.
+#[test]
+fn emits_distinct_names_for_each_handler_specialization() {
+    let src = r#"
+effect St { fn note(n: Int) -> Int }
+fn work(x: Int) -> Int with St {
+  do St.note(x);
+  x + 1
+}
+fn main() -> Int {
+  let a = handle { work(1) } with St {
+    | note(n) => 10
+  };
+  let b = handle { work(2) } with St {
+    | note(n) => 20
+  };
+  a + b
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = PassHarness::new(PassConfig::default());
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert!(compiled.residual.diagnostics().entries().is_empty());
+
+    let mut definitions = compiled
+        .c_source
+        .lines()
+        .filter(|line| line.starts_with("static CieloValue cielo_fn_work_") && line.ends_with('{'))
+        .collect::<Vec<_>>();
+    definitions.sort_unstable();
+    definitions.dedup();
+    assert_eq!(
+        definitions.len(),
+        2,
+        "each specialization needs its own definition, got {definitions:?}"
+    );
+}
+
 #[test]
 fn emits_runtime_stub_calls_for_effect_operations() {
     let src = r#"

@@ -22,7 +22,19 @@ use super::types::{ClauseConvention, ResumeContext, ResumeQualifier};
 struct LoweringInput<'a> {
     program: &'a CoreProgram,
     fn_names: &'a HashMap<FuncId, SymbolId>,
+    fn_ids: &'a HashMap<FuncId, LinearFuncId>,
     sema: &'a SemanticTables,
+}
+
+impl LoweringInput<'_> {
+    /// Specializations share a name symbol, so the dense id is the only thing
+    /// that distinguishes them downstream.
+    fn callee_fn(&self, callee: &FuncId) -> LinearFuncId {
+        self.fn_ids
+            .get(callee)
+            .copied()
+            .unwrap_or(LinearFuncId::INVALID)
+    }
 }
 
 struct LoweringState<'a> {
@@ -57,6 +69,7 @@ pub(super) fn lower_program(
     let input = LoweringInput {
         program,
         fn_names: &fn_names,
+        fn_ids: &dense_id_by_source,
         sema,
     };
     {
@@ -153,6 +166,7 @@ fn lower_stmt(
             linear_call_stmt(
                 *result,
                 callee_name,
+                input.callee_fn(callee),
                 lowered_args,
                 lowered_next,
                 classify_call_convention(effects, input.sema),
@@ -482,6 +496,7 @@ fn lower_stmt_under_handler(
             state.linear.push_stmt(linear_call_stmt(
                 *result,
                 callee_name,
+                input.callee_fn(callee),
                 lowered_args,
                 lowered_next,
                 classify_call_convention(effects, input.sema),
@@ -626,6 +641,7 @@ fn lower_expr(
                 .get(callee)
                 .copied()
                 .unwrap_or(SymbolId::INVALID),
+            callee_fn: input.callee_fn(callee),
             args: args
                 .iter()
                 .copied()
@@ -675,6 +691,7 @@ fn classify_call_convention(effects: &SortedEffectRow, sema: &SemanticTables) ->
 fn linear_call_stmt(
     result: VarId,
     callee: SymbolId,
+    callee_fn: LinearFuncId,
     args: Vec<LinearExprId>,
     next: LinearStmtId,
     convention: CallConvention,
@@ -683,18 +700,21 @@ fn linear_call_stmt(
         CallConvention::Pure => LinearStmt::PureCall {
             result,
             callee,
+            callee_fn,
             args,
             next,
         },
         CallConvention::Direct => LinearStmt::DirectCall {
             result,
             callee,
+            callee_fn,
             args,
             next,
         },
         CallConvention::Control => LinearStmt::ControlCall {
             result,
             callee,
+            callee_fn,
             args,
             next,
         },

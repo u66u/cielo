@@ -200,6 +200,7 @@ pub enum CfgExpr {
     },
     PureCall {
         callee: SymbolId,
+        callee_fn: CfgFuncId,
         args: Vec<CfgExprId>,
     },
     MakeStruct {
@@ -322,6 +323,7 @@ pub enum CfgTerminator {
     Call {
         convention: CfgCallConvention,
         callee: SymbolId,
+        callee_fn: CfgFuncId,
         args: Vec<CfgExprId>,
         result: CfgValueId,
         target: CfgBlockId,
