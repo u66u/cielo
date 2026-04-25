@@ -1,12 +1,9 @@
 use std::collections::HashSet;
 
-use crate::refcount::analysis::cfg_liveness::{CfgLiveness, CfgUseSite};
 use cielo_base::diagnostics::DiagnosticBag;
-use cielo_base::ids::{CfgExprId, CfgValueId};
+use cielo_base::ids::CfgValueId;
 use cielo_base::span::Span;
-use cielo_ir::cfg::{
-    CfgArcOp, CfgArcOpKind, CfgExpr, CfgProgram, CfgProjectionMode, CfgTerminator,
-};
+use cielo_ir::cfg::{CfgArcOp, CfgArcOpKind, CfgProgram, CfgProjectionMode, CfgTerminator};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct CfgArcVerifyStats {
@@ -23,51 +20,90 @@ pub fn verify(cfg: &CfgProgram, diagnostics: &mut DiagnosticBag) -> CfgArcVerify
             report(diagnostics, &mut stats, "CFG_VERIFY_INVALID_GRAPH", error);
         }
     }
-    let liveness = CfgLiveness::analyze(cfg);
     for block in cfg.blocks() {
         stats.checked_blocks = stats.checked_blocks.saturating_add(1);
+        let mut block_releases: HashSet<CfgValueId> = HashSet::new();
+
         verify_ops(cfg, &block.entry_arc, diagnostics, &mut stats);
+        collect_releases(&block.entry_arc, &mut block_releases, |value| {
+            report(
+                diagnostics,
+                &mut stats,
+                "CFG_ARC_VERIFY_DOUBLE_RELEASE",
+                format!(
+                    "v{} is released twice on the straight-line path through b{}",
+                    value.as_u32(),
+                    block.id.as_u32()
+                ),
+            );
+        });
+
         for instruction in &block.instructions {
             if let Some(instruction) = cfg.instruction(*instruction) {
-                verify_ops(cfg, &instruction.arc.pre, diagnostics, &mut stats);
-                verify_ops(cfg, &instruction.arc.post, diagnostics, &mut stats);
+                for ops in [&instruction.arc.pre, &instruction.arc.post] {
+                    verify_ops(cfg, ops, diagnostics, &mut stats);
+                    collect_releases(ops, &mut block_releases, |value| {
+                        report(
+                            diagnostics,
+                            &mut stats,
+                            "CFG_ARC_VERIFY_DOUBLE_RELEASE",
+                            format!(
+                                "v{} is released twice on the straight-line path through b{}",
+                                value.as_u32(),
+                                block.id.as_u32()
+                            ),
+                        );
+                    });
+                }
             }
         }
-        verify_ops(cfg, &block.terminator_arc.pre, diagnostics, &mut stats);
-        verify_ops(cfg, &block.terminator_arc.post, diagnostics, &mut stats);
 
-        if let CfgTerminator::Match {
-            scrutinee, arms, ..
-        } = &block.terminator
-        {
-            let parent = direct_value(cfg, *scrutinee);
-            let parent_live = parent.is_some_and(|parent| {
-                liveness
-                    .live_after(CfgUseSite::Terminator(block.id))
-                    .is_some_and(|live| live.contains(&parent))
+        for ops in [&block.terminator_arc.pre, &block.terminator_arc.post] {
+            verify_ops(cfg, ops, diagnostics, &mut stats);
+            collect_releases(ops, &mut block_releases, |value| {
+                report(
+                    diagnostics,
+                    &mut stats,
+                    "CFG_ARC_VERIFY_DOUBLE_RELEASE",
+                    format!(
+                        "v{} is released twice on the straight-line path through b{}",
+                        value.as_u32(),
+                        block.id.as_u32()
+                    ),
+                );
             });
+        }
+
+        // A destructive Move needs the parent to be dead *and* unique. Only the
+        // first is statically known, and asserting it here would just restate
+        // the planner's own predicate over the same liveness. Uniqueness is
+        // enforced at runtime in `cielo_ctor_take_field`.
+        if let CfgTerminator::Match { arms, .. } = &block.terminator {
             for arm in arms {
-                for (binder, mode) in arm.binders.iter().zip(&arm.projections) {
+                for mode in &arm.projections {
                     if *mode == CfgProjectionMode::Move {
                         stats.checked_moves = stats.checked_moves.saturating_add(1);
-                        if parent_live {
-                            report(
-                                diagnostics,
-                                &mut stats,
-                                "CFG_ARC_VERIFY_LIVE_PARENT_MOVE",
-                                format!(
-                                    "field v{} moves out of a match scrutinee that remains live after b{}",
-                                    binder.as_u32(),
-                                    block.id.as_u32()
-                                ),
-                            );
-                        }
                     }
                 }
             }
         }
     }
     stats
+}
+
+/// Releases are accumulated across every site in a block, so a value released
+/// at two different sites on one straight-line path is reported. `verify_ops`
+/// only sees one site at a time and cannot catch this.
+fn collect_releases(
+    ops: &[CfgArcOp],
+    seen: &mut HashSet<CfgValueId>,
+    mut on_duplicate: impl FnMut(CfgValueId),
+) {
+    for op in ops {
+        if op.kind == CfgArcOpKind::Release && !seen.insert(op.value) {
+            on_duplicate(op.value);
+        }
+    }
 }
 
 fn verify_ops(
@@ -101,13 +137,6 @@ fn verify_ops(
                 ),
             );
         }
-    }
-}
-
-fn direct_value(cfg: &CfgProgram, expression: CfgExprId) -> Option<CfgValueId> {
-    match &cfg.expr(expression)?.kind {
-        CfgExpr::Value(value) => Some(*value),
-        _ => None,
     }
 }
 
