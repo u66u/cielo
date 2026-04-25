@@ -378,18 +378,49 @@ static inline bool cv_truthy(CieloValue v) {
   }
 }
 
-static inline CieloValue cv_neg(CieloValue a) { return cv_int(-a.as.i); }
+/* Arithmetic dispatches on the tag. Reading `.as.i` unconditionally treats a
+ * double's bit pattern as an integer, which is why CV_FLOAT could never be
+ * computed with. The int case is first because it is the only one the current
+ * frontend can produce. */
+static inline bool cv_both(CieloValue a, CieloValue b, CieloTag tag) {
+  return a.tag == tag && b.tag == tag;
+}
+
+static inline CieloValue cv_neg(CieloValue a) {
+  if (a.tag == CV_FLOAT)
+    return cv_float(-a.as.f);
+  if (a.tag != CV_INT)
+    cielo_trap("negation of a non-numeric value");
+  return cv_int(-a.as.i);
+}
 static inline CieloValue cv_not(CieloValue a) { return cv_bool(!cv_truthy(a)); }
 static inline CieloValue cv_add(CieloValue a, CieloValue b) {
-  return cv_int(a.as.i + b.as.i);
+  if (cv_both(a, b, CV_INT))
+    return cv_int(a.as.i + b.as.i);
+  if (cv_both(a, b, CV_FLOAT))
+    return cv_float(a.as.f + b.as.f);
+  cielo_trap("addition of non-numeric or mismatched operands");
 }
 static inline CieloValue cv_sub(CieloValue a, CieloValue b) {
-  return cv_int(a.as.i - b.as.i);
+  if (cv_both(a, b, CV_INT))
+    return cv_int(a.as.i - b.as.i);
+  if (cv_both(a, b, CV_FLOAT))
+    return cv_float(a.as.f - b.as.f);
+  cielo_trap("subtraction of non-numeric or mismatched operands");
 }
 static inline CieloValue cv_mul(CieloValue a, CieloValue b) {
-  return cv_int(a.as.i * b.as.i);
+  if (cv_both(a, b, CV_INT))
+    return cv_int(a.as.i * b.as.i);
+  if (cv_both(a, b, CV_FLOAT))
+    return cv_float(a.as.f * b.as.f);
+  cielo_trap("multiplication of non-numeric or mismatched operands");
 }
 static inline CieloValue cv_div(CieloValue a, CieloValue b) {
+  /* IEEE division by zero is defined, so only the integer path traps. */
+  if (cv_both(a, b, CV_FLOAT))
+    return cv_float(a.as.f / b.as.f);
+  if (!cv_both(a, b, CV_INT))
+    cielo_trap("division of non-numeric or mismatched operands");
   if (b.as.i == 0)
     cielo_trap("divide by zero");
   if (a.as.i == INT64_MIN && b.as.i == -1)
@@ -397,6 +428,8 @@ static inline CieloValue cv_div(CieloValue a, CieloValue b) {
   return cv_int(a.as.i / b.as.i);
 }
 static inline CieloValue cv_mod(CieloValue a, CieloValue b) {
+  if (!cv_both(a, b, CV_INT))
+    cielo_trap("modulo of non-integer or mismatched operands");
   if (b.as.i == 0)
     cielo_trap("modulo by zero");
   if (a.as.i == INT64_MIN && b.as.i == -1)
