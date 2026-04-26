@@ -289,6 +289,61 @@ const GC_OPTIMIZER_THRESHOLDS: &[GcOptimizerThreshold] = &[
     },
 ];
 
+/// Op-count gates. Wall-clock ratios on these cases are dominated by process
+/// startup and page-fault behaviour, so the ARC pass is gated on the ops it
+/// actually emits instead. These numbers are exact and machine-independent.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct GcOpCountThreshold {
+    pub case: &'static str,
+    pub preset: &'static str,
+    pub max_final_retain_ops: u32,
+}
+
+const GC_OP_COUNT_THRESHOLDS: &[GcOpCountThreshold] = &[GcOpCountThreshold {
+    case: "alias_churn",
+    preset: "arc_optimized",
+    max_final_retain_ops: 0,
+}];
+
+pub fn gc_op_count_thresholds() -> &'static [GcOpCountThreshold] {
+    GC_OP_COUNT_THRESHOLDS
+}
+
+pub fn gc_max_final_retain_ops(case: &str, preset: &str) -> Option<u32> {
+    GC_OP_COUNT_THRESHOLDS
+        .iter()
+        .find(|threshold| threshold.case == case && threshold.preset == preset)
+        .map(|threshold| threshold.max_final_retain_ops)
+}
+
+pub fn check_gc_final_retain_ops(
+    case: &str,
+    preset: &str,
+    measured_final_retain_ops: u32,
+) -> Result<(), GcOpCountViolation> {
+    let Some(limit) = gc_max_final_retain_ops(case, preset) else {
+        return Ok(());
+    };
+    if measured_final_retain_ops <= limit {
+        Ok(())
+    } else {
+        Err(GcOpCountViolation {
+            case: case.to_owned(),
+            preset: preset.to_owned(),
+            measured_final_retain_ops,
+            max_final_retain_ops: limit,
+        })
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct GcOpCountViolation {
+    pub case: String,
+    pub preset: String,
+    pub measured_final_retain_ops: u32,
+    pub max_final_retain_ops: u32,
+}
+
 pub fn gc_overhead_thresholds() -> &'static [GcOverheadThreshold] {
     GC_OVERHEAD_THRESHOLDS
 }

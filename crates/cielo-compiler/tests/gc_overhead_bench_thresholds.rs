@@ -73,6 +73,25 @@ fn gc_optimizer_baselines_fit_thresholds() {
     }
 }
 
+/// On alias_churn the planner eliminates every retain. That is the actual
+/// claim, and unlike a wall-clock ratio it is exact on any machine.
+#[test]
+fn alias_churn_optimizes_away_every_retain() {
+    assert!(
+        v1_gc_overhead::check_gc_final_retain_ops("alias_churn", "arc_optimized", 0).is_ok(),
+        "the optimized preset should emit no retains on alias_churn"
+    );
+}
+
+#[test]
+fn op_count_threshold_checker_rejects_regressions() {
+    let violation = v1_gc_overhead::check_gc_final_retain_ops("alias_churn", "arc_optimized", 1)
+        .expect_err("a single surviving retain is a regression");
+    assert_eq!(violation.case, "alias_churn");
+    assert_eq!(violation.max_final_retain_ops, 0);
+    assert_eq!(violation.measured_final_retain_ops, 1);
+}
+
 #[test]
 fn gc_overhead_threshold_checker_rejects_regressions() {
     let violation = v1_gc_overhead::check_gc_overhead_relative("ctor_churn", "arc_raw", 99.0)

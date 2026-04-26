@@ -107,23 +107,46 @@ The Cielo benchmark output includes ARC op counters:
 
 Use these to confirm each case is exercising ARC and not being optimized into a non-ARC path.
 
-## Latest measured deltas (February 22, 2026)
+## Withdrawn: the February 22, 2026 wall-clock table
 
-Machine-local results from this repo state:
+That table is gone. Every column measured something other than what it claimed,
+and it invited the reading "Nim's ARC optimizer gives 8x, Cielo's gives 1x",
+which nothing here supports.
 
-- Cielo command:
-  - `CIELO_GC_BENCH_WARMUP_RUNS=5 CIELO_GC_BENCH_MEASURE_RUNS=25 CIELO_GC_BENCH_ENFORCE_THRESHOLDS=1 cargo bench --bench v1_gc_overhead -- --nocapture`
-- Nim command pattern:
-  - `hyperfine --warmup 3 --runs 12 -N '<value bin> ... 5000' '<arc_raw bin> ... 5000' '<arc_opt bin> ... 5000'`
+- **Nim `arc_opt/arc_raw = 0.126` was `gcc -O0` vs `gcc -O3`, not Nim's ARC
+  optimizer.** The build commands above are `--opt:none` vs
+  `-d:danger --opt:speed`. The generated C is the same apart from overflow
+  calls, with the same ARC call sites in both. `-O3` alone accounts for ~7.8x.
+  The value baseline shows a *larger* `-O0` penalty, so the effect is not
+  ARC-specific at all.
+- **Cielo `ctor_churn` measured `fork`/`exec`.** The harness timed
+  `Command::status()` while the case ran 300 allocations once. An empty
+  `int main(){return 0;}` costs ~648 us; the ctor binaries measured 681-695 us,
+  with a standard deviation of ~210 us. The Nim side of the same row ran 5000
+  iterations.
+- **`arc_raw/off < 1` was a page-fault artifact.** `off` never frees, so it pays
+  kernel time for a growing heap. Split by user vs system time, ARC is ~1.35x
+  slower than `off` in user time — the expected direction.
+- **The threshold gates could not fail.** `GC_OVERHEAD_THRESHOLDS` capped
+  `arc_raw/off` at 4.0-4.5 against measurements of 0.39-1.02.
+  `GC_OPTIMIZER_THRESHOLDS` allowed `alias_churn` at 1.400 against a measured
+  1.382 — permitting the optimizer to make code 40% slower.
 
-| Case | Cielo `arc_raw/off` | Cielo `arc_optimized/arc_raw` | Nim `arc_raw/value` | Nim `arc_opt/arc_raw` |
-| --- | ---: | ---: | ---: | ---: |
-| `ctor_churn` | `0.901` | `1.018` | `33.58` | `0.126` |
-| `alias_churn` | `0.424` | `1.382` | `29.14` | `0.126` |
-| `branch_churn` | `0.394` | `0.998` | `25.28` | `0.163` |
+## What to measure instead
 
-Interpretation notes:
+The result worth reporting is hardware-independent and already available: on
+`alias_churn` the planner goes from 900k retains + 1.2M releases to **0 retains
+and one destroy per object**, which is the same op count Nim's ARC reaches.
 
-- Cielo `off` is not a no-allocation value baseline; it disables ARC insertion/emission, so ctor-heavy workloads accumulate unreleased heap objects and can run slower than ARC.
-- The cleaner Cielo optimizer signal is `arc_optimized/arc_raw`.
-- Nim `arc_opt/arc_raw` here includes backend optimizer differences (`--opt:none` vs `--opt:speed -d:danger`), so it is directional, not an exact semantic-isolation toggle.
+Prefer the runtime's own counters (`ctor_allocations`, `ctor_frees`,
+`retain_calls`, `release_calls` in `cielo_runtime.h`) over wall clock. They are
+exact, machine-independent, and state the claim directly. Note they require
+`-DCIELO_ARC_STATS`; without it the counters compile out so the C compiler can
+fold away provably-dead retain/release pairs.
+
+Before any wall-clock comparison is republished:
+
+- give `ctor_churn` an in-program loop so it stops measuring process startup;
+- report user time, or bound the `off` working set;
+- add a case that scales, since the current four are 6-37 lines;
+- keep `-O2` on both sides.
