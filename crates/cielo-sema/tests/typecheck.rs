@@ -319,6 +319,68 @@ fn main() -> Int {
 }
 
 #[test]
+fn reports_match_missing_a_variant_without_a_default() {
+    let src = r#"
+enum Shape { Circle(Int), Square(Int), Tri(Int) }
+fn area(s: Shape) -> Int {
+  match s {
+    Circle(r) => r,
+    Square(w) => w
+  }
+}
+fn main() -> Int {
+  area(Tri(7))
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    assert!(
+        diagnostics
+            .entries()
+            .iter()
+            .any(|d| d.code == "TYPE_MATCH_NOT_EXHAUSTIVE"),
+        "an uncovered variant falls through to a unit block at runtime"
+    );
+}
+
+#[test]
+fn accepts_match_covering_every_variant() {
+    let src = r#"
+enum Shape { Circle(Int), Square(Int), Tri(Int) }
+fn area(s: Shape) -> Int {
+  match s {
+    Circle(r) => r,
+    Square(w) => w,
+    Tri(b) => b
+  }
+}
+fn main() -> Int {
+  area(Tri(7))
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    assert!(
+        !diagnostics
+            .entries()
+            .iter()
+            .any(|d| d.code == "TYPE_MATCH_NOT_EXHAUSTIVE"),
+        "got {:?}",
+        diagnostics
+            .entries()
+            .iter()
+            .map(|d| d.code.to_owned())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn reports_effect_performed_without_declaration() {
     let src = r#"
 effect Console { fn print(s: String) -> Int }

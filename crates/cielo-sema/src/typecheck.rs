@@ -790,9 +790,54 @@ impl<'a> TypeChecker<'a> {
                 ),
                 None => default_ty,
             });
+        } else {
+            self.check_match_exhaustive(scrutinee_ty, arms, span);
         }
 
         result_ty.unwrap_or(InferTy::Concrete(self.prim.unit))
+    }
+
+    /// Without a default arm, an uncovered variant falls through to a
+    /// synthesised unit block at runtime, so a missing case is a wrong answer
+    /// rather than a crash.
+    fn check_match_exhaustive(
+        &mut self,
+        scrutinee_ty: InferTy,
+        arms: &[cielo_ir::core::MatchArm],
+        span: Span,
+    ) {
+        let scrutinee = self.materialize_ty(scrutinee_ty);
+        let Some(TypeKind::Enum { variants, .. }) =
+            self.store.kinds().get(scrutinee.index()).cloned()
+        else {
+            return;
+        };
+
+        let mut covered = HashSet::new();
+        for arm in arms {
+            if !covered.insert(arm.tag) {
+                self.diagnostics.error(
+                    "TYPE_MATCH_DUPLICATE_ARM",
+                    "Match arm repeats a variant already covered",
+                    arm.span,
+                );
+            }
+        }
+
+        let missing = variants
+            .iter()
+            .filter(|variant| !covered.contains(&variant.name))
+            .count();
+        if missing > 0 {
+            self.diagnostics.error(
+                "TYPE_MATCH_NOT_EXHAUSTIVE",
+                format!(
+                    "Match does not cover {missing} of {} variants and has no default arm",
+                    variants.len()
+                ),
+                span,
+            );
+        }
     }
 
     fn infer_handle_stmt(
