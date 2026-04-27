@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use cielo_base::densemap::DenseMap;
-use cielo_base::{EffectLabelId, TypeId, VarId};
+use cielo_base::{EffectLabelId, ExprId, TypeId, VarId};
 use cielo_ir::effect::{EffectProperties, SortedEffectRow};
 use cielo_ir::ownership::OwnershipClass;
 
@@ -19,6 +19,9 @@ pub struct SemanticTables {
     pub ownership_of_type: Vec<OwnershipClass>,
     pub persistability_of_type: Vec<Persistability>,
     pub effect_properties: HashMap<EffectLabelId, EffectProperties>,
+    /// Field projections resolved to a positional index. Core carries the field
+    /// name because lowering has no types to resolve it against.
+    pub field_index_of_expr: HashMap<ExprId, u32>,
 }
 
 impl SemanticTables {
@@ -31,6 +34,7 @@ impl SemanticTables {
             ownership_of_var: DenseMap::default(),
             ownership_of_type: Vec::new(),
             persistability_of_type: Vec::new(),
+            field_index_of_expr: HashMap::new(),
             effect_properties: HashMap::new(),
         }
     }

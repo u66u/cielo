@@ -1054,6 +1054,7 @@ fn eval_expr(
         ExprKind::PureCall { .. }
         | ExprKind::MakeStruct { .. }
         | ExprKind::MakeEnum { .. }
+        | ExprKind::Field { .. }
         | ExprKind::Error(_) => None,
     };
     direct.or_else(|| ct.ct_cache.get(&expr_id).and_then(literal_to_oracle))

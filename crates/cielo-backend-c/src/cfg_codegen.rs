@@ -387,6 +387,9 @@ fn emit_expr(expression: CfgExprId, cx: &mut EmitCx<'_>) -> String {
         CfgExpr::Value(value) => format!("v{}", value.as_u32()),
         CfgExpr::Literal(literal) => emit_literal(literal, cx.pools),
         CfgExpr::Unary { op, expr } => format!("{}({})", op.c_func(), emit_expr(*expr, cx)),
+        CfgExpr::Field { base, index } => {
+            format!("cielo_ctor_field_copy({}, {index})", emit_expr(*base, cx))
+        }
         CfgExpr::Binary { op, lhs, rhs } => format!(
             "{}({}, {})",
             op.c_func(),
@@ -651,7 +654,9 @@ fn collect_expr_values(
         CfgExpr::Value(value) => {
             values.insert(*value);
         }
-        CfgExpr::Unary { expr, .. } => collect_expr_values(program, *expr, values),
+        CfgExpr::Unary { expr, .. } | CfgExpr::Field { base: expr, .. } => {
+            collect_expr_values(program, *expr, values)
+        }
         CfgExpr::Binary { lhs, rhs, .. } => {
             collect_expr_values(program, *lhs, values);
             collect_expr_values(program, *rhs, values);

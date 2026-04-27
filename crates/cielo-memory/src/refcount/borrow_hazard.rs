@@ -216,7 +216,9 @@ fn count_expr_uses(
             let count = counts.entry(*value).or_default();
             *count = (*count).saturating_add(1);
         }
-        CfgExpr::Unary { expr, .. } => count_expr_uses(cfg, *expr, seen, counts),
+        CfgExpr::Unary { expr, .. } | CfgExpr::Field { base: expr, .. } => {
+            count_expr_uses(cfg, *expr, seen, counts)
+        }
         CfgExpr::Binary { lhs, rhs, .. } => {
             count_expr_uses(cfg, *lhs, seen, counts);
             count_expr_uses(cfg, *rhs, seen, counts);
@@ -246,7 +248,9 @@ fn managed_values_in_expr(
     };
     match &expression.kind {
         CfgExpr::Value(value) if is_managed(managed, *value) => vec![*value],
-        CfgExpr::Unary { expr, .. } => managed_values_in_expr(cfg, *expr, managed, seen),
+        CfgExpr::Unary { expr, .. } | CfgExpr::Field { base: expr, .. } => {
+            managed_values_in_expr(cfg, *expr, managed, seen)
+        }
         CfgExpr::Binary { lhs, rhs, .. } => {
             let mut values = managed_values_in_expr(cfg, *lhs, managed, seen);
             extend_unique(

@@ -147,6 +147,10 @@ impl<'a> Lowerer<'a> {
                 lhs: self.lower_expr(lhs),
                 rhs: self.lower_expr(rhs),
             },
+            Some(LinearExpr::Field { base, index }) => CfgExpr::Field {
+                base: self.lower_expr(base),
+                index,
+            },
             Some(LinearExpr::PureCall {
                 callee,
                 callee_fn,

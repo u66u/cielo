@@ -118,7 +118,9 @@ fn infer_runtime_dependency_from_expr(
     let expr = program.expr(expr_id)?;
     match &expr.kind {
         ExprKind::Var(var) => Some(Cursor::Var(*var)),
-        ExprKind::Unary { expr, .. } => is_runtime_expr(*expr, bta).then_some(Cursor::Expr(*expr)),
+        ExprKind::Unary { expr, .. } | ExprKind::Field { base: expr, .. } => {
+            is_runtime_expr(*expr, bta).then_some(Cursor::Expr(*expr))
+        }
         ExprKind::Binary { lhs, rhs, .. } => {
             if is_runtime_expr(*lhs, bta) {
                 Some(Cursor::Expr(*lhs))

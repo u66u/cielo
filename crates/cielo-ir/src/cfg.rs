@@ -203,6 +203,10 @@ pub enum CfgExpr {
         callee_fn: CfgFuncId,
         args: Vec<CfgExprId>,
     },
+    Field {
+        base: CfgExprId,
+        index: u32,
+    },
     MakeStruct {
         ty: SymbolId,
         fields: Vec<CfgExprId>,

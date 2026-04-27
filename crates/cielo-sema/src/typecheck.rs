@@ -282,6 +282,7 @@ struct TypeChecker<'a> {
     infer: InferState,
     expr_tys: Vec<Option<InferTy>>,
     unresolved_type_params: HashMap<InferVarId, TypeId>,
+    field_indices: HashMap<ExprId, u32>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -308,6 +309,7 @@ impl<'a> TypeChecker<'a> {
             infer: InferState::default(),
             expr_tys: vec![None; program.exprs().len()],
             unresolved_type_params: HashMap::new(),
+            field_indices: HashMap::new(),
         }
     }
 
@@ -363,6 +365,7 @@ impl<'a> TypeChecker<'a> {
             .collect();
         sema.ownership_of_var = self.classify_var_ownership(&sema);
 
+        sema.field_index_of_expr = std::mem::take(&mut self.field_indices);
         infer_stmt_effects(self.program, &mut sema.effects_of_stmt);
         if conformance == EffectConformance::Check {
             self.enforce_declared_effects(&sema);
@@ -797,6 +800,42 @@ impl<'a> TypeChecker<'a> {
         result_ty.unwrap_or(InferTy::Concrete(self.prim.unit))
     }
 
+    /// Resolves `base.field` against the base's struct type and records the
+    /// positional index for runtime lowering.
+    fn infer_field_expr(
+        &mut self,
+        expr_id: ExprId,
+        base: ExprId,
+        field: SymbolId,
+        env: &Env,
+        span: Span,
+    ) -> InferTy {
+        let base_ty = self.infer_expr(base, env);
+        let base_id = self.materialize_ty(base_ty);
+        let Some(TypeKind::Struct { fields, .. }) =
+            self.store.kinds().get(base_id.index()).cloned()
+        else {
+            self.diagnostics.error(
+                "TYPE_FIELD_ON_NON_STRUCT",
+                "Field access requires a struct value",
+                span,
+            );
+            return InferTy::Concrete(self.error_type);
+        };
+
+        let Some(index) = fields.iter().position(|entry| entry.name == field) else {
+            self.diagnostics.error(
+                "TYPE_UNKNOWN_FIELD",
+                "Struct has no field with this name",
+                span,
+            );
+            return InferTy::Concrete(self.error_type);
+        };
+
+        self.field_indices.insert(expr_id, index as u32);
+        InferTy::Concrete(fields[index].ty)
+    }
+
     /// Without a default arm, an uncovered variant falls through to a
     /// synthesised unit block at runtime, so a missing case is a wrong answer
     /// rather than a crash.
@@ -1007,6 +1046,9 @@ impl<'a> TypeChecker<'a> {
         };
 
         let inferred = match &expr.kind {
+            ExprKind::Field { base, field } => {
+                self.infer_field_expr(expr_id, *base, *field, env, expr.span)
+            }
             ExprKind::Literal(lit) => InferTy::Concrete(type_for_literal(lit, self.prim)),
             ExprKind::Var(var) => env
                 .get(var)
@@ -1550,8 +1592,13 @@ fn intern_program_adts(
         let fields = decl
             .fields
             .iter()
-            .map(|_| StructField {
-                name: SymbolId::INVALID,
+            .enumerate()
+            .map(|(index, _)| StructField {
+                name: decl
+                    .field_names
+                    .get(index)
+                    .copied()
+                    .unwrap_or(SymbolId::INVALID),
                 ty: TypeId::INVALID,
             })
             .collect();

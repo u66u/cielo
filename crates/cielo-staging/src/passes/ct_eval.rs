@@ -196,6 +196,7 @@ impl CallEvaluator<'_> {
         match &expr.kind {
             ExprKind::Literal(lit) => Some(ct_common::normalize_literal(lit.clone(), self.target)),
             ExprKind::Var(var) => env.get(var).cloned(),
+            ExprKind::Field { .. } => None,
             ExprKind::Unary { op, expr } => {
                 let value = self.eval_expr(*expr, env)?;
                 eval_unary(*op, &value, self.target)

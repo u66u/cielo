@@ -181,6 +181,10 @@ pub enum LinearExpr {
         callee_fn: LinearFuncId,
         args: Vec<LinearExprId>,
     },
+    Field {
+        base: LinearExprId,
+        index: u32,
+    },
     MakeStruct {
         ty: SymbolId,
         fields: Vec<LinearExprId>,

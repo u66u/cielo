@@ -487,6 +487,20 @@ impl Parser {
                 lhs = self.parse_call_expr(lhs);
                 continue;
             }
+            if self.check_kind(TokenKind::Dot) {
+                self.bump();
+                let field_span = self.current_span();
+                let field = self.expect_identifier("Expected field name after `.`");
+                let span = span_join(lhs.span, field_span);
+                lhs = Expr {
+                    kind: ExprKind::Field {
+                        base: Box::new(lhs),
+                        field,
+                    },
+                    span,
+                };
+                continue;
+            }
 
             let Some((op, precedence)) = self.peek_binop() else {
                 break;

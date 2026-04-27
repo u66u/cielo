@@ -231,7 +231,9 @@ fn collect_expr_uses(
                 UseMode::Consume => count.consumes = count.consumes.saturating_add(1),
             }
         }
-        CfgExpr::Unary { expr, .. } => collect_expr_uses(cfg, *expr, UseMode::Borrow, counts),
+        CfgExpr::Unary { expr, .. } | CfgExpr::Field { base: expr, .. } => {
+            collect_expr_uses(cfg, *expr, UseMode::Borrow, counts)
+        }
         CfgExpr::Binary { lhs, rhs, .. } => {
             collect_expr_uses(cfg, *lhs, UseMode::Borrow, counts);
             collect_expr_uses(cfg, *rhs, UseMode::Borrow, counts);
@@ -299,7 +301,10 @@ fn expr_produces_owned(cfg: &CfgProgram, expression: CfgExprId) -> bool {
     cfg.expr(expression).is_some_and(|expression| {
         matches!(
             &expression.kind,
-            CfgExpr::PureCall { .. } | CfgExpr::MakeStruct { .. } | CfgExpr::MakeEnum { .. }
+            CfgExpr::PureCall { .. }
+                | CfgExpr::MakeStruct { .. }
+                | CfgExpr::MakeEnum { .. }
+                | CfgExpr::Field { .. }
         )
     })
 }

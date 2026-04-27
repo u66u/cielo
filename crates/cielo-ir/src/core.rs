@@ -177,6 +177,12 @@ pub enum ExprKind {
         callee: FuncId,
         args: Vec<ExprId>,
     },
+    /// Field name, not index: Core has no field names, so the index is
+    /// resolved by typechecking into `SemanticTables::field_index_of_expr`.
+    Field {
+        base: ExprId,
+        field: SymbolId,
+    },
     MakeStruct {
         ty: SymbolId,
         fields: Vec<ExprId>,
@@ -367,6 +373,8 @@ pub struct FunctionDecl {
 pub struct AdtStructDecl {
     pub name: SymbolId,
     pub fields: Vec<CoreTypeRef>,
+    /// Parallel to `fields`. Needed so `base.field` can resolve to an index.
+    pub field_names: Vec<SymbolId>,
     pub span: Span,
 }
 

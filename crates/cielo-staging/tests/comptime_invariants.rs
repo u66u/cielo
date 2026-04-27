@@ -504,7 +504,9 @@ fn collect_expr_callees(
                 collect_expr_callees(program, *arg, out, seen);
             }
         }
-        ExprKind::Unary { expr, .. } => collect_expr_callees(program, *expr, out, seen),
+        ExprKind::Unary { expr, .. } | ExprKind::Field { base: expr, .. } => {
+            collect_expr_callees(program, *expr, out, seen)
+        }
         ExprKind::Binary { lhs, rhs, .. } => {
             collect_expr_callees(program, *lhs, out, seen);
             collect_expr_callees(program, *rhs, out, seen);
@@ -567,6 +569,7 @@ fn expr_calls_target(
                 .copied()
                 .any(|arg| expr_calls_target(program, arg, target, seen))
         }
+        ExprKind::Field { base, .. } => expr_calls_target(program, *base, target, seen),
         ExprKind::Unary { expr, .. } => expr_calls_target(program, *expr, target, seen),
         ExprKind::Binary { lhs, rhs, .. } => {
             expr_calls_target(program, *lhs, target, seen)

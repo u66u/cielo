@@ -1093,6 +1093,10 @@ impl<'a> NormalizedGraphBuilder<'a> {
                 op: *op,
                 expr: self.normalize_expr(*expr, scope),
             },
+            ExprKind::Field { base, field } => ExprKind::Field {
+                base: self.normalize_expr(*base, scope),
+                field: *field,
+            },
             ExprKind::Binary { op, lhs, rhs } => ExprKind::Binary {
                 op: *op,
                 lhs: self.normalize_expr(*lhs, scope),
@@ -1357,6 +1361,10 @@ impl<'a> GraphCloner<'a> {
             ExprKind::Unary { op, expr } => ExprKind::Unary {
                 op,
                 expr: self.clone_expr(expr),
+            },
+            ExprKind::Field { base, field } => ExprKind::Field {
+                base: self.clone_expr(base),
+                field,
             },
             ExprKind::Binary { op, lhs, rhs } => ExprKind::Binary {
                 op,

@@ -235,7 +235,9 @@ fn collect_expr_uses(
         CfgExpr::Value(value) => {
             output.insert(*value);
         }
-        CfgExpr::Unary { expr, .. } => collect_expr_uses(program, *expr, output),
+        CfgExpr::Unary { expr, .. } | CfgExpr::Field { base: expr, .. } => {
+            collect_expr_uses(program, *expr, output)
+        }
         CfgExpr::Binary { lhs, rhs, .. } => {
             collect_expr_uses(program, *lhs, output);
             collect_expr_uses(program, *rhs, output);

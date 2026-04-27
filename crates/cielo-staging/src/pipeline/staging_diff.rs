@@ -185,6 +185,7 @@ fn expr_kind_tag(kind: &ExprKind) -> &'static str {
         ExprKind::Literal(_) => "lit",
         ExprKind::Var(_) => "var",
         ExprKind::Unary { .. } => "un",
+        ExprKind::Field { .. } => "field",
         ExprKind::Binary { .. } => "bin",
         ExprKind::PureCall { .. } => "call",
         ExprKind::MakeStruct { .. } => "mk_struct",
@@ -239,6 +240,10 @@ fn expr_fingerprint(
             ExprKind::Unary { op, expr } => {
                 std::mem::discriminant(op).hash(&mut hasher);
                 expr_fingerprint(program, *expr, memo, visiting).hash(&mut hasher);
+            }
+            ExprKind::Field { base, field } => {
+                field.as_u32().hash(&mut hasher);
+                expr_fingerprint(program, *base, memo, visiting).hash(&mut hasher);
             }
             ExprKind::Binary { op, lhs, rhs } => {
                 std::mem::discriminant(op).hash(&mut hasher);

@@ -319,6 +319,62 @@ fn main() -> Int {
 }
 
 #[test]
+fn types_struct_field_access_by_name() {
+    let src = r#"
+struct Pair { a: Int, b: Int }
+fn second(p: Pair) -> Int {
+  p.b
+}
+fn main() -> Int {
+  let p = Pair(10, 32);
+  let x = p.a;
+  x + second(p)
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let sema = typecheck_core(&lowered.program, &mut diagnostics);
+    assert!(
+        !diagnostics.has_errors(),
+        "{:?}",
+        diagnostics
+            .entries()
+            .iter()
+            .map(|d| d.code.to_owned())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        sema.field_index_of_expr.len(),
+        2,
+        "both projections should resolve to a positional index"
+    );
+}
+
+#[test]
+fn reports_access_to_an_unknown_field() {
+    let src = r#"
+struct Pair { a: Int, b: Int }
+fn main() -> Int {
+  let p = Pair(1, 2);
+  p.c
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    assert!(
+        diagnostics
+            .entries()
+            .iter()
+            .any(|d| d.code == "TYPE_UNKNOWN_FIELD")
+    );
+}
+
+#[test]
 fn reports_match_missing_a_variant_without_a_default() {
     let src = r#"
 enum Shape { Circle(Int), Square(Int), Tri(Int) }

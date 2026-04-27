@@ -643,6 +643,15 @@ fn lower_expr(
     };
 
     let kind = match &expr.kind {
+        ExprKind::Field { base, .. } => LinearExpr::Field {
+            base: lower_expr(input, *base, state),
+            index: input
+                .sema
+                .field_index_of_expr
+                .get(&expr_id)
+                .copied()
+                .unwrap_or_default(),
+        },
         ExprKind::Var(var) => LinearExpr::Var(*var),
         ExprKind::Literal(lit) => LinearExpr::Literal(lit.clone()),
         ExprKind::Unary { op, expr } => LinearExpr::Unary {

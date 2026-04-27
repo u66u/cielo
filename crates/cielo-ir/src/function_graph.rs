@@ -63,7 +63,9 @@ fn collect_expr_callees(
         return;
     };
     match &expr.kind {
-        ExprKind::Unary { expr, .. } => collect_expr_callees(program, *expr, seen_exprs, out),
+        ExprKind::Unary { expr, .. } | ExprKind::Field { base: expr, .. } => {
+            collect_expr_callees(program, *expr, seen_exprs, out)
+        }
         ExprKind::Binary { lhs, rhs, .. } => {
             collect_expr_callees(program, *lhs, seen_exprs, out);
             collect_expr_callees(program, *rhs, seen_exprs, out);

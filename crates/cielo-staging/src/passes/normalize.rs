@@ -528,6 +528,11 @@ impl<'a> Rewriter<'a> {
                 self.set_expr(expr_id, ExprKind::Unary { op, expr });
                 expr_id
             }
+            ExprKind::Field { base, field } => {
+                let base = self.rewrite_expr(base);
+                self.set_expr(expr_id, ExprKind::Field { base, field });
+                expr_id
+            }
             ExprKind::Binary { op, lhs, rhs } => {
                 let lhs = self.rewrite_expr(lhs);
                 let rhs = self.rewrite_expr(rhs);
@@ -617,6 +622,13 @@ impl<'a> Rewriter<'a> {
                 span,
                 kind: ExprKind::Literal(literal),
             })),
+            ExprKind::Field { base, field } => {
+                let base = self.clone_expr_with_subst(base, param_bindings, memo)?;
+                Some(self.program.push_expr(ExprNode {
+                    span,
+                    kind: ExprKind::Field { base, field },
+                }))
+            }
             ExprKind::Unary { op, expr } => {
                 let subexpr = self.clone_expr_with_subst(expr, param_bindings, memo)?;
                 Some(self.program.push_expr(ExprNode {
@@ -817,7 +829,7 @@ fn expr_mentions_var(program: &CoreProgram, root: ExprId, var: VarId) -> bool {
                     return true;
                 }
             }
-            ExprKind::Unary { expr, .. } => stack.push(*expr),
+            ExprKind::Unary { expr, .. } | ExprKind::Field { base: expr, .. } => stack.push(*expr),
             ExprKind::Binary { lhs, rhs, .. } => {
                 stack.push(*lhs);
                 stack.push(*rhs);
@@ -871,7 +883,9 @@ fn collect_expr_var_uses(
             let next = uses.get(var).copied().unwrap_or(0).saturating_add(1);
             uses.insert(*var, next);
         }
-        ExprKind::Unary { expr, .. } => collect_expr_var_uses(program, *expr, seen_exprs, uses),
+        ExprKind::Unary { expr, .. } | ExprKind::Field { base: expr, .. } => {
+            collect_expr_var_uses(program, *expr, seen_exprs, uses)
+        }
         ExprKind::Binary { lhs, rhs, .. } => {
             collect_expr_var_uses(program, *lhs, seen_exprs, uses);
             collect_expr_var_uses(program, *rhs, seen_exprs, uses);
@@ -932,7 +946,9 @@ fn collect_expr_call_counts(
                 collect_expr_call_counts(program, *arg, seen_exprs, calls);
             }
         }
-        ExprKind::Unary { expr, .. } => collect_expr_call_counts(program, *expr, seen_exprs, calls),
+        ExprKind::Unary { expr, .. } | ExprKind::Field { base: expr, .. } => {
+            collect_expr_call_counts(program, *expr, seen_exprs, calls)
+        }
         ExprKind::Binary { lhs, rhs, .. } => {
             collect_expr_call_counts(program, *lhs, seen_exprs, calls);
             collect_expr_call_counts(program, *rhs, seen_exprs, calls);
@@ -1049,7 +1065,9 @@ fn count_expr_nodes(program: &CoreProgram, root: ExprId) -> usize {
         if let Some(expr) = program.expr(expr_id) {
             count = count.saturating_add(1);
             match &expr.kind {
-                ExprKind::Unary { expr, .. } => stack.push(*expr),
+                ExprKind::Unary { expr, .. } | ExprKind::Field { base: expr, .. } => {
+                    stack.push(*expr)
+                }
                 ExprKind::Binary { lhs, rhs, .. } => {
                     stack.push(*lhs);
                     stack.push(*rhs);
@@ -1085,7 +1103,9 @@ fn expr_is_inlineable(
                     return false;
                 }
             }
-            ExprKind::PureCall { .. } | ExprKind::Error(_) => return false,
+            ExprKind::PureCall { .. } | ExprKind::Field { .. } | ExprKind::Error(_) => {
+                return false;
+            }
             ExprKind::Literal(_) => {}
             ExprKind::Unary { expr, .. } => stack.push(*expr),
             ExprKind::Binary { lhs, rhs, .. } => {
@@ -1161,6 +1181,7 @@ fn expr_calls_target(
                 .copied()
                 .any(|arg| expr_calls_target(program, arg, target, seen))
         }
+        ExprKind::Field { base, .. } => expr_calls_target(program, *base, target, seen),
         ExprKind::Unary { expr, .. } => expr_calls_target(program, *expr, target, seen),
         ExprKind::Binary { lhs, rhs, .. } => {
             expr_calls_target(program, *lhs, target, seen)

@@ -888,7 +888,7 @@ fn expr_contains_var(program: &CoreProgram, root: ExprId, target: VarId) -> bool
                     return true;
                 }
             }
-            ExprKind::Unary { expr, .. } => stack.push(*expr),
+            ExprKind::Unary { expr, .. } | ExprKind::Field { base: expr, .. } => stack.push(*expr),
             ExprKind::Binary { lhs, rhs, .. } => {
                 stack.push(*lhs);
                 stack.push(*rhs);

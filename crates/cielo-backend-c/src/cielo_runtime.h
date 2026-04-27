@@ -281,6 +281,14 @@ static inline CieloValue cielo_ctor_field(CieloValue value, size_t index) {
   return value.as.ctor->fields[index];
 }
 
+/* Reading a field hands back a retained reference, so the projection stays
+ * valid independently of the parent. ARC owns and releases the result. */
+static inline CieloValue cielo_ctor_field_copy(CieloValue value, size_t index) {
+  CieloValue field = cielo_ctor_field(value, index);
+  cielo_arc_retain(field);
+  return field;
+}
+
 /* Move a field out of a constructor. Clearing the slot is Nim's `wasMoved`:
  * destroying the parent no longer decrements the transferred field.
  *

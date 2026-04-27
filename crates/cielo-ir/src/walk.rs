@@ -66,6 +66,7 @@ impl IrExprNode for ExprNode {
             | ExprKind::Unary { .. }
             | ExprKind::Binary { .. }
             | ExprKind::PureCall { .. }
+            | ExprKind::Field { .. }
             | ExprKind::Error(_) => None,
         }
     }
@@ -126,6 +127,7 @@ impl IrExprNode for LinearExprNode {
             | LinearExpr::Unary { .. }
             | LinearExpr::Binary { .. }
             | LinearExpr::PureCall { .. }
+            | LinearExpr::Field { .. }
             | LinearExpr::Error => None,
         }
     }

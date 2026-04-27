@@ -126,7 +126,7 @@ impl ExprUseIndex {
         for (parent_idx, expr) in program.exprs().iter().enumerate() {
             let parent_id = ExprId::new(parent_idx);
             match &expr.kind {
-                ExprKind::Unary { expr, .. } => {
+                ExprKind::Unary { expr, .. } | ExprKind::Field { base: expr, .. } => {
                     if expr.index() < expr_count {
                         expr_parents[expr.index()].push(parent_id);
                     }
@@ -651,7 +651,9 @@ fn infer_expr_runtime_reason(
                 None
             }
         }
-        ExprKind::Unary { expr, .. } => stage_reason_of_expr(bta, *expr),
+        ExprKind::Unary { expr, .. } | ExprKind::Field { base: expr, .. } => {
+            stage_reason_of_expr(bta, *expr)
+        }
         ExprKind::Binary { lhs, rhs, .. } => {
             stage_reason_of_expr(bta, *lhs).or_else(|| stage_reason_of_expr(bta, *rhs))
         }

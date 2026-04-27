@@ -192,6 +192,10 @@ pub enum ExprKind {
         callee: Box<Expr>,
         args: Vec<Expr>,
     },
+    Field {
+        base: Box<Expr>,
+        field: SymbolId,
+    },
     Binary {
         op: BinOp,
         lhs: Box<Expr>,

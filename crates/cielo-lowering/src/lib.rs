@@ -193,6 +193,7 @@ impl Lowerer {
                             .iter()
                             .map(|field| lower_type_ref(&field.ty))
                             .collect(),
+                        field_names: decl.fields.iter().map(|field| field.name).collect(),
                         span: decl.span,
                     });
                 }
@@ -774,6 +775,10 @@ impl Lowerer {
         locals: &HashMap<SymbolId, VarId>,
     ) -> cielo_base::ExprId {
         let kind = match &expr.kind {
+            AstExprKind::Field { base, field } => ExprKind::Field {
+                base: self.lower_expr(base, locals),
+                field: *field,
+            },
             AstExprKind::Int(value) => ExprKind::Literal(Literal::Int(*value)),
             AstExprKind::Bool(value) => ExprKind::Literal(Literal::Bool(*value)),
             AstExprKind::String(value) => ExprKind::Literal(Literal::String(value.clone())),
