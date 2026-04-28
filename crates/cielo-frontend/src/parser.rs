@@ -379,7 +379,7 @@ impl Parser {
                 continue;
             }
             if self.check_keyword(Keyword::Do) {
-                statements.push(self.parse_perform_stmt());
+                statements.push(self.parse_perform_stmt(None));
                 self.consume_kind(TokenKind::Semi);
                 continue;
             }
@@ -436,6 +436,9 @@ impl Parser {
             None
         };
         self.expect_kind(TokenKind::Eq, "Expected `=` in `let` binding");
+        if self.check_keyword(Keyword::Do) {
+            return self.parse_perform_stmt(Some(name));
+        }
         let value = self.parse_expr(0);
         let span = span_join(start, value.span);
         Stmt::Let {
@@ -446,7 +449,7 @@ impl Parser {
         }
     }
 
-    fn parse_perform_stmt(&mut self) -> Stmt {
+    fn parse_perform_stmt(&mut self, binding: Option<SymbolId>) -> Stmt {
         let start = self.expect_keyword(Keyword::Do).span;
         let effect = self.expect_identifier("Expected effect name after `do`");
         self.expect_kind(
@@ -473,6 +476,7 @@ impl Parser {
             "Expected `)` after effect operation arguments",
         );
         Stmt::Perform {
+            binding,
             effect,
             operation,
             args,

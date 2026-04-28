@@ -164,6 +164,9 @@ pub enum Stmt {
         span: Span,
     },
     Perform {
+        /// `let x = do E.op(..)` binds the operation's result; a bare
+        /// `do E.op(..)` discards it.
+        binding: Option<SymbolId>,
         effect: SymbolId,
         operation: SymbolId,
         args: Vec<Expr>,

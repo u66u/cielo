@@ -305,6 +305,7 @@ impl Lowerer {
             },
             Perform {
                 span: Span,
+                binding: Option<VarId>,
                 effect: EffectLabelId,
                 operation: SymbolId,
                 args: Vec<cielo_base::ExprId>,
@@ -351,6 +352,7 @@ impl Lowerer {
                     }
                 }
                 AstStmt::Perform {
+                    binding,
                     effect,
                     operation,
                     args,
@@ -394,8 +396,14 @@ impl Lowerer {
                         .iter()
                         .map(|arg| self.lower_expr(arg, &locals))
                         .collect();
+                    let result = binding.map(|name| {
+                        let var = self.fresh_var();
+                        locals.insert(name, var);
+                        var
+                    });
                     actions.push(Action::Perform {
                         span: *span,
+                        binding: result,
                         effect: effect_label,
                         operation: *operation,
                         args: lowered_args,
@@ -463,12 +471,13 @@ impl Lowerer {
                 ),
                 Action::Perform {
                     span,
+                    binding,
                     effect,
                     operation,
                     args,
                 } => self.push_stmt(
                     StmtKind::Perform {
-                        result: None,
+                        result: binding,
                         effect,
                         operation,
                         args,
