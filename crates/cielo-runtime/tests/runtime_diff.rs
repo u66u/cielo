@@ -2,6 +2,7 @@ use cielo_base::Interner;
 use cielo_base::{ExprId, HandlerId, SourceId, StmtId, SymbolId, VarId};
 use cielo_ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, StmtKind, UnaryOp};
 use cielo_memory::MemoryPreset;
+use cielo_sema::SemanticTables;
 use cielo_staging::pipeline::phases::CtPropagationTables;
 use cielo_test_support::{CompiledC, PassConfig, PassHarness};
 use std::collections::HashMap;
@@ -10,13 +11,20 @@ use std::fs;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 enum OracleValue {
     Unit,
     Bool(bool),
     Int(i64),
     ResumeToken(usize),
+    Ctor {
+        variant: SymbolId,
+        fields: Vec<OracleValue>,
+    },
 }
+
+/// Guards against a non-terminating program taking the test process with it.
+const ORACLE_MAX_CALL_DEPTH: usize = 256;
 
 #[derive(Clone, Debug)]
 struct HandlerFrame {
@@ -844,6 +852,7 @@ int main(void) {{
 fn evaluator_oracle_exit_code(compiled: &CompiledC, interner: &Interner) -> Option<i32> {
     let program = compiled.residual.program();
     let ct = compiled.residual.ct();
+    let sema = compiled.residual.sema();
     let main = find_main_body(program, interner)?;
 
     let mut env = HashMap::new();
@@ -852,6 +861,7 @@ fn evaluator_oracle_exit_code(compiled: &CompiledC, interner: &Interner) -> Opti
     let value = eval_stmt(
         program,
         ct,
+        sema,
         main,
         &mut env,
         &mut handler_stack,
@@ -871,22 +881,49 @@ fn find_main_body(program: &CoreProgram, interner: &Interner) -> Option<StmtId> 
 fn eval_stmt(
     program: &CoreProgram,
     ct: &CtPropagationTables,
+    sema: &SemanticTables,
     stmt_id: StmtId,
     env: &mut HashMap<VarId, OracleValue>,
     handler_stack: &mut Vec<HandlerFrame>,
     continuations: &mut Vec<Continuation>,
 ) -> Option<OracleValue> {
+    eval_stmt_at(
+        program,
+        ct,
+        sema,
+        stmt_id,
+        env,
+        handler_stack,
+        continuations,
+        0,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_stmt_at(
+    program: &CoreProgram,
+    ct: &CtPropagationTables,
+    sema: &SemanticTables,
+    stmt_id: StmtId,
+    env: &mut HashMap<VarId, OracleValue>,
+    handler_stack: &mut Vec<HandlerFrame>,
+    continuations: &mut Vec<Continuation>,
+    depth: usize,
+) -> Option<OracleValue> {
+    if depth > ORACLE_MAX_CALL_DEPTH {
+        return None;
+    }
     let stmt = program.stmt(stmt_id)?;
     match &stmt.kind {
-        StmtKind::Return(expr) => eval_expr(program, ct, *expr, env),
+        StmtKind::Return(expr) => eval_expr(program, ct, sema, *expr, env),
         StmtKind::Let {
             binding,
             value,
             next,
         } => {
-            let value = eval_expr(program, ct, *value, env)?;
+            let value = eval_expr(program, ct, sema, *value, env)?;
             env.insert(*binding, value);
-            eval_stmt(program, ct, *next, env, handler_stack, continuations)
+            eval_stmt(program, ct, sema, *next, env, handler_stack, continuations)
         }
         StmtKind::Val {
             binding,
@@ -897,24 +934,26 @@ fn eval_stmt(
             let value = eval_stmt(
                 program,
                 ct,
+                sema,
                 *value,
                 &mut value_env,
                 handler_stack,
                 continuations,
             )?;
             env.insert(*binding, value);
-            eval_stmt(program, ct, *next, env, handler_stack, continuations)
+            eval_stmt(program, ct, sema, *next, env, handler_stack, continuations)
         }
         StmtKind::If {
             cond,
             then_branch,
             else_branch,
-        } => match eval_expr(program, ct, *cond, env)? {
+        } => match eval_expr(program, ct, sema, *cond, env)? {
             OracleValue::Bool(true) => {
                 let mut then_env = env.clone();
                 eval_stmt(
                     program,
                     ct,
+                    sema,
                     *then_branch,
                     &mut then_env,
                     handler_stack,
@@ -926,6 +965,7 @@ fn eval_stmt(
                 eval_stmt(
                     program,
                     ct,
+                    sema,
                     *else_branch,
                     &mut else_env,
                     handler_stack,
@@ -943,6 +983,7 @@ fn eval_stmt(
         } => eval_perform(
             program,
             ct,
+            sema,
             PerformSite {
                 effect: *effect,
                 operation: *operation,
@@ -960,14 +1001,15 @@ fn eval_stmt(
             arg,
             next,
         } => {
-            let arg_value = eval_expr(program, ct, *arg, env)?;
-            let resume_id = match env.get(resume).copied()? {
+            let arg_value = eval_expr(program, ct, sema, *arg, env)?;
+            let resume_id = match env.get(resume).cloned()? {
                 OracleValue::ResumeToken(id) => id,
                 _ => return None,
             };
-            let resumed = resume_continuation(program, ct, continuations, resume_id, arg_value)?;
+            let resumed =
+                resume_continuation(program, ct, sema, continuations, resume_id, arg_value)?;
             env.insert(*result, resumed);
-            eval_stmt(program, ct, *next, env, handler_stack, continuations)
+            eval_stmt(program, ct, sema, *next, env, handler_stack, continuations)
         }
         StmtKind::Handle {
             handler,
@@ -978,7 +1020,8 @@ fn eval_stmt(
                 handler: *handler,
                 captured_env: env.clone(),
             });
-            let body_value = eval_stmt(program, ct, *body, env, handler_stack, continuations)?;
+            let body_value =
+                eval_stmt(program, ct, sema, *body, env, handler_stack, continuations)?;
             handler_stack.pop();
 
             let handler_def = program.handlers().get(handler.index())?;
@@ -987,29 +1030,101 @@ fn eval_stmt(
             let handled_value = eval_stmt(
                 program,
                 ct,
+                sema,
                 handler_def.return_body,
                 &mut return_env,
                 handler_stack,
                 continuations,
             )?;
             if let Some(next_stmt) = next {
-                eval_stmt(program, ct, *next_stmt, env, handler_stack, continuations)
+                eval_stmt(
+                    program,
+                    ct,
+                    sema,
+                    *next_stmt,
+                    env,
+                    handler_stack,
+                    continuations,
+                )
             } else {
                 Some(handled_value)
             }
         }
         StmtKind::Stage { body, next, .. } => {
-            let body_value = eval_stmt(program, ct, *body, env, handler_stack, continuations)?;
+            let body_value =
+                eval_stmt(program, ct, sema, *body, env, handler_stack, continuations)?;
             if let Some(next_stmt) = next {
-                eval_stmt(program, ct, *next_stmt, env, handler_stack, continuations)
+                eval_stmt(
+                    program,
+                    ct,
+                    sema,
+                    *next_stmt,
+                    env,
+                    handler_stack,
+                    continuations,
+                )
             } else {
                 Some(body_value)
             }
         }
-        StmtKind::Call { .. }
-        | StmtKind::Match { .. }
-        | StmtKind::Hole { .. }
-        | StmtKind::Error(_) => None,
+        StmtKind::Call {
+            result,
+            callee,
+            args,
+            next,
+            ..
+        } => {
+            let mut values = Vec::with_capacity(args.len());
+            for arg in args {
+                values.push(eval_expr_at(program, ct, sema, *arg, env, depth)?);
+            }
+            let returned = eval_call(program, ct, sema, *callee, values, depth + 1)?;
+            env.insert(*result, returned);
+            eval_stmt_at(
+                program,
+                ct,
+                sema,
+                *next,
+                env,
+                handler_stack,
+                continuations,
+                depth,
+            )
+        }
+        StmtKind::Match {
+            scrutinee,
+            arms,
+            default,
+        } => {
+            let value = eval_expr_at(program, ct, sema, *scrutinee, env, depth)?;
+            let OracleValue::Ctor { variant, fields } = value else {
+                return None;
+            };
+            let arm = arms.iter().find(|arm| arm.tag == variant);
+            let body = match arm {
+                Some(arm) => {
+                    if arm.binders.len() != fields.len() {
+                        return None;
+                    }
+                    for (binder, field) in arm.binders.iter().zip(fields) {
+                        env.insert(*binder, field);
+                    }
+                    arm.body
+                }
+                None => (*default)?,
+            };
+            eval_stmt_at(
+                program,
+                ct,
+                sema,
+                body,
+                env,
+                handler_stack,
+                continuations,
+                depth,
+            )
+        }
+        StmtKind::Hole { .. } | StmtKind::Error(_) => None,
     }
 }
 
@@ -1024,6 +1139,7 @@ struct PerformSite<'a> {
 fn eval_perform(
     program: &CoreProgram,
     ct: &CtPropagationTables,
+    sema: &SemanticTables,
     site: PerformSite<'_>,
     env: &mut HashMap<VarId, OracleValue>,
     handler_stack: &mut [HandlerFrame],
@@ -1031,7 +1147,7 @@ fn eval_perform(
 ) -> Option<OracleValue> {
     let mut arg_values = Vec::with_capacity(site.args.len());
     for arg in site.args {
-        arg_values.push(eval_expr(program, ct, *arg, env)?);
+        arg_values.push(eval_expr(program, ct, sema, *arg, env)?);
     }
 
     let mut selected = None;
@@ -1067,7 +1183,7 @@ fn eval_perform(
     });
 
     let mut clause_env = frame.captured_env;
-    for (param, value) in clause.params.iter().zip(arg_values.iter().copied()) {
+    for (param, value) in clause.params.iter().zip(arg_values.iter().cloned()) {
         clause_env.insert(*param, value);
     }
     if let Some(resume_param) = clause.resume_param {
@@ -1078,6 +1194,7 @@ fn eval_perform(
     eval_stmt(
         program,
         ct,
+        sema,
         clause.body,
         &mut clause_env,
         &mut clause_stack,
@@ -1088,6 +1205,7 @@ fn eval_perform(
 fn resume_continuation(
     program: &CoreProgram,
     ct: &CtPropagationTables,
+    sema: &SemanticTables,
     continuations: &mut Vec<Continuation>,
     continuation_id: usize,
     arg: OracleValue,
@@ -1111,6 +1229,7 @@ fn resume_continuation(
     eval_stmt(
         program,
         ct,
+        sema,
         next,
         &mut env,
         &mut handler_stack,
@@ -1121,29 +1240,111 @@ fn resume_continuation(
 fn eval_expr(
     program: &CoreProgram,
     ct: &CtPropagationTables,
+    sema: &SemanticTables,
     expr_id: ExprId,
     env: &HashMap<VarId, OracleValue>,
 ) -> Option<OracleValue> {
+    eval_expr_at(program, ct, sema, expr_id, env, 0)
+}
+
+fn eval_expr_at(
+    program: &CoreProgram,
+    ct: &CtPropagationTables,
+    sema: &SemanticTables,
+    expr_id: ExprId,
+    env: &HashMap<VarId, OracleValue>,
+    depth: usize,
+) -> Option<OracleValue> {
+    if depth > ORACLE_MAX_CALL_DEPTH {
+        return None;
+    }
     let expr = program.expr(expr_id)?;
-    let direct = match &expr.kind {
+    match &expr.kind {
         ExprKind::Literal(literal) => literal_to_oracle(literal),
-        ExprKind::Var(var) => env.get(var).copied(),
+        ExprKind::Var(var) => env.get(var).cloned(),
         ExprKind::Unary { op, expr } => {
-            let value = eval_expr(program, ct, *expr, env)?;
+            let value = eval_expr_at(program, ct, sema, *expr, env, depth)?;
             eval_unary(*op, value)
         }
         ExprKind::Binary { op, lhs, rhs } => {
-            let left = eval_expr(program, ct, *lhs, env)?;
-            let right = eval_expr(program, ct, *rhs, env)?;
+            let left = eval_expr_at(program, ct, sema, *lhs, env, depth)?;
+            let right = eval_expr_at(program, ct, sema, *rhs, env, depth)?;
             eval_binary(*op, left, right)
         }
-        ExprKind::PureCall { .. }
-        | ExprKind::MakeStruct { .. }
-        | ExprKind::MakeEnum { .. }
-        | ExprKind::Field { .. }
-        | ExprKind::Error(_) => None,
-    };
-    direct.or_else(|| ct.ct_cache.get(&expr_id).and_then(literal_to_oracle))
+        ExprKind::MakeStruct { fields, .. } => {
+            let mut values = Vec::with_capacity(fields.len());
+            for field in fields {
+                values.push(eval_expr_at(program, ct, sema, *field, env, depth)?);
+            }
+            Some(OracleValue::Ctor {
+                variant: SymbolId::INVALID,
+                fields: values,
+            })
+        }
+        ExprKind::MakeEnum {
+            variant, fields, ..
+        } => {
+            let mut values = Vec::with_capacity(fields.len());
+            for field in fields {
+                values.push(eval_expr_at(program, ct, sema, *field, env, depth)?);
+            }
+            Some(OracleValue::Ctor {
+                variant: *variant,
+                fields: values,
+            })
+        }
+        ExprKind::Field { base, .. } => {
+            let index = *sema.field_index_of_expr.get(&expr_id)?;
+            match eval_expr_at(program, ct, sema, *base, env, depth)? {
+                OracleValue::Ctor { fields, .. } => fields.get(index as usize).cloned(),
+                _ => None,
+            }
+        }
+        ExprKind::PureCall { callee, args } => {
+            let mut values = Vec::with_capacity(args.len());
+            for arg in args {
+                values.push(eval_expr_at(program, ct, sema, *arg, env, depth)?);
+            }
+            eval_call(program, ct, sema, *callee, values, depth + 1)
+        }
+        ExprKind::Error(_) => None,
+    }
+}
+
+/// Evaluates a call by binding parameters and running the callee body. Only
+/// effect-free bodies succeed; anything that performs returns `None` because
+/// there is no handler stack in this context.
+fn eval_call(
+    program: &CoreProgram,
+    ct: &CtPropagationTables,
+    sema: &SemanticTables,
+    callee: cielo_base::FuncId,
+    args: Vec<OracleValue>,
+    depth: usize,
+) -> Option<OracleValue> {
+    if depth > ORACLE_MAX_CALL_DEPTH {
+        return None;
+    }
+    let function = program.function(callee)?;
+    if function.params.len() != args.len() {
+        return None;
+    }
+    let mut env = HashMap::new();
+    for (param, value) in function.params.iter().zip(args) {
+        env.insert(*param, value);
+    }
+    let mut handler_stack = Vec::new();
+    let mut continuations = Vec::new();
+    eval_stmt_at(
+        program,
+        ct,
+        sema,
+        function.body,
+        &mut env,
+        &mut handler_stack,
+        &mut continuations,
+        depth,
+    )
 }
 
 fn eval_unary(op: UnaryOp, value: OracleValue) -> Option<OracleValue> {
@@ -1227,7 +1428,7 @@ fn oracle_value_to_exit_code(value: OracleValue) -> Option<i32> {
             }
         }
         OracleValue::Int(value) => value as i32,
-        OracleValue::ResumeToken(_) => return None,
+        OracleValue::ResumeToken(_) | OracleValue::Ctor { .. } => return None,
     };
     Some((code as u8) as i32)
 }
