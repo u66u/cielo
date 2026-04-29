@@ -1,6 +1,7 @@
 use cielo_base::Interner;
 use cielo_base::{ExprId, HandlerId, SourceId, StmtId, SymbolId, VarId};
 use cielo_ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, StmtKind, UnaryOp};
+use cielo_memory::MemoryPreset;
 use cielo_staging::pipeline::phases::CtPropagationTables;
 use cielo_test_support::{CompiledC, PassConfig, PassHarness};
 use std::collections::HashMap;
@@ -407,6 +408,91 @@ fn main() -> Int {
             actual, expected,
             "runtime/evaluator mismatch for case {}",
             case.name
+        );
+    }
+}
+
+/// The memory strategy must not change what a program computes. This is the
+/// check that catches an ARC pass which moves a value it does not own: the
+/// refcounts stay balanced and ASan stays quiet, only the answer differs.
+#[test]
+fn every_memory_preset_produces_the_same_exit_code() {
+    if !c_compiler_available() {
+        eprintln!("skipping memory preset differential: no C compiler found");
+        return;
+    }
+
+    let cases = [
+        (
+            "shared_ctor_read_twice",
+            r#"
+enum Wrap { W(Int) }
+fn take(w: Wrap) -> Int {
+  match w {
+    W(x) => x
+  }
+}
+fn main() -> Int {
+  let a = W(1);
+  take(a) + take(a)
+}
+"#,
+        ),
+        (
+            "nested_ctor_projection",
+            r#"
+struct Pair { a: Int, b: Int }
+fn main() -> Int {
+  let p = Pair(10, 32);
+  p.a + p.b
+}
+"#,
+        ),
+        (
+            "ctor_through_handler",
+            r#"
+effect St { fn note(n: Int) -> Int }
+enum Box { B(Int) }
+fn main() -> Int {
+  let out = handle {
+    let v = do St.note(7);
+    v
+  } with St {
+    | note(n, resume) => resume(n + 1)
+  };
+  match B(out) {
+    B(x) => x
+  }
+}
+"#,
+        ),
+    ];
+
+    let presets = [
+        ("unmanaged", MemoryPreset::Unmanaged),
+        ("arc_raw", MemoryPreset::ArcRaw),
+        ("arc_optimized", MemoryPreset::ArcOptimized),
+    ];
+
+    for (case_index, (name, source)) in cases.iter().enumerate() {
+        let mut exits = Vec::new();
+        for (preset_index, (preset_name, preset)) in presets.iter().enumerate() {
+            let compiler = PassHarness::new(PassConfig::default().with_memory_preset(*preset));
+            let mut interner = Interner::new();
+            let source_id = SourceId::from_u32((20_000 + case_index * 10 + preset_index) as u32);
+            let compiled = compiler.compile_source_to_c(source, source_id, &mut interner);
+            assert!(
+                !compiled.residual.diagnostics().has_errors(),
+                "case {name} failed to compile under {preset_name}"
+            );
+            let exit = compile_and_run_c_exit_code(name, &compiled.c_source);
+            exits.push((*preset_name, exit));
+        }
+
+        let (_, first_exit) = exits[0];
+        assert!(
+            exits.iter().all(|(_, exit)| *exit == first_exit),
+            "memory presets disagree on case {name}: {exits:?}"
         );
     }
 }
