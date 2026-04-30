@@ -116,6 +116,8 @@ pub fn run(cfg: &mut CfgProgram, managed: &[bool], config: &ArcConfig) -> ArcSta
         target.terminator_arc.post = post;
     }
 
+    plan_edge_drops(cfg, &liveness, managed, &borrowed_binders, &mut stats);
+
     stats
 }
 
@@ -313,6 +315,101 @@ fn direct_value(cfg: &CfgProgram, expression: CfgExprId) -> Option<CfgValueId> {
     match &cfg.expr(expression)?.kind {
         CfgExpr::Value(value) => Some(*value),
         _ => None,
+    }
+}
+
+/// Releases values kept alive only by a sibling branch.
+///
+/// `live_out(B)` is the union of its successors' `live_in`, so a value used by
+/// one arm and not another is live out of `B` and never released on the arm
+/// that does not use it. A single-successor edge can never have a drop set for
+/// the same reason, so only branching terminators need this.
+///
+/// Drops go on a block interposed on the edge rather than on the terminator,
+/// because the terminator is shared by every outgoing edge.
+fn plan_edge_drops(
+    cfg: &mut CfgProgram,
+    liveness: &CfgLiveness,
+    managed: &[bool],
+    borrowed_binders: &HashSet<CfgValueId>,
+    stats: &mut ArcStats,
+) {
+    for block in cfg.blocks().to_vec() {
+        let edges = block.terminator.successors_with_arity();
+        if edges.len() < 2 {
+            continue;
+        }
+        let live_out = liveness.live_out(block.id).cloned().unwrap_or_default();
+
+        let mut rewrites: Vec<(CfgBlockId, CfgBlockId)> = Vec::new();
+        for (target, arity) in edges {
+            let target_live_in = liveness.live_in(target).cloned().unwrap_or_default();
+            let drops = live_out
+                .iter()
+                .copied()
+                .filter(|value| {
+                    !target_live_in.contains(value)
+                        && is_managed(managed, *value)
+                        && !borrowed_binders.contains(value)
+                })
+                .collect::<Vec<_>>();
+            if drops.is_empty() {
+                continue;
+            }
+
+            let params = (0..arity).map(|_| cfg.push_value(None)).collect::<Vec<_>>();
+            let args = params
+                .iter()
+                .map(|param| cfg.push_expr(CfgExpr::Value(*param), None))
+                .collect::<Vec<_>>();
+            let edge_block = cfg.push_block(params, None);
+            cfg.set_terminator(edge_block, CfgTerminator::Goto { target, args });
+            let edge = cfg.block_mut(edge_block).expect("fresh CFG block");
+            for value in drops {
+                edge.entry_arc.push(release(value));
+                bump_release(stats);
+            }
+            rewrites.push((target, edge_block));
+        }
+
+        if rewrites.is_empty() {
+            continue;
+        }
+        let mut terminator = block.terminator.clone();
+        redirect_edges(&mut terminator, &rewrites);
+        cfg.set_terminator(block.id, terminator);
+    }
+}
+
+/// Each original target is redirected at most once, so an arm and the default
+/// sharing a target still get their own edge block.
+fn redirect_edges(terminator: &mut CfgTerminator, rewrites: &[(CfgBlockId, CfgBlockId)]) {
+    let mut remaining = rewrites.to_vec();
+    let mut take = |target: &mut CfgBlockId| {
+        if let Some(index) = remaining.iter().position(|(from, _)| from == target) {
+            *target = remaining.remove(index).1;
+        }
+    };
+    match terminator {
+        CfgTerminator::Branch {
+            then_target,
+            else_target,
+            ..
+        } => {
+            take(then_target);
+            take(else_target);
+        }
+        CfgTerminator::Match { arms, default, .. } => {
+            for arm in arms.iter_mut() {
+                take(&mut arm.target);
+            }
+            take(default);
+        }
+        CfgTerminator::Goto { .. }
+        | CfgTerminator::Call { .. }
+        | CfgTerminator::Perform { .. }
+        | CfgTerminator::Return(_)
+        | CfgTerminator::Unreachable => {}
     }
 }
 

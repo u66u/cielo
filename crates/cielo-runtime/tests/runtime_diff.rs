@@ -457,6 +457,26 @@ fn main() -> Int {
 "#,
         ),
         (
+            // `q` is live only on the else path. Before edge drops existed it
+            // was never released on the taken path: ASan reported 64 bytes.
+            "value_live_on_one_branch_only",
+            r#"
+enum Box { B(Int) }
+fn pick(flag: Bool, x: Box, y: Box) -> Int {
+  if flag {
+    match x { B(a) => a }
+  } else {
+    match y { B(b) => b }
+  }
+}
+fn main() -> Int {
+  let p = B(3);
+  let q = B(4);
+  pick(true, p, q)
+}
+"#,
+        ),
+        (
             "ctor_through_handler",
             r#"
 effect St { fn note(n: Int) -> Int }
@@ -494,6 +514,9 @@ fn main() -> Int {
                 "case {name} failed to compile under {preset_name}"
             );
             let exit = compile_and_run_c_exit_code(name, &compiled.c_source);
+            if *preset != MemoryPreset::Unmanaged {
+                assert_arc_balanced(&format!("{name}_{preset_name}"), &compiled.c_source);
+            }
             exits.push((*preset_name, exit));
         }
 
@@ -1444,6 +1467,36 @@ fn c_compiler_available() -> bool {
 
 fn c_compiler_command() -> OsString {
     std::env::var_os("CC").unwrap_or_else(|| OsString::from("cc"))
+}
+
+/// Runs the program and fails if any constructor outlives it. The emitted
+/// `main` is renamed so a wrapper can read the ARC counters after it returns.
+fn assert_arc_balanced(case_name: &str, c_source: &str) {
+    const WRAPPER: &str = concat!(
+        "\nint cielo_checked_entry(void);\n",
+        "int main(void) {\n",
+        "  int code = cielo_checked_entry();\n",
+        "  CieloArcStats stats = cielo_arc_stats_snapshot();\n",
+        "  if (stats.ctor_allocations != stats.ctor_frees) {\n",
+        "    fprintf(stderr, \"arc imbalance: %llu allocations, %llu frees\\n\",\n",
+        "            (unsigned long long)stats.ctor_allocations,\n",
+        "            (unsigned long long)stats.ctor_frees);\n",
+        "    return 90;\n",
+        "  }\n",
+        "  return code;\n",
+        "}\n",
+    );
+    let renamed = c_source.replace("int main(void) {", "int cielo_checked_entry(void) {");
+    assert!(
+        renamed != c_source,
+        "case {case_name}: emitted C has no `int main(void)` to rename"
+    );
+    let instrumented = format!("{renamed}{WRAPPER}");
+    let code = compile_and_run_c_exit_code(&format!("{case_name}_arcbalance"), &instrumented);
+    assert_ne!(
+        code, 90,
+        "case {case_name} leaked constructors: allocations != frees"
+    );
 }
 
 fn compile_and_run_c_exit_code(case_name: &str, c_source: &str) -> i32 {

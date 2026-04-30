@@ -350,7 +350,7 @@ impl CfgTerminator {
             .collect()
     }
 
-    fn successors_with_arity(&self) -> Vec<(CfgBlockId, usize)> {
+    pub fn successors_with_arity(&self) -> Vec<(CfgBlockId, usize)> {
         match self {
             Self::Return(_) | Self::Unreachable => Vec::new(),
             Self::Goto { target, args } => vec![(*target, args.len())],
