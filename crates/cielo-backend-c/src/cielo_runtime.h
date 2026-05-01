@@ -616,7 +616,7 @@ static CieloValue cielo_perform_scoped(uint32_t effect,
                                          &dispatched)) {
           return dispatched;
         }
-        return cv_unit();
+        cielo_trap("handler has no clause for this operation");
       }
     }
     // Scoped performs must not fall back to another handler instance with the
@@ -630,7 +630,7 @@ static CieloValue cielo_perform_scoped(uint32_t effect,
                                        &dispatched)) {
         return dispatched;
       }
-      return cv_unit();
+      cielo_trap("handler has no clause for this operation");
     }
   }
 #ifdef CIELO_OP_SYMBOL_PRINT
