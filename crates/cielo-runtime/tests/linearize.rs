@@ -65,6 +65,32 @@ fn main() -> Int {
     );
 }
 
+/// Randomised call chains of varying depth, each with the perform at the far
+/// end. Every one must be rejected: inlining cannot see through a call, and
+/// before this was detected the handler frame was silently dropped.
+#[test]
+fn rejects_transitive_performs_at_every_call_depth() {
+    for depth in 1..=6 {
+        let mut source = String::from("effect St { fn note(n: Int) -> Int }\n\n");
+        source.push_str("fn level0(x: Int) -> Int with St {\n  do St.note(x);\n  x + 1\n}\n\n");
+        for level in 1..=depth {
+            let callee = level - 1;
+            source.push_str(&format!(
+                "fn level{level}(x: Int) -> Int with St {{\n  let a = level{callee}(x);\n  a + {level}\n}}\n\n"
+            ));
+        }
+        source.push_str(&format!(
+            "fn main() -> Int {{\n  let out = handle {{ level{depth}(3) }} with St {{\n    | note(n) => 100\n  }};\n  out\n}}\n"
+        ));
+
+        let codes = linearize_diagnostic_codes(&source);
+        assert!(
+            codes.iter().any(|c| c == "LINEARIZE_HANDLED_EFFECT_LEAK"),
+            "depth {depth} should be rejected, got {codes:?}"
+        );
+    }
+}
+
 #[test]
 fn accepts_handled_effect_performed_in_the_handled_function() {
     let codes = linearize_diagnostic_codes(
