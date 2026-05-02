@@ -643,7 +643,9 @@ static CieloValue cielo_perform_scoped(uint32_t effect,
     cv_print(args[0]);
     return cv_unit();
   }
-  return cv_unit();
+  /* An effect escaped every handler. Returning unit would make that
+   * indistinguishable from a handler that ran and produced unit. */
+  cielo_trap("effect performed with no handler in scope");
 }
 
 /* One allocation per constructor: fields live in the tail of the same block.

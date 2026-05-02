@@ -91,6 +91,39 @@ fn rejects_transitive_performs_at_every_call_depth() {
     }
 }
 
+/// A nested handler shadows the enclosing one only for its own effect. Before
+/// the inliner carried a handler stack, the outer handler was dropped inside
+/// the nested block and its effect escaped unrewritten.
+#[test]
+fn discharges_an_outer_effect_performed_inside_a_nested_handler() {
+    let codes = linearize_diagnostic_codes(
+        r#"
+effect A { fn ping() -> Int }
+effect B { fn pong() -> Int }
+
+fn main() -> Int {
+  let r = handle {
+    let inner = handle {
+      let a = do A.ping();
+      let b = do B.pong();
+      a + b
+    } with A {
+      | ping(resume) => resume(1)
+    };
+    inner
+  } with B {
+    | pong(resume) => resume(2)
+  };
+  r
+}
+"#,
+    );
+    assert!(
+        !codes.iter().any(|c| c == "LINEARIZE_HANDLED_EFFECT_LEAK"),
+        "the outer handler must still apply inside the nested block, got {codes:?}"
+    );
+}
+
 #[test]
 fn accepts_handled_effect_performed_in_the_handled_function() {
     let codes = linearize_diagnostic_codes(
