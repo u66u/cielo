@@ -291,7 +291,7 @@ fn emit_terminator(
             writeln!(out, "    CieloValue {temp} = {selector};").expect("in-memory write");
             emit_arc_ops(out, &arc.post, 1, cx, "term-post", block.as_u32());
             // A dense case list lets the C compiler pick a jump table.
-            writeln!(out, "    switch ((int){temp}.as.i) {{").expect("in-memory write");
+            writeln!(out, "    switch (cv_switch_index({temp})) {{").expect("in-memory write");
             for (index, target) in targets.iter().enumerate() {
                 writeln!(out, "        case {index}: goto b{};", target.as_u32())
                     .expect("in-memory write");

@@ -2,13 +2,13 @@
 //! would notice output that is not valid C at all. This runs a real compiler
 //! over it.
 
-use cielo_base::{CfgFuncId, Interner, SourceId};
+use cielo_base::{CfgExprId, CfgFuncId, Interner, SourceId};
 use cielo_ir::cfg::{CfgExpr, CfgFunction, CfgProgram, CfgTerminator};
 use cielo_ir::constants::ConstantTable;
 use cielo_ir::core::{BinaryOp, Literal};
 use cielo_test_support::{PassConfig, PassHarness};
 use std::ffi::OsString;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
 fn c_compiler_command() -> OsString {
     std::env::var_os("CC").unwrap_or_else(|| OsString::from("cc"))
@@ -156,18 +156,12 @@ fn emitted_c_passes_a_real_compiler_syntax_check() {
 
 /// Nothing lowers to `Switch` yet, so the only way to exercise its emission is
 /// to hand-build a CFG. `main` returns the arm the selector picks.
-fn switch_program(interner: &mut Interner) -> CfgProgram {
+fn switch_program(
+    interner: &mut Interner,
+    selector: impl FnOnce(&mut CfgProgram) -> CfgExprId,
+) -> CfgProgram {
     let mut cfg = CfgProgram::default();
-    let lhs = cfg.push_expr(CfgExpr::Literal(Literal::Int(1)), None);
-    let rhs = cfg.push_expr(CfgExpr::Literal(Literal::Int(1)), None);
-    let selector = cfg.push_expr(
-        CfgExpr::Binary {
-            op: BinaryOp::Add,
-            lhs,
-            rhs,
-        },
-        None,
-    );
+    let selector = selector(&mut cfg);
 
     let targets = [10, 20, 30]
         .into_iter()
@@ -203,28 +197,18 @@ fn switch_program(interner: &mut Interner) -> CfgProgram {
     cfg
 }
 
-#[test]
-fn switch_terminator_emits_c_that_dispatches_on_the_selector() {
-    let mut interner = Interner::new();
-    let cfg = switch_program(&mut interner);
-    assert_eq!(cfg.validate(), Ok(()));
-
-    let c_source = cielo_backend_c::emit(&cfg, &interner, &ConstantTable::default(), false);
-    assert!(
-        c_source.contains("switch ((int)"),
-        "switch terminator should emit a C switch:\n{c_source}"
-    );
-
+/// `None` when no C compiler is installed, so callers skip rather than fail.
+fn compile_and_run(c_source: &str, name: &str) -> Option<Output> {
     if !c_compiler_available() {
-        eprintln!("skipping switch execution check: no C compiler found");
-        return;
+        eprintln!("skipping {name} execution check: no C compiler found");
+        return None;
     }
 
-    let dir = std::env::temp_dir().join(format!("cielo_backend_switch_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("cielo_backend_{name}_{}", std::process::id()));
     std::fs::create_dir_all(dir.as_path()).expect("temp dir");
-    let source = dir.join("switch.c");
-    let binary = dir.join("switch");
-    std::fs::write(source.as_path(), c_source.as_str()).expect("write emitted C");
+    let source = dir.join(format!("{name}.c"));
+    let binary = dir.join(name);
+    std::fs::write(source.as_path(), c_source).expect("write emitted C");
 
     let build = Command::new(c_compiler_command())
         .arg("-std=c11")
@@ -237,16 +221,70 @@ fn switch_terminator_emits_c_that_dispatches_on_the_selector() {
         .expect("invoke C compiler");
     assert!(
         build.status.success(),
-        "emitted switch does not compile:\n{}",
+        "emitted C for {name} does not compile:\n{}",
         String::from_utf8_lossy(build.stderr.as_slice())
     );
 
-    let run = Command::new(binary.as_path()).status().expect("run binary");
+    let run = Command::new(binary.as_path()).output().expect("run binary");
+    let _ = std::fs::remove_dir_all(dir.as_path());
+    Some(run)
+}
+
+#[test]
+fn switch_terminator_emits_c_that_dispatches_on_the_selector() {
+    let mut interner = Interner::new();
+    let cfg = switch_program(&mut interner, |cfg| {
+        let lhs = cfg.push_expr(CfgExpr::Literal(Literal::Int(1)), None);
+        let rhs = cfg.push_expr(CfgExpr::Literal(Literal::Int(1)), None);
+        cfg.push_expr(
+            CfgExpr::Binary {
+                op: BinaryOp::Add,
+                lhs,
+                rhs,
+            },
+            None,
+        )
+    });
+    assert_eq!(cfg.validate(), Ok(()));
+
+    let c_source = cielo_backend_c::emit(&cfg, &interner, &ConstantTable::default(), false);
+    assert!(
+        c_source.contains("switch (cv_switch_index("),
+        "switch terminator should emit a C switch:\n{c_source}"
+    );
+
+    let Some(run) = compile_and_run(c_source.as_str(), "switch") else {
+        return;
+    };
     assert_eq!(
-        run.code(),
+        run.status.code(),
         Some(30),
         "selector 1 + 1 should reach the third case"
     );
+}
 
-    let _ = std::fs::remove_dir_all(dir.as_path());
+/// The selector is read through an accessor rather than `.as.i` so that a
+/// mistyped selector aborts instead of jumping to whatever case the other
+/// union member's bits happen to name.
+#[test]
+fn switch_traps_on_a_non_integer_selector() {
+    let mut interner = Interner::new();
+    let cfg = switch_program(&mut interner, |cfg| {
+        cfg.push_expr(CfgExpr::Literal(Literal::Bool(true)), None)
+    });
+
+    let c_source = cielo_backend_c::emit(&cfg, &interner, &ConstantTable::default(), false);
+    let Some(run) = compile_and_run(c_source.as_str(), "switchtrap") else {
+        return;
+    };
+    assert_eq!(
+        run.status.code(),
+        None,
+        "a non-integer selector should abort, not return a case"
+    );
+    let stderr = String::from_utf8_lossy(run.stderr.as_slice());
+    assert!(
+        stderr.contains("switch selector is not an integer"),
+        "expected the selector trap, got: {stderr}"
+    );
 }

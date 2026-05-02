@@ -386,6 +386,14 @@ static inline bool cv_truthy(CieloValue v) {
   }
 }
 
+/* Returns int64_t, not int: narrowing here would alias a selector above
+ * INT_MAX onto a live case label. */
+static inline int64_t cv_switch_index(CieloValue v) {
+  if (v.tag != CV_INT)
+    cielo_trap("switch selector is not an integer");
+  return v.as.i;
+}
+
 /* Arithmetic dispatches on the tag. Reading `.as.i` unconditionally treats a
  * double's bit pattern as an integer, which is why CV_FLOAT could never be
  * computed with. The int case is first because it is the only one the current
