@@ -17,10 +17,11 @@ use cielo_sema::SemanticTables;
 
 use super::analysis::{
     analyze_clause_resume, classify_clause_convention, core_stmt_calls_performing_effect,
-    is_identity_handler_return_clause, is_identity_return_of_var,
-    linear_stmt_contains_perform_effect, resume_convention_reason, stmt_effect_row_contains,
+    fresh_var_base, is_identity_handler_return_clause, is_identity_return_of_var,
+    linear_stmt_contains_perform_effect, resume_convention_reason, resume_strategy,
+    stmt_effect_row_contains,
 };
-use super::types::{ClauseConvention, ResumeContext, ResumeQualifier};
+use super::types::{ClauseConvention, ResumeContext, ResumeQualifier, ResumeStrategy};
 
 struct LoweringInput<'a> {
     program: &'a CoreProgram,
@@ -40,10 +41,10 @@ impl LoweringInput<'_> {
     }
 }
 
-/// `lower_stmt_under_handlers` re-lowers the continuation at every `Resume`
-/// rather than sharing it, so nested resumptive handlers expand as 2^n. Without
-/// a ceiling a handful of nesting levels emits tens of megabytes of C with no
-/// diagnostic. Sized well above any realistic program.
+/// Clauses that cannot be join-merged still re-lower the continuation at every
+/// `Resume` rather than sharing it, so they expand as k^n. Without a ceiling a
+/// handful of nesting levels emits tens of megabytes of C with no diagnostic.
+/// Sized well above any realistic program.
 const HANDLER_INLINE_STMT_BUDGET: usize = 200_000;
 
 struct LoweringState<'a> {
@@ -52,9 +53,16 @@ struct LoweringState<'a> {
     expr_map: &'a mut [Option<LinearExprId>],
     stmt_map: &'a mut [Option<LinearStmtId>],
     inline_budget_exhausted: bool,
+    next_var: u32,
 }
 
 impl LoweringState<'_> {
+    fn fresh_var(&mut self) -> VarId {
+        let var = VarId::from_u32(self.next_var);
+        self.next_var += 1;
+        var
+    }
+
     /// True once expansion has been abandoned. Reported once so a deeply
     /// nested program does not bury the log in identical errors.
     fn inline_budget_exceeded(&mut self, span: Span) -> bool {
@@ -116,6 +124,7 @@ pub(super) fn lower_program(
             expr_map: &mut expr_map,
             stmt_map: &mut stmt_map,
             inline_budget_exhausted: false,
+            next_var: fresh_var_base(program),
         };
 
         for source_id in reachable {
@@ -441,13 +450,29 @@ fn lower_stmt_under_handlers(
                         clause.span,
                     );
                 }
+                let strategy = resume_strategy(resume_analysis);
                 let clause_resume_ctx = clause.resume_param.map(|resume_var| ResumeContext {
                     resume_var,
                     perform_result: *result,
                     continuation: *next,
                     clause_convention,
+                    strategy,
                 });
-                lower_matching_clause(input, clause, args, handlers, clause_resume_ctx, state)
+                let lowered_clause =
+                    lower_matching_clause(input, clause, args, handlers, clause_resume_ctx, state);
+                match strategy {
+                    ResumeStrategy::Inline => lowered_clause,
+                    ResumeStrategy::Join => {
+                        let continuation =
+                            lower_stmt_under_handlers(input, *next, handlers, state, None);
+                        let binding = result.unwrap_or_else(|| state.fresh_var());
+                        state.linear.push_stmt(LinearStmt::Val {
+                            binding,
+                            value: lowered_clause,
+                            next: continuation,
+                        })
+                    }
+                }
             } else {
                 state.diagnostics.error(
                     "LINEARIZE_MISSING_HANDLER_CLAUSE",
@@ -471,6 +496,13 @@ fn lower_stmt_under_handlers(
                 );
                 return lower_stmt_under_handlers(input, *next, handlers, state, resume_ctx);
             };
+
+            if matches!(active_ctx.strategy, ResumeStrategy::Join) {
+                // Tail-resumptive by construction, so `next` is `return result`
+                // and the enclosing join already carries the continuation.
+                let arg_expr = lower_expr(input, *arg, state);
+                return state.linear.push_stmt(LinearStmt::Return(arg_expr));
+            }
 
             let continuation =
                 lower_stmt_under_handlers(input, active_ctx.continuation, handlers, state, None);

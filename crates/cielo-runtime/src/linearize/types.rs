@@ -6,6 +6,18 @@ pub(super) struct ResumeContext {
     pub(super) perform_result: Option<VarId>,
     pub(super) continuation: StmtId,
     pub(super) clause_convention: ClauseConvention,
+    pub(super) strategy: ResumeStrategy,
+}
+
+/// How a clause's `resume` sites reach the handled continuation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum ResumeStrategy {
+    /// Re-lower the continuation at every site. A clause with `k` sites over a
+    /// body with `n` performs then expands as `k^n`.
+    Inline,
+    /// Every site returns into one `Val` join that binds the continuation once
+    /// (Maurer et al., "Compiling without Continuations", PLDI 2017).
+    Join,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -36,6 +48,9 @@ pub(super) struct ClauseResumeAnalysis {
     pub(super) min_uses: ResumeUseBound,
     pub(super) max_uses: ResumeUseBound,
     pub(super) tail_resumptive: bool,
+    /// Syntactic `resume` occurrences, unlike `min_uses`/`max_uses`, which
+    /// bound how many run on one path.
+    pub(super) sites: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
