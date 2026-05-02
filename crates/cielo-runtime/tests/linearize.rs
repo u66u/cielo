@@ -2,7 +2,12 @@ use cielo_base::{Interner, SourceId};
 use cielo_runtime::linearize;
 use cielo_test_support::{PassConfig, PassHarness};
 
-fn linearize_diagnostic_codes(source: &str) -> Vec<String> {
+struct Linearized {
+    stmts: usize,
+    codes: Vec<String>,
+}
+
+fn linearize_source(source: &str) -> Linearized {
     let harness = PassHarness::new(PassConfig::default());
     let mut interner = Interner::new();
     let mut residual = harness.compile_source(source, SourceId::from_u32(0), &mut interner);
@@ -19,17 +24,24 @@ fn linearize_diagnostic_codes(source: &str) -> Vec<String> {
 
     let sema = residual.sema().clone();
     let before = residual.diagnostics().entries().len();
-    {
+    let stmts = {
         let (program, diagnostics) = residual.program_and_diagnostics_mut();
-        let _ = linearize::run(program, &sema, diagnostics);
+        linearize::run(program, &sema, diagnostics).stmts().len()
+    };
+    Linearized {
+        stmts,
+        codes: residual
+            .diagnostics()
+            .entries()
+            .iter()
+            .skip(before)
+            .map(|d| d.code.to_owned())
+            .collect(),
     }
-    residual
-        .diagnostics()
-        .entries()
-        .iter()
-        .skip(before)
-        .map(|d| d.code.to_owned())
-        .collect()
+}
+
+fn linearize_diagnostic_codes(source: &str) -> Vec<String> {
+    linearize_source(source).codes
 }
 
 /// A perform reachable only through a call cannot be inlined away, and before
@@ -146,5 +158,95 @@ fn main() -> Int {
     assert!(
         !codes.iter().any(|c| c == "LINEARIZE_HANDLED_EFFECT_LEAK"),
         "a lexically visible perform is discharged by inlining, got {codes:?}"
+    );
+}
+
+/// `performs` sequential performs of one operation, all discharged by `clause`.
+fn handled_perform_chain(performs: usize, clause: &str) -> String {
+    let body: String = (1..=performs)
+        .map(|nth| format!("  do St.tick({nth});\n"))
+        .collect();
+    format!(
+        "effect St {{ fn tick(n: Int) -> Int }}\n\n\
+         fn body(x: Int) -> Int with St {{\n{body}  x\n}}\n\n\
+         fn main() -> Int {{\n  \
+         let r = handle {{ body(7) }} with St {{\n    {clause}\n  }};\n  r\n}}\n"
+    )
+}
+
+fn growth_steps(counts: &[usize]) -> Vec<usize> {
+    counts.windows(2).map(|pair| pair[1] - pair[0]).collect()
+}
+
+/// Re-lowering the continuation at every `resume` made a two-site clause expand
+/// as 2^performs: 12 performs emitted 148k lines of C and 16 blew the inline
+/// budget. Merging the sites into one join point makes growth linear.
+#[test]
+fn merges_tail_resume_sites_into_one_join() {
+    let counts: Vec<usize> = [4, 8, 12, 16]
+        .into_iter()
+        .map(|performs| {
+            let lowered = linearize_source(&handled_perform_chain(
+                performs,
+                "| tick(n, resume) => if n > 0 { resume(1) } else { resume(2) }",
+            ));
+            assert!(
+                !lowered
+                    .codes
+                    .iter()
+                    .any(|code| code == "LINEARIZE_INLINE_BUDGET_EXCEEDED"),
+                "{performs} performs must stay inside the inline budget, got {:?}",
+                lowered.codes
+            );
+            lowered.stmts
+        })
+        .collect();
+
+    let steps = growth_steps(&counts);
+    assert!(
+        steps.windows(2).all(|pair| pair[0] == pair[1]),
+        "statement count must grow linearly in the perform count, got {counts:?}"
+    );
+}
+
+/// Merging is unsound when an arm performs before it resumes: the join would
+/// hoist that perform past the continuation. Such a clause keeps the inlining
+/// path, and stays super-linear, which is what the budget exists to catch.
+#[test]
+fn leaves_a_clause_that_performs_before_resuming_alone() {
+    let counts: Vec<usize> = [2, 3, 4]
+        .into_iter()
+        .map(|performs| {
+            let ticks: String = (1..=performs)
+                .map(|nth| format!("      do St.tick({nth});\n"))
+                .collect();
+            linearize_source(&format!(
+                r#"
+effect St {{ fn tick(n: Int) -> Int }}
+effect Log {{ fn emit(n: Int) -> Int }}
+
+fn main() -> Int {{
+  let r = handle {{
+    let inner = handle {{
+{ticks}      7
+    }} with St {{
+      | tick(n, resume) => if n > 0 {{ let e = do Log.emit(n); resume(e) }} else {{ resume(2) }}
+    }};
+    inner
+  }} with Log {{
+    | emit(m, resume) => resume(m)
+  }};
+  r
+}}
+"#
+            ))
+            .stmts
+        })
+        .collect();
+
+    let steps = growth_steps(&counts);
+    assert!(
+        steps[1] > steps[0],
+        "a non-tail clause must keep re-lowering the continuation, got {counts:?}"
     );
 }

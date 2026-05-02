@@ -383,6 +383,25 @@ fn main() -> Int {
 "#,
         },
         DiffCase {
+            name: "merged_tail_resume_sites",
+            source: r#"
+effect St { fn tick(n: Int) -> Int }
+
+fn body(x: Int) -> Int with St {
+  let a = do St.tick(1);
+  let b = do St.tick(0);
+  let c = do St.tick(2);
+  x + a + b + c
+}
+
+fn main() -> Int {
+  handle { body(7) } with St {
+    | tick(n, resume) => if n > 1 { resume(100) } else { if n > 0 { resume(10) } else { resume(20) } }
+  }
+}
+"#,
+        },
+        DiffCase {
             name: "discharged_handler_rt_passthrough",
             source: r#"
 effect LocalState { fn tick() -> Int }
