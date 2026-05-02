@@ -281,6 +281,24 @@ fn emit_terminator(
             writeln!(out, "        goto b{};", default.as_u32()).expect("in-memory write");
             out.push_str("    }\n");
         }
+        CfgTerminator::Switch {
+            selector,
+            targets,
+            default,
+        } => {
+            let temp = cx.fresh("switch");
+            let selector = emit_expr(*selector, cx);
+            writeln!(out, "    CieloValue {temp} = {selector};").expect("in-memory write");
+            emit_arc_ops(out, &arc.post, 1, cx, "term-post", block.as_u32());
+            // A dense case list lets the C compiler pick a jump table.
+            writeln!(out, "    switch ((int){temp}.as.i) {{").expect("in-memory write");
+            for (index, target) in targets.iter().enumerate() {
+                writeln!(out, "        case {index}: goto b{};", target.as_u32())
+                    .expect("in-memory write");
+            }
+            writeln!(out, "        default: goto b{};", default.as_u32()).expect("in-memory write");
+            out.push_str("    }\n");
+        }
         CfgTerminator::Call {
             convention,
             callee_fn,
@@ -633,6 +651,9 @@ fn reachable_values(program: &CfgProgram, entry: CfgBlockId) -> Vec<CfgValueId> 
             } => {
                 collect_expr_values(program, *scrutinee, &mut values);
                 values.extend(arms.iter().flat_map(|arm| arm.binders.iter()).copied());
+            }
+            CfgTerminator::Switch { selector, .. } => {
+                collect_expr_values(program, *selector, &mut values)
             }
             CfgTerminator::Unreachable => {}
         }
