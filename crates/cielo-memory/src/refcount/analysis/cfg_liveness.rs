@@ -219,6 +219,7 @@ fn collect_terminator_uses(
         }
         CfgTerminator::Branch { cond, .. } => collect_expr_uses(program, *cond, output),
         CfgTerminator::Match { scrutinee, .. } => collect_expr_uses(program, *scrutinee, output),
+        CfgTerminator::Switch { selector, .. } => collect_expr_uses(program, *selector, output),
         CfgTerminator::Unreachable => {}
     }
 }

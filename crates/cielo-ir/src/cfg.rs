@@ -324,6 +324,13 @@ pub enum CfgTerminator {
         /// Linear IR has an implicit unit-valued fallback. It is explicit here.
         default: CfgBlockId,
     },
+    /// Integer dispatch. Targets take no arguments: a continuation shared by
+    /// several dispatch sites receives its values through its own block params.
+    Switch {
+        selector: CfgExprId,
+        targets: Vec<CfgBlockId>,
+        default: CfgBlockId,
+    },
     Call {
         convention: CfgCallConvention,
         callee: SymbolId,
@@ -363,6 +370,16 @@ impl CfgTerminator {
                 let mut successors = arms
                     .iter()
                     .map(|arm| (arm.target, arm.binders.len()))
+                    .collect::<Vec<_>>();
+                successors.push((*default, 0));
+                successors
+            }
+            Self::Switch {
+                targets, default, ..
+            } => {
+                let mut successors = targets
+                    .iter()
+                    .map(|target| (*target, 0))
                     .collect::<Vec<_>>();
                 successors.push((*default, 0));
                 successors

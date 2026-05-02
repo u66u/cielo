@@ -212,6 +212,9 @@ fn collect_terminator_uses(
         CfgTerminator::Match { scrutinee, .. } => {
             collect_expr_uses(cfg, *scrutinee, UseMode::Borrow, counts)
         }
+        CfgTerminator::Switch { selector, .. } => {
+            collect_expr_uses(cfg, *selector, UseMode::Borrow, counts)
+        }
         CfgTerminator::Unreachable => {}
     }
 }
@@ -402,6 +405,14 @@ fn redirect_edges(terminator: &mut CfgTerminator, rewrites: &[(CfgBlockId, CfgBl
         CfgTerminator::Match { arms, default, .. } => {
             for arm in arms.iter_mut() {
                 take(&mut arm.target);
+            }
+            take(default);
+        }
+        CfgTerminator::Switch {
+            targets, default, ..
+        } => {
+            for target in targets.iter_mut() {
+                take(target);
             }
             take(default);
         }

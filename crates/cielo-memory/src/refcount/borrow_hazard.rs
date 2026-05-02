@@ -187,6 +187,9 @@ fn count_terminator_uses(
         | CfgTerminator::Branch { cond: value, .. }
         | CfgTerminator::Match {
             scrutinee: value, ..
+        }
+        | CfgTerminator::Switch {
+            selector: value, ..
         } => count_expr_uses(cfg, *value, seen, counts),
         CfgTerminator::Goto { args, .. }
         | CfgTerminator::Call { args, .. }
