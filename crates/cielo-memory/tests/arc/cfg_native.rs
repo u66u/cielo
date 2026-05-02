@@ -1,7 +1,9 @@
 use cielo_base::Interner;
 use cielo_base::SourceId;
-use cielo_ir::cfg::{CfgArcOpKind, CfgProjectionMode, CfgTerminator};
+use cielo_ir::cfg::{CfgArcOpKind, CfgExpr, CfgProgram, CfgProjectionMode, CfgTerminator};
+use cielo_ir::core::Literal;
 use cielo_memory::MemoryPreset;
+use cielo_memory::{ArcConfig, ArcFeatures};
 use cielo_runtime::{cfg_lower, linearize};
 use cielo_test_support::{PassConfig, PassHarness};
 
@@ -199,4 +201,58 @@ fn main() -> Int { let value = Wrap(1); match value { | Wrap(n) => n | _ => 0 } 
                     && !diagnostic.code.starts_with("CFG_VERIFY")
             })
     );
+}
+
+/// Nothing lowers to `Switch` yet, so its ARC traversal is only reachable from
+/// a hand-built CFG. A value live on one case and dead on the rest needs an
+/// edge block per dead case, which also exercises edge redirection.
+#[test]
+fn cfg_arc_drops_on_dead_switch_edges() {
+    let mut cfg = CfgProgram::default();
+    let boxed = cfg.push_value(None);
+    let selector_value = cfg.push_value(None);
+    let boxed_expr = cfg.push_expr(CfgExpr::Value(boxed), None);
+    let selector = cfg.push_expr(CfgExpr::Value(selector_value), None);
+    let unit = cfg.push_expr(CfgExpr::Literal(Literal::Unit), None);
+
+    let keep = cfg.push_block(Vec::new(), None);
+    cfg.set_terminator(keep, CfgTerminator::Return(boxed_expr));
+    let dead = cfg.push_block(Vec::new(), None);
+    cfg.set_terminator(dead, CfgTerminator::Return(unit));
+    let default = cfg.push_block(Vec::new(), None);
+    cfg.set_terminator(default, CfgTerminator::Return(unit));
+    let entry = cfg.push_block(Vec::new(), None);
+    cfg.set_terminator(
+        entry,
+        CfgTerminator::Switch {
+            selector,
+            targets: vec![keep, dead],
+            default,
+        },
+    );
+
+    let config = ArcConfig {
+        features: ArcFeatures::INSERTION | ArcFeatures::OPTIMIZATION,
+    };
+    cielo_memory::refcount::passes::cfg_arc::run(&mut cfg, &[true, false], &config);
+    assert_eq!(cfg.validate(), Ok(()));
+
+    let CfgTerminator::Switch {
+        targets,
+        default: fallback,
+        ..
+    } = &cfg.block(entry).expect("entry block").terminator
+    else {
+        panic!("switch terminator must survive ARC insertion");
+    };
+    assert_eq!(targets[0], keep, "the live case keeps its original target");
+    assert_ne!(targets[1], dead, "the dead case is routed through an edge");
+    assert_ne!(*fallback, default, "the default is routed through an edge");
+
+    for edge in [targets[1], *fallback] {
+        let ops = &cfg.block(edge).expect("edge block").entry_arc;
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].kind, CfgArcOpKind::Release);
+        assert_eq!(ops[0].value, boxed);
+    }
 }
