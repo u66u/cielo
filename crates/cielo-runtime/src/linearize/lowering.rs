@@ -40,14 +40,38 @@ impl LoweringInput<'_> {
     }
 }
 
+/// `lower_stmt_under_handlers` re-lowers the continuation at every `Resume`
+/// rather than sharing it, so nested resumptive handlers expand as 2^n. Without
+/// a ceiling a handful of nesting levels emits tens of megabytes of C with no
+/// diagnostic. Sized well above any realistic program.
+const HANDLER_INLINE_STMT_BUDGET: usize = 200_000;
+
 struct LoweringState<'a> {
     diagnostics: &'a mut DiagnosticBag,
     linear: &'a mut LinearProgram,
     expr_map: &'a mut [Option<LinearExprId>],
     stmt_map: &'a mut [Option<LinearStmtId>],
+    inline_budget_exhausted: bool,
 }
 
 impl LoweringState<'_> {
+    /// True once expansion has been abandoned. Reported once so a deeply
+    /// nested program does not bury the log in identical errors.
+    fn inline_budget_exceeded(&mut self, span: Span) -> bool {
+        if self.linear.stmts().len() <= HANDLER_INLINE_STMT_BUDGET {
+            return false;
+        }
+        if !self.inline_budget_exhausted {
+            self.inline_budget_exhausted = true;
+            self.diagnostics.error(
+                "LINEARIZE_INLINE_BUDGET_EXCEEDED",
+                "handler not erased: inlining exceeded its statement budget",
+                span,
+            );
+        }
+        true
+    }
+
     fn record_handler(&mut self, effect: EffectLabelId, span: Span, outcome: HandlerOutcome) {
         self.linear.handler_sites.push(HandlerSite {
             effect,
@@ -91,6 +115,7 @@ pub(super) fn lower_program(
             linear: &mut linear,
             expr_map: &mut expr_map,
             stmt_map: &mut stmt_map,
+            inline_budget_exhausted: false,
         };
 
         for source_id in reachable {
@@ -350,6 +375,9 @@ fn lower_stmt_under_handlers(
     let Some(stmt) = input.program.stmt(stmt_id) else {
         return state.linear.push_stmt(LinearStmt::Error);
     };
+    if state.inline_budget_exceeded(stmt.span) {
+        return state.linear.push_stmt(LinearStmt::Error);
+    }
 
     match &stmt.kind {
         StmtKind::Return(expr) => {
