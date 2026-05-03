@@ -77,13 +77,14 @@ effect Database {
 }
 
 // Comptime handler (mock/static data):
-handler db_mock {
-    query(sql) => resume(static_test_data)   // comptime!
+handler db_mock with Database {
+    | query(sql) => resume(static_test_data)   // comptime!
 }
 
-// Runtime handler (actual DB connection):
-handler db_real(conn: Connection) {
-    query(sql) => resume(conn.execute(sql))   // runtime (conn is runtime, execute has IO)
+// Runtime handler (actual DB connection). Not implemented yet: capturing
+// `conn` in the clause bodies needs closures (CIELO-25).
+handler db_real(conn: Connection) with Database {
+    | query(sql) => resume(conn.execute(sql))   // runtime (conn is runtime, execute has IO)
 }
 
 The rule: After all handlers are applied, look at the residual effects. If none remain
