@@ -448,6 +448,149 @@ fn main() -> Int {
     assert!(has_ctor);
 }
 
+type ClauseShape = (
+    cielo_base::SymbolId,
+    Vec<cielo_base::VarId>,
+    Option<cielo_base::VarId>,
+    cielo_base::StmtId,
+);
+type HandlerShape = (
+    cielo_base::EffectLabelId,
+    cielo_base::VarId,
+    cielo_base::StmtId,
+    Vec<ClauseShape>,
+);
+
+/// Handler defs modulo spans, which necessarily differ between two sources.
+fn handler_shapes(program: &cielo_ir::core::CoreProgram) -> Vec<HandlerShape> {
+    program
+        .handlers()
+        .iter()
+        .map(|handler| {
+            (
+                handler.effect,
+                handler.return_param,
+                handler.return_body,
+                handler
+                    .clauses
+                    .iter()
+                    .map(|clause| {
+                        (
+                            clause.operation,
+                            clause.params.clone(),
+                            clause.resume_param,
+                            clause.body,
+                        )
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn named_handler_lowers_identically_to_the_same_clauses_inline() {
+    let named = r#"
+effect LocalState { fn tick() -> Int }
+handler counter with LocalState {
+  | tick(resume) => resume(0)
+}
+fn main() -> Int {
+  let x = handle { do LocalState.tick(); 7 } with counter;
+  x
+}
+"#;
+    let inline = r#"
+effect LocalState { fn tick() -> Int }
+fn main() -> Int {
+  let x = handle { do LocalState.tick(); 7 } with LocalState {
+    | tick(resume) => resume(0)
+  };
+  x
+}
+"#;
+    // One interner keeps SymbolIds comparable across the two programs.
+    let mut interner = Interner::new();
+    let named = parse_source(named, SourceId::from_u32(0), &mut interner);
+    let inline = parse_source(inline, SourceId::from_u32(1), &mut interner);
+    let named = lower_program(&named.program, LowerConfig::default());
+    let inline = lower_program(&inline.program, LowerConfig::default());
+
+    assert!(!named.diagnostics.has_errors());
+    assert_eq!(
+        handler_shapes(&named.program),
+        handler_shapes(&inline.program)
+    );
+}
+
+#[test]
+fn a_named_handler_lowers_once_per_handle_site() {
+    let src = r#"
+effect LocalState { fn tick() -> Int }
+handler counter with LocalState {
+  | tick(resume) => resume(0)
+}
+fn a() -> Int {
+  let x = handle { do LocalState.tick(); 1 } with counter;
+  x
+}
+fn b() -> Int {
+  let x = handle { do LocalState.tick(); 2 } with counter;
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    assert!(!lowered.diagnostics.has_errors());
+    // Each site gets its own HandlerDef so later passes can specialize them apart.
+    assert_eq!(lowered.program.handlers().len(), 2);
+}
+
+#[test]
+fn reports_an_unknown_handler_name() {
+    let src = r#"
+effect LocalState { fn tick() -> Int }
+fn main() -> Int {
+  let x = handle { do LocalState.tick(); 1 } with nope;
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    assert!(
+        lowered
+            .diagnostics
+            .entries()
+            .iter()
+            .any(|d| d.code == "LOWER_UNKNOWN_HANDLER")
+    );
+}
+
+#[test]
+fn reports_a_duplicate_handler_declaration() {
+    let src = r#"
+effect LocalState { fn tick() -> Int }
+handler counter with LocalState { | tick(resume) => resume(0) }
+handler counter with LocalState { | tick(resume) => resume(1) }
+fn main() -> Int {
+  let x = handle { do LocalState.tick(); 1 } with counter;
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    assert!(
+        lowered
+            .diagnostics
+            .entries()
+            .iter()
+            .any(|d| d.code == "LOWER_DUP_HANDLER_DECL")
+    );
+}
+
 #[test]
 fn lowers_struct_constructor_call() {
     let src = r#"

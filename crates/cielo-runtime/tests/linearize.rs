@@ -250,3 +250,32 @@ fn main() -> Int {{
         "a non-tail clause must keep re-lowering the continuation, got {counts:?}"
     );
 }
+
+/// Naming a handler is a frontend affordance only: by linearize it is an
+/// ordinary handler frame, discharged exactly like the inline form above.
+#[test]
+fn discharges_a_named_handler_like_an_inline_one() {
+    let codes = linearize_diagnostic_codes(
+        r#"
+effect St { fn note(n: Int) -> Int }
+
+handler noted with St {
+  | note(n) => 100
+}
+
+fn deep(x: Int) -> Int with St {
+  do St.note(x);
+  x + 1
+}
+
+fn main() -> Int {
+  let out = handle { deep(3) } with noted;
+  out
+}
+"#,
+    );
+    assert!(
+        !codes.iter().any(|c| c == "LINEARIZE_HANDLED_EFFECT_LEAK"),
+        "a named handler must discharge the same perform, got {codes:?}"
+    );
+}
