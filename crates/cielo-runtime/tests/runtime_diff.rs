@@ -1489,8 +1489,10 @@ fn c_compiler_command() -> OsString {
     std::env::var_os("CC").unwrap_or_else(|| OsString::from("cc"))
 }
 
-/// Runs the program and fails if any constructor outlives it. The emitted
-/// `main` is renamed so a wrapper can read the ARC counters after it returns.
+/// Runs the program and fails if any constructor or string outlives it. The
+/// emitted `main` is renamed so a wrapper can read the ARC counters after it
+/// returns. Strings are counted separately from constructors, so each total
+/// has to balance on its own.
 fn assert_arc_balanced(case_name: &str, c_source: &str) {
     const WRAPPER: &str = concat!(
         "\nint cielo_checked_entry(void);\n",
@@ -1502,6 +1504,12 @@ fn assert_arc_balanced(case_name: &str, c_source: &str) {
         "            (unsigned long long)stats.ctor_allocations,\n",
         "            (unsigned long long)stats.ctor_frees);\n",
         "    return 90;\n",
+        "  }\n",
+        "  if (stats.str_allocations != stats.str_frees) {\n",
+        "    fprintf(stderr, \"string imbalance: %llu allocations, %llu frees\\n\",\n",
+        "            (unsigned long long)stats.str_allocations,\n",
+        "            (unsigned long long)stats.str_frees);\n",
+        "    return 91;\n",
         "  }\n",
         "  return code;\n",
         "}\n",
@@ -1516,6 +1524,10 @@ fn assert_arc_balanced(case_name: &str, c_source: &str) {
     assert_ne!(
         code, 90,
         "case {case_name} leaked constructors: allocations != frees"
+    );
+    assert_ne!(
+        code, 91,
+        "case {case_name} leaked strings: allocations != frees"
     );
 }
 

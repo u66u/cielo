@@ -1040,6 +1040,24 @@ impl<'a> TypeChecker<'a> {
             .unwrap_or(InferTy::Concrete(self.error_type))
     }
 
+    fn primitive_type(&self, primitive: PrimitiveTypeRef) -> TypeId {
+        match primitive {
+            PrimitiveTypeRef::Bool => self.prim.bool_,
+            PrimitiveTypeRef::Int => self.prim.int,
+            PrimitiveTypeRef::Float => self.prim.float,
+            PrimitiveTypeRef::Char => self.prim.char_,
+            PrimitiveTypeRef::String => self.prim.string,
+        }
+    }
+
+    fn core_type_ref_id(&self, ty: &CoreTypeRef) -> TypeId {
+        match ty {
+            CoreTypeRef::Unit => self.prim.unit,
+            CoreTypeRef::Primitive(primitive) => self.primitive_type(*primitive),
+            CoreTypeRef::Named(_) | CoreTypeRef::Unknown => self.error_type,
+        }
+    }
+
     fn infer_expr(&mut self, expr_id: ExprId, env: &Env) -> InferTy {
         let Some(expr) = self.program.expr(expr_id) else {
             return InferTy::Concrete(self.error_type);
@@ -1171,12 +1189,23 @@ impl<'a> TypeChecker<'a> {
                         expr.span,
                     );
                 }
-                // `print` formats every tag, so its argument is unconstrained.
-                // Inference still runs so the argument's own type is solved.
-                for arg in args {
-                    let _ = self.infer_expr(*arg, env);
+                let params = builtin.param_types();
+                for (index, arg) in args.iter().enumerate() {
+                    let arg_ty = self.infer_expr(*arg, env);
+                    // A `None` parameter accepts any type, so inference still
+                    // runs but nothing is unified against it.
+                    let Some(Some(expected)) = params.get(index).copied() else {
+                        continue;
+                    };
+                    let _ = self.unify_with(
+                        arg_ty,
+                        InferTy::Concrete(self.primitive_type(expected)),
+                        expr.span,
+                        "TYPE_BUILTIN_ARG_MISMATCH",
+                        "Builtin argument type mismatch",
+                    );
                 }
-                InferTy::Concrete(self.prim.unit)
+                InferTy::Concrete(self.core_type_ref_id(&builtin.return_type()))
             }
             ExprKind::MakeStruct { ty, fields } => {
                 let sig = self.struct_ctors.get(ty).cloned();

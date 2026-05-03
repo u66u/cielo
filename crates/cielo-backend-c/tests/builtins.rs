@@ -127,6 +127,85 @@ fn main() -> Int {
     let _ = std::fs::remove_dir_all(dir.as_path());
 }
 
+/// Runtime-built strings: `str_concat` allocates, so equality can no longer
+/// ride on literal pooling, and ARC has to free what it produced.
+#[test]
+fn string_builtins_construct_compare_and_measure() {
+    if !c_compiler_available() {
+        eprintln!("skipping string builtin test: no C compiler found");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("cielo_builtins_str_{}", std::process::id()));
+    std::fs::create_dir_all(dir.as_path()).expect("temp dir");
+
+    let stdout = run_program(
+        dir.as_path(),
+        "string_ops",
+        r#"
+fn main() -> Int {
+  let joined = str_concat("hello, ", "world");
+  print(joined);
+  print(str_len(joined));
+  print(str_len(""));
+  0
+}
+"#,
+    );
+    assert_eq!(stdout, "hello, world\n12\n0\n");
+
+    // Two separately built strings with the same bytes must compare equal:
+    // pointer identity would say no.
+    let stdout = run_program(
+        dir.as_path(),
+        "string_equality",
+        r#"
+fn main() -> Int {
+  let a = str_concat("ab", "cd");
+  let b = str_concat("abc", "d");
+  print(a == b);
+  print(a == "abcd");
+  print(a == "other");
+  0
+}
+"#,
+    );
+    assert_eq!(stdout, "true\ntrue\nfalse\n");
+
+    let _ = std::fs::remove_dir_all(dir.as_path());
+}
+
+/// A nested call's result has no value id, so ARC cannot release it at the
+/// call site. Builtin arguments are therefore sink arguments, released by the
+/// runtime; treating them as borrows leaked the string built here.
+#[test]
+fn owned_temporaries_passed_to_builtins_are_released() {
+    if !c_compiler_available() {
+        eprintln!("skipping string builtin test: no C compiler found");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("cielo_builtins_temp_{}", std::process::id()));
+    std::fs::create_dir_all(dir.as_path()).expect("temp dir");
+
+    let stdout = run_program(
+        dir.as_path(),
+        "nested_owned_temporary",
+        r#"
+enum Item { Named(String) }
+fn label(i: Item) -> String {
+  match i { Named(s) => s }
+}
+fn main() -> Int {
+  print(label(Named(str_concat("wid", "get"))));
+  print(str_len(str_concat("a", "b")));
+  0
+}
+"#,
+    );
+    assert_eq!(stdout, "widget\n2\n");
+
+    let _ = std::fs::remove_dir_all(dir.as_path());
+}
+
 /// The symbol-keyed table, not the direct call path: an effect operation named
 /// `print` with no handler in scope resolves to the builtin instead of trapping.
 #[test]

@@ -12,14 +12,18 @@ pub struct CConstantPools {
     pub declarations: String,
     scalars: HashMap<ScalarLiteralKey, String>,
     strings: HashMap<String, String>,
+    /// Value -> the `CieloStr` object backing it. Separate from `strings`
+    /// because a string inside a pooled constructor needs the object but not
+    /// a standalone `CieloValue`.
+    str_objects: HashMap<String, String>,
     ctors: HashMap<CtorLiteralKey, String>,
+    next_str: usize,
 }
 
 impl CConstantPools {
     pub fn build(table: &ConstantTable, interner: &Interner) -> Self {
         let mut result = Self::default();
         let mut scalar_index = 0usize;
-        let mut string_index = 0usize;
         let mut ctor_index = 0usize;
         let mut nested_index = 0usize;
         for entry in &table.entries {
@@ -36,15 +40,7 @@ impl CConstantPools {
                     result.scalars.insert(*key, symbol);
                 }
                 (ConstantKey::String(value), ConstantEmbedStrategy::StaticConst) => {
-                    let symbol = format!("cielo_const_s_{string_index}");
-                    string_index += 1;
-                    writeln!(
-                        result.declarations,
-                        "static const char* {symbol} = \"{}\";",
-                        escape(value)
-                    )
-                    .expect("in-memory write");
-                    result.strings.insert(value.clone(), symbol);
+                    result.ensure_string(value);
                 }
                 (ConstantKey::Ctor(key), ConstantEmbedStrategy::Pooled) => {
                     let value_symbol = format!("cielo_const_ctor_v_{ctor_index}");
@@ -53,12 +49,7 @@ impl CConstantPools {
                     ctor_index += 1;
                     let mut fields = Vec::new();
                     for field in &key.fields {
-                        fields.push(render_field(
-                            field,
-                            interner,
-                            &mut nested_index,
-                            &mut result.declarations,
-                        ));
+                        fields.push(result.render_field(field, interner, &mut nested_index));
                     }
                     let fields_ref = if fields.is_empty() {
                         "NULL".to_owned()
@@ -108,61 +99,99 @@ impl CConstantPools {
     pub fn ctor(&self, key: &CtorLiteralKey) -> Option<&str> {
         self.ctors.get(key).map(String::as_str)
     }
-}
 
-fn render_field(
-    field: &CtorFieldKey,
-    interner: &Interner,
-    nested_index: &mut usize,
-    declarations: &mut String,
-) -> String {
-    match field {
-        CtorFieldKey::Unit => "{ .tag = CV_UNIT }".to_owned(),
-        CtorFieldKey::Bool(value) => format!(
-            "{{ .tag = CV_BOOL, .as.b = {} }}",
-            if *value { "true" } else { "false" }
-        ),
-        CtorFieldKey::Int(value) => format!("{{ .tag = CV_INT, .as.i = {value} }}"),
-        CtorFieldKey::Float(bits) => format!(
-            "{{ .tag = CV_FLOAT, .as.f = {} }}",
-            float_literal(f64::from_bits(*bits))
-        ),
-        CtorFieldKey::Char(value) => {
-            format!("{{ .tag = CV_CHAR, .as.c = {}u }}", *value as u32)
-        }
-        CtorFieldKey::String(value) => {
-            format!("{{ .tag = CV_STRING, .as.s = \"{}\" }}", escape(value))
-        }
-        CtorFieldKey::Ctor(key) => {
-            let id = *nested_index;
-            *nested_index += 1;
-            let fields_symbol = format!("cielo_const_ctor_nested_fields_{id}");
-            let ctor_symbol = format!("cielo_const_ctor_nested_{id}");
-            let mut fields = Vec::new();
-            for field in &key.fields {
-                fields.push(render_field(field, interner, nested_index, declarations));
-            }
-            let fields_ref = if fields.is_empty() {
-                "NULL".to_owned()
-            } else {
-                writeln!(
-                    declarations,
-                    "static CieloValue {fields_symbol}[] = {{{}}};",
-                    fields.join(", ")
-                )
-                .expect("in-memory write");
-                fields_symbol
-            };
+    /// Declares `value` as an immortal `CieloStr` plus a `CieloValue` naming
+    /// it, and returns the value symbol. Idempotent per distinct string.
+    ///
+    /// Every string literal must go through here: a `CieloValue` now points at
+    /// a `CieloStr`, and only static storage can back one for the life of the
+    /// program. Immortality is what keeps ARC from freeing pooled literals.
+    pub fn ensure_string(&mut self, value: &str) -> &str {
+        if !self.strings.contains_key(value) {
+            let object = self.declare_str_object(value);
+            let symbol = format!("cielo_const_s_{}", self.strings.len());
             writeln!(
-                declarations,
-                "static CieloCtor {ctor_symbol} = {{ .arc = CIELO_ARC_IMMORTAL_HEADER, .ty = \"{}\", .variant = \"{}\", .variant_tag = {}u, .argc = {}, .fields = {fields_ref} }};",
-                escape(interner.resolve(key.ty).unwrap_or("unknown")),
-                escape(interner.resolve(key.variant).unwrap_or("unknown")),
-                key.variant.as_u32(),
-                key.fields.len()
+                self.declarations,
+                "static const CieloValue {symbol} = {{ .tag = CV_STRING, .as.str = &{object} }};"
             )
             .expect("in-memory write");
-            format!("{{ .tag = CV_CTOR, .as.ctor = &{ctor_symbol} }}")
+            self.strings.insert(value.to_owned(), symbol);
+        }
+        self.strings[value].as_str()
+    }
+
+    fn declare_str_object(&mut self, value: &str) -> String {
+        if let Some(symbol) = self.str_objects.get(value) {
+            return symbol.clone();
+        }
+        let symbol = format!("cielo_const_str_{}", self.next_str);
+        self.next_str += 1;
+        writeln!(
+            self.declarations,
+            "static CieloStr {symbol} = {{ .arc = CIELO_ARC_IMMORTAL_HEADER, .len = {}, .data = \"{}\" }};",
+            value.len(),
+            escape(value)
+        )
+        .expect("in-memory write");
+        self.str_objects.insert(value.to_owned(), symbol.clone());
+        symbol
+    }
+
+    fn render_field(
+        &mut self,
+        field: &CtorFieldKey,
+        interner: &Interner,
+        nested_index: &mut usize,
+    ) -> String {
+        match field {
+            CtorFieldKey::Unit => "{ .tag = CV_UNIT }".to_owned(),
+            CtorFieldKey::Bool(value) => format!(
+                "{{ .tag = CV_BOOL, .as.b = {} }}",
+                if *value { "true" } else { "false" }
+            ),
+            CtorFieldKey::Int(value) => format!("{{ .tag = CV_INT, .as.i = {value} }}"),
+            CtorFieldKey::Float(bits) => format!(
+                "{{ .tag = CV_FLOAT, .as.f = {} }}",
+                float_literal(f64::from_bits(*bits))
+            ),
+            CtorFieldKey::Char(value) => {
+                format!("{{ .tag = CV_CHAR, .as.c = {}u }}", *value as u32)
+            }
+            CtorFieldKey::String(value) => {
+                let object = self.declare_str_object(value);
+                format!("{{ .tag = CV_STRING, .as.str = &{object} }}")
+            }
+            CtorFieldKey::Ctor(key) => {
+                let id = *nested_index;
+                *nested_index += 1;
+                let fields_symbol = format!("cielo_const_ctor_nested_fields_{id}");
+                let ctor_symbol = format!("cielo_const_ctor_nested_{id}");
+                let mut fields = Vec::new();
+                for field in &key.fields {
+                    fields.push(self.render_field(field, interner, nested_index));
+                }
+                let fields_ref = if fields.is_empty() {
+                    "NULL".to_owned()
+                } else {
+                    writeln!(
+                        self.declarations,
+                        "static CieloValue {fields_symbol}[] = {{{}}};",
+                        fields.join(", ")
+                    )
+                    .expect("in-memory write");
+                    fields_symbol
+                };
+                writeln!(
+                    self.declarations,
+                    "static CieloCtor {ctor_symbol} = {{ .arc = CIELO_ARC_IMMORTAL_HEADER, .ty = \"{}\", .variant = \"{}\", .variant_tag = {}u, .argc = {}, .fields = {fields_ref} }};",
+                    escape(interner.resolve(key.ty).unwrap_or("unknown")),
+                    escape(interner.resolve(key.variant).unwrap_or("unknown")),
+                    key.variant.as_u32(),
+                    key.fields.len()
+                )
+                .expect("in-memory write");
+                format!("{{ .tag = CV_CTOR, .as.ctor = &{ctor_symbol} }}")
+            }
         }
     }
 }

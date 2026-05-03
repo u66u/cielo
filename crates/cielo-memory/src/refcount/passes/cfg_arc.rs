@@ -243,18 +243,16 @@ fn collect_expr_uses(
             collect_expr_uses(cfg, *lhs, UseMode::Borrow, counts);
             collect_expr_uses(cfg, *rhs, UseMode::Borrow, counts);
         }
+        // Builtin arguments are sink arguments, like constructor fields and
+        // the arguments of a Call or Perform terminator: the runtime releases
+        // them. Borrowing instead would leak any argument that is a nested
+        // call's result, since such a temporary has no value id to release.
         CfgExpr::PureCall { args, .. }
+        | CfgExpr::BuiltinCall { args, .. }
         | CfgExpr::MakeStruct { fields: args, .. }
         | CfgExpr::MakeEnum { fields: args, .. } => {
             for arg in args {
                 collect_expr_uses(cfg, *arg, UseMode::Consume, counts);
-            }
-        }
-        // Builtins read their arguments and return; ownership stays with the
-        // caller, so a consume here would leak what the runtime never releases.
-        CfgExpr::BuiltinCall { args, .. } => {
-            for arg in args {
-                collect_expr_uses(cfg, *arg, UseMode::Borrow, counts);
             }
         }
         CfgExpr::Literal(_) | CfgExpr::Error => {}

@@ -4,6 +4,7 @@
 //! the runtime without passing through the handler stack, so output no longer
 //! depends on an effect escaping every handler.
 
+use crate::core::{CoreTypeRef, PrimitiveTypeRef};
 use cielo_base::ids::SymbolId;
 use cielo_base::symbols::Interner;
 use std::collections::HashMap;
@@ -11,14 +12,18 @@ use std::collections::HashMap;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Builtin {
     Print,
+    StrLen,
+    StrConcat,
 }
 
 impl Builtin {
-    pub const ALL: [Self; 1] = [Self::Print];
+    pub const ALL: [Self; 3] = [Self::Print, Self::StrLen, Self::StrConcat];
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Print => "print",
+            Self::StrLen => "str_len",
+            Self::StrConcat => "str_concat",
         }
     }
 
@@ -28,12 +33,42 @@ impl Builtin {
     pub fn c_symbol(self) -> &'static str {
         match self {
             Self::Print => "cielo_builtin_print",
+            Self::StrLen => "cielo_builtin_str_len",
+            Self::StrConcat => "cielo_builtin_str_concat",
         }
     }
 
     pub fn arity(self) -> usize {
         match self {
-            Self::Print => 1,
+            Self::Print | Self::StrLen => 1,
+            Self::StrConcat => 2,
+        }
+    }
+
+    /// Whether evaluating the builtin produces output. Only these must survive
+    /// dead-code elimination when their result is unused.
+    pub fn is_observable(self) -> bool {
+        matches!(self, Self::Print)
+    }
+
+    /// `None` for a parameter the builtin accepts at any type, which today is
+    /// only `print`'s: it formats every tag.
+    pub fn param_types(self) -> &'static [Option<PrimitiveTypeRef>] {
+        match self {
+            Self::Print => &[None],
+            Self::StrLen => &[Some(PrimitiveTypeRef::String)],
+            Self::StrConcat => &[
+                Some(PrimitiveTypeRef::String),
+                Some(PrimitiveTypeRef::String),
+            ],
+        }
+    }
+
+    pub fn return_type(self) -> CoreTypeRef {
+        match self {
+            Self::Print => CoreTypeRef::Unit,
+            Self::StrLen => CoreTypeRef::Primitive(PrimitiveTypeRef::Int),
+            Self::StrConcat => CoreTypeRef::Primitive(PrimitiveTypeRef::String),
         }
     }
 

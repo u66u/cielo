@@ -873,7 +873,12 @@ fn expr_has_observable_effect(program: &CoreProgram, expr_id: ExprId) -> bool {
             continue;
         };
         match &expr.kind {
-            ExprKind::BuiltinCall { .. } => return true,
+            ExprKind::BuiltinCall { builtin, args } => {
+                if builtin.is_observable() {
+                    return true;
+                }
+                stack.extend(args.iter().copied());
+            }
             ExprKind::Unary { expr, .. } | ExprKind::Field { base: expr, .. } => stack.push(*expr),
             ExprKind::Binary { lhs, rhs, .. } => {
                 stack.push(*lhs);

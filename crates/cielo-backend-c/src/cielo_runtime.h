@@ -68,6 +68,16 @@ typedef struct {
   CieloValue *fields;
 } CieloCtor;
 
+/* `len` excludes the terminating NUL, which is always present so `data` can be
+ * handed to C string functions. Runtime-built strings point `data` into the
+ * tail of their own allocation; pooled literals point at static storage and
+ * carry the immortal flag, so they are never freed. */
+typedef struct {
+  CieloArcHeader arc;
+  size_t len;
+  const char *data;
+} CieloStr;
+
 struct CieloValue {
   CieloTag tag;
   union {
@@ -75,7 +85,7 @@ struct CieloValue {
     int64_t i;
     double f;
     uint32_t c;
-    const char *s;
+    CieloStr *str;
     CieloCtor *ctor;
   } as;
 };
@@ -131,6 +141,10 @@ static uint32_t g_cielo_next_capability_id = 1;
 typedef struct {
   uint64_t ctor_allocations;
   uint64_t ctor_frees;
+  /* Counted separately from constructors so a test can still assert the two
+   * constructor totals match without strings perturbing the balance. */
+  uint64_t str_allocations;
+  uint64_t str_frees;
   uint64_t retain_calls;
   uint64_t release_calls;
   uint64_t release_last_calls;
@@ -159,8 +173,14 @@ static inline CieloValue cv_bool(int x) { return CV_MAKE(CV_BOOL, b, x != 0); }
 static inline CieloValue cv_int(int64_t x) { return CV_MAKE(CV_INT, i, x); }
 static inline CieloValue cv_float(double x) { return CV_MAKE(CV_FLOAT, f, x); }
 static inline CieloValue cv_char(uint32_t x) { return CV_MAKE(CV_CHAR, c, x); }
-static inline CieloValue cv_string(const char *s) {
-  return CV_MAKE(CV_STRING, s, s);
+static inline CieloValue cv_str(CieloStr *s) { return CV_MAKE(CV_STRING, str, s); }
+
+static inline const char *cielo_str_data(CieloValue v) {
+  return v.tag == CV_STRING && v.as.str != NULL ? v.as.str->data : "";
+}
+
+static inline size_t cielo_str_len(CieloValue v) {
+  return v.tag == CV_STRING && v.as.str != NULL ? v.as.str->len : 0u;
 }
 
 static inline void cielo_arc_stats_reset(void) {
@@ -171,39 +191,49 @@ static inline CieloArcStats cielo_arc_stats_snapshot(void) {
   return g_cielo_arc_stats;
 }
 
-static inline bool cielo_arc_is_managed(CieloValue value) {
-  return value.tag == CV_CTOR && value.as.ctor != NULL;
+/* Constructors and strings are both refcounted, and both put the header
+ * first, so ARC only ever needs the header. NULL means unmanaged. */
+static inline CieloArcHeader *cielo_arc_header(CieloValue value) {
+  switch (value.tag) {
+  case CV_CTOR:
+    return value.as.ctor != NULL ? &value.as.ctor->arc : NULL;
+  case CV_STRING:
+    return value.as.str != NULL ? &value.as.str->arc : NULL;
+  default:
+    return NULL;
+  }
 }
 
-static inline bool cielo_arc_is_immortal_ctor(const CieloCtor *ctor) {
-  return ctor != NULL && (ctor->arc.flags & CIELO_ARC_FLAG_IMMORTAL) != 0u;
+static inline bool cielo_arc_is_managed(CieloValue value) {
+  return cielo_arc_header(value) != NULL;
+}
+
+static inline bool cielo_arc_is_immortal(CieloValue value) {
+  const CieloArcHeader *arc = cielo_arc_header(value);
+  return arc != NULL && (arc->flags & CIELO_ARC_FLAG_IMMORTAL) != 0u;
 }
 
 /* A saturated count is no longer accurate, so the object is pinned. Retain
  * and release must agree, or a saturated object gets freed early. */
-static inline bool cielo_arc_is_pinned(const CieloCtor *ctor) {
-  return cielo_arc_is_immortal_ctor(ctor) || ctor->arc.refcount == 0u ||
-         ctor->arc.refcount == UINT32_MAX;
+static inline bool cielo_arc_header_is_pinned(const CieloArcHeader *arc) {
+  return (arc->flags & CIELO_ARC_FLAG_IMMORTAL) != 0u || arc->refcount == 0u ||
+         arc->refcount == UINT32_MAX;
 }
 
 static inline void cielo_arc_retain(CieloValue value) {
-  if (!cielo_arc_is_managed(value))
+  CieloArcHeader *arc = cielo_arc_header(value);
+  if (arc == NULL || cielo_arc_header_is_pinned(arc))
     return;
-  CieloCtor *ctor = value.as.ctor;
-  if (cielo_arc_is_pinned(ctor))
-    return;
-  ctor->arc.refcount++;
+  arc->refcount++;
   CIELO_ARC_COUNT(retain_calls);
 }
 
 static inline bool cielo_arc_dec_is_last(CieloValue value) {
-  if (!cielo_arc_is_managed(value))
+  CieloArcHeader *arc = cielo_arc_header(value);
+  if (arc == NULL || cielo_arc_header_is_pinned(arc))
     return false;
-  CieloCtor *ctor = value.as.ctor;
-  if (cielo_arc_is_pinned(ctor))
-    return false;
-  ctor->arc.refcount--;
-  return ctor->arc.refcount == 0u;
+  arc->refcount--;
+  return arc->refcount == 0u;
 }
 
 static void cielo_arc_destroy_and_dispose(CieloValue value);
@@ -221,35 +251,43 @@ static inline void cielo_arc_release(CieloValue value) {
 /* Destruction uses an explicit worklist. Recursing would overflow the C
  * stack on any structure as deep as its input is long. */
 typedef struct {
-  CieloCtor **items;
+  CieloValue *items;
   size_t len;
   size_t cap;
 } CieloDropStack;
 
-static void cielo_drop_stack_push(CieloDropStack *stack, CieloCtor *ctor) {
+static void cielo_drop_stack_push(CieloDropStack *stack, CieloValue value) {
   if (stack->len == stack->cap) {
     size_t cap = stack->cap ? stack->cap * 2u : 16u;
-    CieloCtor **items =
-        (CieloCtor **)realloc(stack->items, cap * sizeof(CieloCtor *));
+    CieloValue *items =
+        (CieloValue *)realloc(stack->items, cap * sizeof(CieloValue));
     if (items == NULL)
       cielo_trap("out of memory growing drop stack");
     stack->items = items;
     stack->cap = cap;
   }
-  stack->items[stack->len++] = ctor;
+  stack->items[stack->len++] = value;
 }
 
 static void cielo_arc_destroy_and_dispose(CieloValue value) {
-  if (!cielo_arc_is_managed(value))
-    return;
-  if (cielo_arc_is_immortal_ctor(value.as.ctor))
+  if (!cielo_arc_is_managed(value) || cielo_arc_is_immortal(value))
     return;
 
   CieloDropStack stack = {NULL, 0u, 0u};
-  cielo_drop_stack_push(&stack, value.as.ctor);
+  cielo_drop_stack_push(&stack, value);
 
   while (stack.len > 0u) {
-    CieloCtor *ctor = stack.items[--stack.len];
+    CieloValue dying = stack.items[--stack.len];
+
+    /* Strings own no children, and their bytes live in the tail of the same
+     * block, so one free finishes them. */
+    if (dying.tag == CV_STRING) {
+      CIELO_ARC_COUNT(str_frees);
+      free(dying.as.str);
+      continue;
+    }
+
+    CieloCtor *ctor = dying.as.ctor;
     CieloValue *fields = ctor->fields;
     size_t argc = ctor->argc;
     ctor->fields = NULL;
@@ -263,7 +301,7 @@ static void cielo_arc_destroy_and_dispose(CieloValue value) {
       if (!cielo_arc_dec_is_last(field))
         continue;
       CIELO_ARC_COUNT(release_last_calls);
-      cielo_drop_stack_push(&stack, field.as.ctor);
+      cielo_drop_stack_push(&stack, field);
     }
 
     /* `fields` points into the tail of `ctor`; one free covers both. */
@@ -310,7 +348,7 @@ static inline CieloValue cielo_ctor_take_field(CieloValue value, size_t index) {
   if (index >= ctor->argc || ctor->fields == NULL)
     return cv_unit();
   CieloValue result = ctor->fields[index];
-  if (cielo_arc_is_immortal_ctor(ctor) || ctor->arc.refcount != 1u) {
+  if (cielo_arc_is_immortal(value) || ctor->arc.refcount != 1u) {
     cielo_arc_retain(result);
     return result;
   }
@@ -475,8 +513,13 @@ static bool cv_equal(CieloValue a, CieloValue b) {
     return a.as.f == b.as.f;
   case CV_CHAR:
     return a.as.c == b.as.c;
-  case CV_STRING:
-    return strcmp(cielo_cstr0(a.as.s), cielo_cstr0(b.as.s)) == 0;
+  case CV_STRING: {
+    /* By value, never by pointer: two equal strings built at runtime are
+     * distinct allocations, and pooling only dedups literals. */
+    size_t len = cielo_str_len(a);
+    return len == cielo_str_len(b) &&
+           memcmp(cielo_str_data(a), cielo_str_data(b), len) == 0;
+  }
   case CV_CTOR:
     break;
   }
@@ -519,7 +562,7 @@ static inline int cv_ordering(CieloValue a, CieloValue b) {
   case CV_BOOL:
     return (int)a.as.b - (int)b.as.b;
   case CV_STRING: {
-    int r = strcmp(cielo_cstr0(a.as.s), cielo_cstr0(b.as.s));
+    int r = strcmp(cielo_str_data(a), cielo_str_data(b));
     return r < 0 ? -1 : (r > 0 ? 1 : 0);
   }
   case CV_UNIT:
@@ -566,7 +609,7 @@ static inline void cv_print(CieloValue v) {
     CASE_PRINTF(CV_INT, "%lld", (long long)v.as.i);
     CASE_PRINTF(CV_FLOAT, "%f", v.as.f);
     CASE_PRINTF(CV_CHAR, "%c", (int)v.as.c);
-    CASE_PUTS(CV_STRING, cielo_cstr0(v.as.s));
+    CASE_PUTS(CV_STRING, cielo_str_data(v));
 
   case CV_CTOR:
     if (!v.as.ctor) {
@@ -589,11 +632,66 @@ static inline void cv_print(CieloValue v) {
  * handler claims it. Arguments are borrowed, never released here. */
 typedef CieloValue (*CieloBuiltinFn)(size_t argc, const CieloValue *args);
 
+/* Bytes live in the tail of the same block, so destruction frees once. The
+ * result is owned: the caller's ARC releases it. */
+static CieloValue cielo_make_str(const char *data, size_t len) {
+  CieloStr *str = (CieloStr *)malloc(sizeof(CieloStr) + len + 1u);
+  if (str == NULL)
+    cielo_trap("out of memory allocating string");
+  char *bytes = (char *)(str + 1);
+  if (len > 0u && data != NULL)
+    memcpy(bytes, data, len);
+  bytes[len] = '\0';
+  str->arc = (CieloArcHeader)CIELO_ARC_OWNED_HEADER;
+  str->len = len;
+  str->data = bytes;
+  CIELO_ARC_COUNT(str_allocations);
+  return cv_str(str);
+}
+
+/* Arguments are sink arguments, so every builtin ends by releasing them. The
+ * caller retains beforehand only when the value stays live. */
+static void cielo_builtin_release_args(size_t argc, const CieloValue *args) {
+  for (size_t i = 0; i < argc; i++) {
+    cielo_arc_release(args[i]);
+  }
+}
+
 static CieloValue cielo_builtin_print(size_t argc, const CieloValue *args) {
   if (argc != 1 || args == NULL)
     cielo_trap("print expects exactly one argument");
   cv_print(args[0]);
+  cielo_builtin_release_args(argc, args);
   return cv_unit();
+}
+
+static CieloValue cielo_builtin_str_len(size_t argc, const CieloValue *args) {
+  if (argc != 1 || args == NULL)
+    cielo_trap("str_len expects exactly one argument");
+  if (args[0].tag != CV_STRING)
+    cielo_trap("str_len expects a string");
+  CieloValue out = cv_int((int64_t)cielo_str_len(args[0]));
+  cielo_builtin_release_args(argc, args);
+  return out;
+}
+
+static CieloValue cielo_builtin_str_concat(size_t argc,
+                                           const CieloValue *args) {
+  if (argc != 2 || args == NULL)
+    cielo_trap("str_concat expects exactly two arguments");
+  if (args[0].tag != CV_STRING || args[1].tag != CV_STRING)
+    cielo_trap("str_concat expects strings");
+  size_t left = cielo_str_len(args[0]);
+  size_t right = cielo_str_len(args[1]);
+  if (left > SIZE_MAX - right - 1u)
+    cielo_trap("string concatenation length overflow");
+  CieloValue out = cielo_make_str(NULL, left + right);
+  char *bytes = (char *)out.as.str->data;
+  memcpy(bytes, cielo_str_data(args[0]), left);
+  memcpy(bytes + left, cielo_str_data(args[1]), right);
+  /* Copies are done, so releasing here cannot free bytes still being read. */
+  cielo_builtin_release_args(argc, args);
+  return out;
 }
 
 typedef struct {

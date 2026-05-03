@@ -30,7 +30,14 @@ pub fn emit(
     if !out.ends_with('\n') {
         out.push('\n');
     }
-    let pools = CConstantPools::build(constants, interner);
+    let mut pools = CConstantPools::build(constants, interner);
+    // The constant table drops strings once its size budget is spent, but a
+    // string literal has no inline form, so every one still needs an object.
+    for expression in program.exprs() {
+        if let CfgExpr::Literal(Literal::String(value)) = &expression.kind {
+            pools.ensure_string(value);
+        }
+    }
     out.push_str(&pools.declarations);
     if !pools.declarations.is_empty() {
         out.push('\n');
@@ -494,10 +501,13 @@ fn emit_literal(literal: &Literal, pools: &CConstantPools) -> String {
             .scalar(ScalarLiteralKey::Char(*value))
             .map(str::to_owned)
             .unwrap_or_else(|| format!("cv_char({}u)", *value as u32)),
+        // `emit` pools every string in the program, so the lookup cannot miss.
+        // There is no inline fallback: a CieloValue names a CieloStr, and only
+        // static storage can back one.
         Literal::String(value) => pools
             .string(value)
-            .map(|symbol| format!("cv_string({symbol})"))
-            .unwrap_or_else(|| format!("cv_string(\"{}\")", escape(value))),
+            .expect("string literal was pooled")
+            .to_owned(),
     }
 }
 

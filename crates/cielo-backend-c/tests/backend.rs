@@ -277,14 +277,16 @@ fn main() -> Int {
     assert_eq!(
         compiled
             .c_source
-            .matches("static const char* cielo_const_s_")
+            .matches("static CieloStr cielo_const_str_")
             .count(),
         1,
         "duplicated string literals should be pooled exactly once"
     );
     assert!(
-        compiled.c_source.contains("cv_string(cielo_const_s_0)"),
-        "pooled string should be referenced through const symbol"
+        compiled
+            .c_source
+            .contains("static const CieloValue cielo_const_s_0 = { .tag = CV_STRING"),
+        "pooled string should be referenced through a const CieloValue"
     );
 }
 
@@ -305,15 +307,19 @@ fn main() -> Int {{
     let compiled =
         compiler.compile_source_to_c(src.as_str(), SourceId::from_u32(0), &mut _interner);
 
+    // A CieloValue names a CieloStr, and only static storage can back one for
+    // the life of the program, so there is no inline form to fall back to.
+    // The size cap keeps the literal out of the constant *table*; codegen
+    // still emits an object for it.
     assert!(
-        !compiled
+        compiled
             .c_source
-            .contains("static const char* cielo_const_s_"),
-        "oversized literals should not be added to const pool"
+            .contains("static CieloStr cielo_const_str_0"),
+        "oversized literals still need a static string object"
     );
     assert!(
-        compiled.c_source.contains("cv_string(\""),
-        "oversized literals should still be emitted inline"
+        compiled.c_source.contains(long.as_str()),
+        "the literal's bytes should reach the emitted C"
     );
 }
 
