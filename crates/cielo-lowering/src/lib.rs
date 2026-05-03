@@ -23,7 +23,7 @@ use std::collections::{HashMap, HashSet};
 // - Linear in AST size (single walk + reverse statement stitching per block)
 
 use cielo_base::diagnostics::DiagnosticBag;
-use cielo_base::{EffectLabelId, FuncId, Interner, Span, SymbolId, VarId};
+use cielo_base::{EffectLabelId, FuncId, HandlerId, Interner, Span, SymbolId, VarId};
 use cielo_frontend::ast::{
     self, BuiltinType, EffectCapabilityHint, EffectPropertyHint, ExprKind as AstExprKind, Item,
     Stmt as AstStmt, TypeExpr, TypeExprKind,
@@ -125,6 +125,7 @@ struct Lowerer {
     effect_ops: HashMap<(EffectLabelId, SymbolId), usize>,
     struct_ctors: HashMap<SymbolId, usize>,
     enum_ctors: HashMap<SymbolId, (SymbolId, usize)>,
+    handler_decls: HashMap<SymbolId, ast::HandlerDecl>,
     active_resume_vars: HashSet<VarId>,
     config: LowerConfig,
 }
@@ -145,6 +146,7 @@ impl Lowerer {
             effect_ops: HashMap::new(),
             struct_ctors: HashMap::new(),
             enum_ctors: HashMap::new(),
+            handler_decls: HashMap::new(),
             active_resume_vars: HashSet::new(),
             config,
         }
@@ -213,6 +215,16 @@ impl Lowerer {
                         variants,
                         span: decl.span,
                     });
+                }
+                Item::Handler(decl) => {
+                    let shadowed = self.handler_decls.insert(decl.name, decl.clone());
+                    if shadowed.is_some() {
+                        self.diagnostics.error(
+                            "LOWER_DUP_HANDLER_DECL",
+                            "Duplicate handler declaration",
+                            decl.span,
+                        );
+                    }
                 }
                 _ => {}
             }
@@ -651,27 +663,90 @@ impl Lowerer {
             }
         }
 
-        let AstExprKind::Handle {
-            body,
-            effect,
-            clauses,
-        } = &expr.kind
-        else {
+        let AstExprKind::Handle { body, handler } = &expr.kind else {
             return None;
         };
 
-        let effect_label = self.effect_labels.get(effect).copied().unwrap_or_else(|| {
+        let handler_id = match handler {
+            ast::HandlerRef::Inline { effect, clauses } => {
+                let effect_label = self.resolve_handler_effect(*effect, expr.span);
+                self.lower_handler_def(effect_label, clauses, locals, expr.span)
+            }
+            ast::HandlerRef::Named(name) => match self.handler_decls.get(name).cloned() {
+                // Module scope binds nothing, so clauses lower under empty locals.
+                Some(decl) => {
+                    let effect_label = self.resolve_handler_effect(decl.effect, decl.span);
+                    self.lower_handler_def(effect_label, &decl.clauses, &HashMap::new(), decl.span)
+                }
+                None => {
+                    self.diagnostics.error(
+                        "LOWER_UNKNOWN_HANDLER",
+                        "Unknown handler name in `handle` expression",
+                        expr.span,
+                    );
+                    // Emitting a handler over an unresolved effect would trip the
+                    // pre-staging effect assertion before this diagnostic is read.
+                    return Some(self.lower_handle_body(body, locals));
+                }
+            },
+        };
+
+        let body_stmt = self.lower_handle_body(body, locals);
+        let handled = self.push_stmt(
+            StmtKind::Handle {
+                handler: handler_id,
+                body: body_stmt,
+                next: None,
+            },
+            expr.span,
+        );
+        Some(handled)
+    }
+
+    fn lower_handle_body(
+        &mut self,
+        body: &ast::Expr,
+        locals: &HashMap<SymbolId, VarId>,
+    ) -> cielo_base::StmtId {
+        if let Some(stmt) = self.lower_effectful_expr(body, locals) {
+            return stmt;
+        }
+        match &body.kind {
+            AstExprKind::Block(block) => {
+                let mut block_locals = locals.clone();
+                self.lower_block(block, &mut block_locals)
+            }
+            _ => {
+                let body_expr = self.lower_expr(body, locals);
+                self.push_stmt(StmtKind::Return(body_expr), body.span)
+            }
+        }
+    }
+
+    fn resolve_handler_effect(&mut self, effect: SymbolId, span: Span) -> EffectLabelId {
+        self.effect_labels.get(&effect).copied().unwrap_or_else(|| {
             self.diagnostics.error(
                 "LOWER_UNKNOWN_HANDLER_EFFECT",
                 "Unknown effect in `handle` expression during AST->Core lowering",
-                expr.span,
+                span,
             );
             EffectLabelId::INVALID
-        });
+        })
+    }
 
+    /// Builds a `HandlerDef` from clause syntax. A named handler lowers once per
+    /// `handle` site through here, so its Core is indistinguishable from writing
+    /// the same clauses inline.
+    fn lower_handler_def(
+        &mut self,
+        effect_label: EffectLabelId,
+        clauses: &[ast::HandleClause],
+        locals: &HashMap<SymbolId, VarId>,
+        span: Span,
+    ) -> HandlerId {
         let return_param = self.fresh_var();
-        let return_expr = self.push_expr(ExprKind::Var(return_param), expr.span);
-        let return_body = self.push_stmt(StmtKind::Return(return_expr), expr.span);
+        let return_expr = self.push_expr(ExprKind::Var(return_param), span);
+        let return_body = self.push_stmt(StmtKind::Return(return_expr), span);
 
         let mut core_clauses = Vec::with_capacity(clauses.len());
         let mut seen_clause_ops = HashSet::new();
@@ -745,37 +820,13 @@ impl Lowerer {
             });
         }
 
-        let handler_id = self.program.add_handler(HandlerDef {
+        self.program.add_handler(HandlerDef {
             effect: effect_label,
             return_param,
             return_body,
             clauses: core_clauses,
-            span: expr.span,
-        });
-
-        let body_stmt = if let Some(stmt) = self.lower_effectful_expr(body, locals) {
-            stmt
-        } else {
-            match &body.kind {
-                AstExprKind::Block(block) => {
-                    let mut block_locals = locals.clone();
-                    self.lower_block(block, &mut block_locals)
-                }
-                _ => {
-                    let body_expr = self.lower_expr(body, locals);
-                    self.push_stmt(StmtKind::Return(body_expr), body.span)
-                }
-            }
-        };
-        let handled = self.push_stmt(
-            StmtKind::Handle {
-                handler: handler_id,
-                body: body_stmt,
-                next: None,
-            },
-            expr.span,
-        );
-        Some(handled)
+            span,
+        })
     }
 
     fn lower_expr(

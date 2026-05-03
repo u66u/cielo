@@ -23,6 +23,7 @@ define_keywords! {
     "enum" => Enum,
     "effect" => Effect,
     "handle" => Handle,
+    "handler" => Handler,
     "do" => Do,
     "let" => Let,
     "if" => If,

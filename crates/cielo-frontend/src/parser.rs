@@ -1,8 +1,8 @@
 use crate::ast::{
     BinOp, BlockExpr, BuiltinType, EffectCapabilityHint, EffectDecl, EffectOperationDecl,
     EffectPropertyHint, EnumDecl, EnumVariantDecl, Expr, ExprKind, FieldDecl, FunctionDecl,
-    HandleClause, Item, MatchClause, Param, Program, StageMarker, Stmt, StructDecl, TypeExpr,
-    TypeExprKind, UnaryOp,
+    HandleClause, HandlerDecl, HandlerRef, Item, MatchClause, Param, Program, StageMarker, Stmt,
+    StructDecl, TypeExpr, TypeExprKind, UnaryOp,
 };
 use crate::lexer::{Keyword, Token, TokenKind, lex};
 use cielo_base::diagnostics::DiagnosticBag;
@@ -137,11 +137,15 @@ impl Parser {
                 items.push(Item::Effect(self.parse_effect()));
                 continue;
             }
+            if self.check_keyword(Keyword::Handler) {
+                items.push(Item::Handler(self.parse_handler_decl()));
+                continue;
+            }
 
             let span = self.current_span();
             let err = self.diagnostics.error_node(
                 "PARSE_ITEM_EXPECTED",
-                "Expected top-level item (`fn`, `struct`, `enum`, or `effect`)",
+                "Expected top-level item (`fn`, `struct`, `enum`, `effect`, or `handler`)",
                 span,
             );
             items.push(Item::Error(err));
@@ -783,7 +787,48 @@ impl Parser {
         let start = self.expect_keyword(Keyword::Handle).span;
         let body = self.parse_expr(0);
         self.expect_keyword(Keyword::With);
+        let name = self.expect_identifier("Expected effect or handler name after `with`");
+
+        // A clause block only follows an effect name; a declared handler stands alone.
+        let (handler, end) = if self.check_kind(TokenKind::LBrace) {
+            let (clauses, end) = self.parse_handler_clauses();
+            (
+                HandlerRef::Inline {
+                    effect: name,
+                    clauses,
+                },
+                end,
+            )
+        } else {
+            (HandlerRef::Named(name), self.prev_span())
+        };
+
+        Expr {
+            kind: ExprKind::Handle {
+                body: Box::new(body),
+                handler,
+            },
+            span: span_join(start, end),
+        }
+    }
+
+    fn parse_handler_decl(&mut self) -> HandlerDecl {
+        let start = self.expect_keyword(Keyword::Handler).span;
+        let name = self.expect_identifier("Expected handler name after `handler`");
+        self.expect_keyword(Keyword::With);
         let effect = self.expect_identifier("Expected effect name after `with`");
+        let (clauses, end) = self.parse_handler_clauses();
+        HandlerDecl {
+            name,
+            effect,
+            clauses,
+            span: span_join(start, end),
+        }
+    }
+
+    /// Parses `{ | op(a, b) => body, .. }`, shared by inline and named handlers.
+    /// Returns the clauses and the span of the closing brace.
+    fn parse_handler_clauses(&mut self) -> (Vec<HandleClause>, Span) {
         self.expect_kind(TokenKind::LBrace, "Expected `{` to open handler clauses");
 
         let mut clauses = Vec::new();
@@ -822,14 +867,7 @@ impl Parser {
         }
 
         let end = self.expect_kind(TokenKind::RBrace, "Expected `}` to close handler body");
-        Expr {
-            kind: ExprKind::Handle {
-                body: Box::new(body),
-                effect,
-                clauses,
-            },
-            span: span_join(start, end.span),
-        }
+        (clauses, end.span)
     }
 
     fn parse_handler_clause_body(&mut self) -> BlockExpr {
@@ -870,6 +908,7 @@ impl Parser {
                 || self.check_keyword(Keyword::Struct)
                 || self.check_keyword(Keyword::Enum)
                 || self.check_keyword(Keyword::Effect)
+                || self.check_keyword(Keyword::Handler)
             {
                 return;
             }

@@ -12,6 +12,7 @@ pub enum Item {
     Struct(StructDecl),
     Enum(EnumDecl),
     Effect(EffectDecl),
+    Handler(HandlerDecl),
     Error(ErrorNode),
 }
 
@@ -115,6 +116,26 @@ pub struct HandleClause {
     pub params: Vec<SymbolId>,
     pub body: BlockExpr,
     pub span: Span,
+}
+
+/// A `handler name with Eff { .. }` item. Clause bodies close over nothing:
+/// module scope has no bindings, so a named handler is reusable at any site.
+#[derive(Clone, Debug)]
+pub struct HandlerDecl {
+    pub name: SymbolId,
+    pub effect: SymbolId,
+    pub clauses: Vec<HandleClause>,
+    pub span: Span,
+}
+
+/// Which handler a `handle` site installs.
+#[derive(Clone, Debug)]
+pub enum HandlerRef {
+    Inline {
+        effect: SymbolId,
+        clauses: Vec<HandleClause>,
+    },
+    Named(SymbolId),
 }
 
 #[derive(Clone, Debug)]
@@ -225,8 +246,7 @@ pub enum ExprKind {
     },
     Handle {
         body: Box<Expr>,
-        effect: SymbolId,
-        clauses: Vec<HandleClause>,
+        handler: HandlerRef,
     },
     Error(ErrorNode),
 }
