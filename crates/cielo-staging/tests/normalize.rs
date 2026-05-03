@@ -894,6 +894,7 @@ fn expr_contains_var(program: &CoreProgram, root: ExprId, target: VarId) -> bool
                 stack.push(*rhs);
             }
             ExprKind::PureCall { args, .. }
+            | ExprKind::BuiltinCall { args, .. }
             | ExprKind::MakeStruct { fields: args, .. }
             | ExprKind::MakeEnum { fields: args, .. } => stack.extend(args.iter().copied()),
             ExprKind::Literal(_) | ExprKind::Error(_) => {}

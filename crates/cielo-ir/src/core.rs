@@ -1,3 +1,4 @@
+use crate::builtins::Builtin;
 use crate::effect::{EffectProperties, SortedEffectRow};
 use cielo_base::Span;
 use cielo_base::diagnostics::ErrorNode;
@@ -175,6 +176,12 @@ pub enum ExprKind {
     },
     PureCall {
         callee: FuncId,
+        args: Vec<ExprId>,
+    },
+    /// A runtime-provided operation. Unlike `PureCall` there is no callee
+    /// declaration, and unlike `Perform` it never consults the handler stack.
+    BuiltinCall {
+        builtin: Builtin,
         args: Vec<ExprId>,
     },
     /// Field name, not index: Core has no field names, so the index is

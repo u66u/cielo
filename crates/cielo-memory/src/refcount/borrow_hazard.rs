@@ -228,7 +228,8 @@ fn count_expr_uses(
         }
         CfgExpr::PureCall { args, .. }
         | CfgExpr::MakeStruct { fields: args, .. }
-        | CfgExpr::MakeEnum { fields: args, .. } => {
+        | CfgExpr::MakeEnum { fields: args, .. }
+        | CfgExpr::BuiltinCall { args, .. } => {
             for argument in args {
                 count_expr_uses(cfg, *argument, seen, counts);
             }
@@ -264,7 +265,8 @@ fn managed_values_in_expr(
         }
         CfgExpr::PureCall { args, .. }
         | CfgExpr::MakeStruct { fields: args, .. }
-        | CfgExpr::MakeEnum { fields: args, .. } => {
+        | CfgExpr::MakeEnum { fields: args, .. }
+        | CfgExpr::BuiltinCall { args, .. } => {
             let mut values = Vec::new();
             for argument in args {
                 extend_unique(

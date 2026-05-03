@@ -511,7 +511,9 @@ fn collect_expr_callees(
             collect_expr_callees(program, *lhs, out, seen);
             collect_expr_callees(program, *rhs, out, seen);
         }
-        ExprKind::MakeStruct { fields, .. } | ExprKind::MakeEnum { fields, .. } => {
+        ExprKind::MakeStruct { fields, .. }
+        | ExprKind::MakeEnum { fields, .. }
+        | ExprKind::BuiltinCall { args: fields, .. } => {
             for field in fields {
                 collect_expr_callees(program, *field, out, seen);
             }
@@ -575,7 +577,9 @@ fn expr_calls_target(
             expr_calls_target(program, *lhs, target, seen)
                 || expr_calls_target(program, *rhs, target, seen)
         }
-        ExprKind::MakeStruct { fields, .. } | ExprKind::MakeEnum { fields, .. } => fields
+        ExprKind::MakeStruct { fields, .. }
+        | ExprKind::MakeEnum { fields, .. }
+        | ExprKind::BuiltinCall { args: fields, .. } => fields
             .iter()
             .copied()
             .any(|field| expr_calls_target(program, field, target, seen)),

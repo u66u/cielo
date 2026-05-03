@@ -1158,6 +1158,26 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             ExprKind::PureCall { callee, args } => self.infer_call(*callee, args, env, expr.span),
+            ExprKind::BuiltinCall { builtin, args } => {
+                if args.len() != builtin.arity() {
+                    self.diagnostics.error(
+                        "TYPE_BAD_BUILTIN_ARITY",
+                        format!(
+                            "Builtin `{}` expects {} argument(s), got {}",
+                            builtin.name(),
+                            builtin.arity(),
+                            args.len()
+                        ),
+                        expr.span,
+                    );
+                }
+                // `print` formats every tag, so its argument is unconstrained.
+                // Inference still runs so the argument's own type is solved.
+                for arg in args {
+                    let _ = self.infer_expr(*arg, env);
+                }
+                InferTy::Concrete(self.prim.unit)
+            }
             ExprKind::MakeStruct { ty, fields } => {
                 let sig = self.struct_ctors.get(ty).cloned();
                 if let Some(sig) = sig {

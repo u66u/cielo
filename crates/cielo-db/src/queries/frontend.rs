@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use cielo_base::{Interner, SourceId};
 use cielo_frontend::parser::parse_source;
+use cielo_ir::builtins::BuiltinSymbols;
 use cielo_ir::target::TargetSpec;
 use cielo_lowering::{LowerConfig, LowerOutput, TargetBuiltinSymbols, lower_program};
 use cielo_sema::check_core;
@@ -28,9 +29,12 @@ pub fn core_file(db: &dyn Db, source: SourceFile, target: TargetProfile) -> Arc<
     let mut interner = parsed.interner.as_ref().clone();
     let main = interner.intern("main");
     let builtins = TargetBuiltinSymbols::intern(&mut interner);
+    let runtime_builtins = BuiltinSymbols::intern(&mut interner);
     let lowered = lower_program(
         &parsed.ast,
-        LowerConfig::with_entrypoint(main).with_target_builtins(TargetSpec::from(target), builtins),
+        LowerConfig::with_entrypoint(main)
+            .with_target_builtins(TargetSpec::from(target), builtins)
+            .with_builtins(runtime_builtins),
     );
     let mut diagnostics = parsed.diagnostics.clone();
     diagnostics.extend(lowered.diagnostics);

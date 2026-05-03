@@ -24,6 +24,13 @@ _Noreturn static void cielo_trap(const char *what) {
   abort();
 }
 
+/* Same, but names the operation that faulted. */
+_Noreturn static void cielo_trap_op(const char *what, const char *op) {
+  fflush(stdout);
+  fprintf(stderr, "cielo: %s: %s\n", what, op ? op : "?");
+  abort();
+}
+
 typedef enum {
   CV_UNIT = 0,
   CV_BOOL = 1,
@@ -576,6 +583,44 @@ static inline void cv_print(CieloValue v) {
   }
 }
 
+/* Builtins are runtime-provided operations. Codegen calls them directly for a
+ * `BuiltinCall`; the table below only serves operations that arrive through
+ * `perform`, so an effect whose name matches a builtin still resolves once no
+ * handler claims it. Arguments are borrowed, never released here. */
+typedef CieloValue (*CieloBuiltinFn)(size_t argc, const CieloValue *args);
+
+static CieloValue cielo_builtin_print(size_t argc, const CieloValue *args) {
+  if (argc != 1 || args == NULL)
+    cielo_trap("print expects exactly one argument");
+  cv_print(args[0]);
+  return cv_unit();
+}
+
+typedef struct {
+  uint32_t op_symbol;
+  CieloBuiltinFn fn;
+} CieloBuiltinEntry;
+
+#define CIELO_BUILTIN_ENTRY(SYMBOL, FN) {(SYMBOL), (FN)},
+
+/* SymbolIds are only stable within a compilation unit, so the keys cannot be
+ * baked into this header; codegen defines CIELO_BUILTIN_TABLE above it. */
+static const CieloBuiltinEntry g_cielo_builtins[] = {
+#ifdef CIELO_BUILTIN_TABLE
+    CIELO_BUILTIN_TABLE(CIELO_BUILTIN_ENTRY)
+#endif
+        {0u, NULL}};
+
+static CieloBuiltinFn cielo_builtin_lookup(uint32_t op_symbol) {
+  if (op_symbol == 0u)
+    return NULL;
+  for (size_t i = 0; g_cielo_builtins[i].fn != NULL; i++) {
+    if (g_cielo_builtins[i].op_symbol == op_symbol)
+      return g_cielo_builtins[i].fn;
+  }
+  return NULL;
+}
+
 static CieloValue cielo_perform_scoped(uint32_t effect,
                                        uint32_t expected_capability_id,
                                        uint32_t op_symbol, const char *op,
@@ -641,19 +686,12 @@ static CieloValue cielo_perform_scoped(uint32_t effect,
       cielo_trap("handler has no clause for this operation");
     }
   }
-#ifdef CIELO_OP_SYMBOL_PRINT
-  if (op_symbol == CIELO_OP_SYMBOL_PRINT && argc > 0 && args != NULL) {
-    cv_print(args[0]);
-    return cv_unit();
-  }
-#endif
-  if (op && strcmp(op, "print") == 0 && argc > 0 && args != NULL) {
-    cv_print(args[0]);
-    return cv_unit();
-  }
+  CieloBuiltinFn builtin = cielo_builtin_lookup(op_symbol);
+  if (builtin != NULL)
+    return builtin(argc, args);
   /* An effect escaped every handler. Returning unit would make that
    * indistinguishable from a handler that ran and produced unit. */
-  cielo_trap("effect performed with no handler in scope");
+  cielo_trap_op("effect performed with no handler in scope", op);
 }
 
 /* One allocation per constructor: fields live in the tail of the same block.

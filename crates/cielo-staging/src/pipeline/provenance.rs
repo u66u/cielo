@@ -130,7 +130,7 @@ fn infer_runtime_dependency_from_expr(
                 None
             }
         }
-        ExprKind::PureCall { args, .. } => args
+        ExprKind::PureCall { args, .. } | ExprKind::BuiltinCall { args, .. } => args
             .iter()
             .find(|arg| is_runtime_expr(**arg, bta))
             .copied()

@@ -5,6 +5,7 @@
 //! variables are preserved as optional provenance while synthetic block values
 //! are free to model continuations and cleanup paths.
 
+use crate::builtins::Builtin;
 use crate::core::{BinaryOp, Literal, StageDirective, UnaryOp};
 use cielo_base::{
     CfgBlockId, CfgExprId, CfgFuncId, CfgHandlerId, CfgInstId, CfgValueId, EffectLabelId,
@@ -201,6 +202,10 @@ pub enum CfgExpr {
     PureCall {
         callee: SymbolId,
         callee_fn: CfgFuncId,
+        args: Vec<CfgExprId>,
+    },
+    BuiltinCall {
+        builtin: Builtin,
         args: Vec<CfgExprId>,
     },
     Field {

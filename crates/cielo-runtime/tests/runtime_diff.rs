@@ -1349,7 +1349,8 @@ fn eval_expr_at(
             }
             eval_call(program, ct, sema, *callee, values, depth + 1)
         }
-        ExprKind::Error(_) => None,
+        // Builtins produce output rather than a value the oracle can model.
+        ExprKind::BuiltinCall { .. } | ExprKind::Error(_) => None,
     }
 }
 

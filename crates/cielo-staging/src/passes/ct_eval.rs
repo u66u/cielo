@@ -213,7 +213,11 @@ impl CallEvaluator<'_> {
                     .collect::<Option<Vec<_>>>()?;
                 self.eval_call(*callee, args.as_slice())
             }
-            ExprKind::MakeStruct { .. } | ExprKind::MakeEnum { .. } | ExprKind::Error(_) => None,
+            // Builtins are runtime-only: folding one would discard its output.
+            ExprKind::MakeStruct { .. }
+            | ExprKind::MakeEnum { .. }
+            | ExprKind::BuiltinCall { .. }
+            | ExprKind::Error(_) => None,
         }
     }
 }

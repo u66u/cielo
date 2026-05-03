@@ -1,3 +1,4 @@
+use crate::builtins::Builtin;
 use crate::core::{BinaryOp, Literal, StageDirective, UnaryOp};
 use cielo_base::{EffectLabelId, LinearExprId, LinearFuncId, LinearStmtId, Span, SymbolId, VarId};
 use smallvec::{SmallVec, smallvec};
@@ -179,6 +180,10 @@ pub enum LinearExpr {
     PureCall {
         callee: SymbolId,
         callee_fn: LinearFuncId,
+        args: Vec<LinearExprId>,
+    },
+    BuiltinCall {
+        builtin: Builtin,
         args: Vec<LinearExprId>,
     },
     Field {

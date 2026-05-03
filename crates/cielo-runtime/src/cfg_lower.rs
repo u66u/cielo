@@ -160,6 +160,10 @@ impl<'a> Lowerer<'a> {
                 callee_fn: self.cfg_func_id(callee_fn),
                 args: args.into_iter().map(|arg| self.lower_expr(arg)).collect(),
             },
+            Some(LinearExpr::BuiltinCall { builtin, args }) => CfgExpr::BuiltinCall {
+                builtin,
+                args: args.into_iter().map(|arg| self.lower_expr(arg)).collect(),
+            },
             Some(LinearExpr::MakeStruct { ty, fields }) => CfgExpr::MakeStruct {
                 ty,
                 fields: fields

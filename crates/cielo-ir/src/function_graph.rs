@@ -76,7 +76,9 @@ fn collect_expr_callees(
                 collect_expr_callees(program, *arg, seen_exprs, out);
             }
         }
-        ExprKind::MakeStruct { fields, .. } | ExprKind::MakeEnum { fields, .. } => {
+        ExprKind::MakeStruct { fields, .. }
+        | ExprKind::MakeEnum { fields, .. }
+        | ExprKind::BuiltinCall { args: fields, .. } => {
             for field in fields {
                 collect_expr_callees(program, *field, seen_exprs, out);
             }

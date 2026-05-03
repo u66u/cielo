@@ -569,6 +569,7 @@ fn expr_mentions_var(program: &CoreProgram, root: ExprId, var: VarId) -> bool {
                 stack.push(*lhs);
             }
             ExprKind::PureCall { args, .. }
+            | ExprKind::BuiltinCall { args, .. }
             | ExprKind::MakeStruct { fields: args, .. }
             | ExprKind::MakeEnum { fields: args, .. } => {
                 for arg in args {

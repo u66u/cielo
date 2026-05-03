@@ -1109,6 +1109,13 @@ impl<'a> NormalizedGraphBuilder<'a> {
                     .map(|arg| self.normalize_expr(*arg, scope))
                     .collect(),
             },
+            ExprKind::BuiltinCall { builtin, args } => ExprKind::BuiltinCall {
+                builtin: *builtin,
+                args: args
+                    .iter()
+                    .map(|arg| self.normalize_expr(*arg, scope))
+                    .collect(),
+            },
             ExprKind::MakeStruct { ty, fields } => ExprKind::MakeStruct {
                 ty: *ty,
                 fields: fields
@@ -1373,6 +1380,10 @@ impl<'a> GraphCloner<'a> {
             },
             ExprKind::PureCall { callee, args } => ExprKind::PureCall {
                 callee: self.remap_callee(callee),
+                args: self.clone_expr_list(args),
+            },
+            ExprKind::BuiltinCall { builtin, args } => ExprKind::BuiltinCall {
+                builtin,
                 args: self.clone_expr_list(args),
             },
             ExprKind::MakeStruct { ty, fields } => ExprKind::MakeStruct {

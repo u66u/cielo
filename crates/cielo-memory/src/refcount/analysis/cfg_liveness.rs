@@ -245,7 +245,8 @@ fn collect_expr_uses(
         }
         CfgExpr::PureCall { args, .. }
         | CfgExpr::MakeStruct { fields: args, .. }
-        | CfgExpr::MakeEnum { fields: args, .. } => {
+        | CfgExpr::MakeEnum { fields: args, .. }
+        | CfgExpr::BuiltinCall { args, .. } => {
             for arg in args {
                 collect_expr_uses(program, *arg, output);
             }

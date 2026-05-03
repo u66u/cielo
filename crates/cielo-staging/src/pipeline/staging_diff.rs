@@ -188,6 +188,7 @@ fn expr_kind_tag(kind: &ExprKind) -> &'static str {
         ExprKind::Field { .. } => "field",
         ExprKind::Binary { .. } => "bin",
         ExprKind::PureCall { .. } => "call",
+        ExprKind::BuiltinCall { .. } => "builtin",
         ExprKind::MakeStruct { .. } => "mk_struct",
         ExprKind::MakeEnum { .. } => "mk_enum",
         ExprKind::Error(_) => "err",
@@ -252,6 +253,12 @@ fn expr_fingerprint(
             }
             ExprKind::PureCall { callee, args } => {
                 callee.as_u32().hash(&mut hasher);
+                for arg in args {
+                    expr_fingerprint(program, *arg, memo, visiting).hash(&mut hasher);
+                }
+            }
+            ExprKind::BuiltinCall { builtin, args } => {
+                std::mem::discriminant(builtin).hash(&mut hasher);
                 for arg in args {
                     expr_fingerprint(program, *arg, memo, visiting).hash(&mut hasher);
                 }

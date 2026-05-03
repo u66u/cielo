@@ -777,6 +777,14 @@ fn lower_expr(
                 .map(|arg| lower_expr(input, arg, state))
                 .collect(),
         },
+        ExprKind::BuiltinCall { builtin, args } => LinearExpr::BuiltinCall {
+            builtin: *builtin,
+            args: args
+                .iter()
+                .copied()
+                .map(|arg| lower_expr(input, arg, state))
+                .collect(),
+        },
         ExprKind::MakeStruct { ty, fields } => LinearExpr::MakeStruct {
             ty: *ty,
             fields: fields

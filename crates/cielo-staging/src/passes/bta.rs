@@ -140,6 +140,7 @@ impl ExprUseIndex {
                     }
                 }
                 ExprKind::PureCall { args, .. }
+                | ExprKind::BuiltinCall { args, .. }
                 | ExprKind::MakeStruct { fields: args, .. }
                 | ExprKind::MakeEnum { fields: args, .. } => {
                     for arg in args {
@@ -663,6 +664,9 @@ fn infer_expr_runtime_reason(
         ExprKind::MakeStruct { fields, .. } | ExprKind::MakeEnum { fields, .. } => fields
             .iter()
             .find_map(|field| stage_reason_of_expr(bta, *field)),
+        // A builtin's effect is observable, so it can never be folded away at
+        // compile time regardless of how static its arguments are.
+        ExprKind::BuiltinCall { .. } => Some(Reason::UnclassifiedRuntime),
         ExprKind::Literal(_) | ExprKind::Error(_) => None,
     }
 }

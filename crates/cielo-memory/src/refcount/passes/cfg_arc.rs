@@ -250,6 +250,13 @@ fn collect_expr_uses(
                 collect_expr_uses(cfg, *arg, UseMode::Consume, counts);
             }
         }
+        // Builtins read their arguments and return; ownership stays with the
+        // caller, so a consume here would leak what the runtime never releases.
+        CfgExpr::BuiltinCall { args, .. } => {
+            for arg in args {
+                collect_expr_uses(cfg, *arg, UseMode::Borrow, counts);
+            }
+        }
         CfgExpr::Literal(_) | CfgExpr::Error => {}
     }
 }

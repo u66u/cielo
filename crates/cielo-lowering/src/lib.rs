@@ -28,6 +28,7 @@ use cielo_frontend::ast::{
     self, BuiltinType, EffectCapabilityHint, EffectPropertyHint, ExprKind as AstExprKind, Item,
     Stmt as AstStmt, TypeExpr, TypeExprKind,
 };
+use cielo_ir::builtins::BuiltinSymbols;
 use cielo_ir::core::{
     AdtEnumDecl, AdtEnumVariantDecl, AdtStructDecl, BinaryOp, CoreProgram, CoreTypeRef, EffectDecl,
     EffectOperationDecl, ExprKind, ExprNode, FunctionDecl, HandlerClause, HandlerDef, Literal,
@@ -68,6 +69,7 @@ pub struct LowerConfig {
     pub entrypoints: Vec<SymbolId>,
     pub target_spec: Option<TargetSpec>,
     pub target_builtins: Option<TargetBuiltinSymbols>,
+    pub builtins: BuiltinSymbols,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -93,7 +95,13 @@ impl LowerConfig {
             entrypoints: vec![entrypoint],
             target_spec: None,
             target_builtins: None,
+            builtins: BuiltinSymbols::default(),
         }
+    }
+
+    pub fn with_builtins(mut self, builtins: BuiltinSymbols) -> Self {
+        self.builtins = builtins;
+        self
     }
 
     pub fn with_target_builtins(
@@ -951,6 +959,16 @@ impl Lowerer {
                         self.lower_target_builtin_call(symbol, args, locals, expr.span)
                     {
                         target_builtin
+                    } else if let Some(builtin) = self.config.builtins.lookup(symbol) {
+                        // Checked after user functions, so a source-level
+                        // definition of the same name still wins.
+                        ExprKind::BuiltinCall {
+                            builtin,
+                            args: args
+                                .iter()
+                                .map(|arg| self.lower_expr(arg, locals))
+                                .collect(),
+                        }
                     } else {
                         let error = self.diagnostics.error_node(
                             "LOWER_UNKNOWN_FUNC",

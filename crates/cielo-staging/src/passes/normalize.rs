@@ -204,7 +204,13 @@ impl<'a> Rewriter<'a> {
             } => {
                 let value = self.rewrite_expr(value);
                 let next = self.rewrite_stmt(next);
-                if self.mode == RewriteMode::Shrink && self.var_use_count(binding) == 0 {
+                // An expression statement lowers to a let with an unused
+                // binding, so dropping on use count alone would delete every
+                // `print(..)`. A builtin's output is the point of the call.
+                if self.mode == RewriteMode::Shrink
+                    && self.var_use_count(binding) == 0
+                    && !expr_has_observable_effect(self.program, value)
+                {
                     self.changed = true;
                     next
                 } else {
@@ -557,6 +563,14 @@ impl<'a> Rewriter<'a> {
                     expr_id
                 }
             }
+            ExprKind::BuiltinCall { builtin, args } => {
+                let args = args
+                    .into_iter()
+                    .map(|arg| self.rewrite_expr(arg))
+                    .collect::<Vec<_>>();
+                self.set_expr(expr_id, ExprKind::BuiltinCall { builtin, args });
+                expr_id
+            }
             ExprKind::MakeStruct { ty, fields } => {
                 let fields = fields
                     .into_iter()
@@ -675,7 +689,7 @@ impl<'a> Rewriter<'a> {
                     },
                 }))
             }
-            ExprKind::PureCall { .. } | ExprKind::Error(_) => None,
+            ExprKind::PureCall { .. } | ExprKind::BuiltinCall { .. } | ExprKind::Error(_) => None,
         }?;
         memo.insert(expr_id, cloned);
         Some(cloned)
@@ -835,11 +849,40 @@ fn expr_mentions_var(program: &CoreProgram, root: ExprId, var: VarId) -> bool {
                 stack.push(*rhs);
             }
             ExprKind::PureCall { args, .. }
+            | ExprKind::BuiltinCall { args, .. }
             | ExprKind::MakeStruct { fields: args, .. }
             | ExprKind::MakeEnum { fields: args, .. } => {
                 stack.extend(args.iter().copied());
             }
             ExprKind::Literal(_) | ExprKind::Error(_) => {}
+        }
+    }
+    false
+}
+
+/// True when evaluating `expr` produces output. Such an expression cannot be
+/// deleted for being unused, nor duplicated by inlining.
+fn expr_has_observable_effect(program: &CoreProgram, expr_id: ExprId) -> bool {
+    let mut stack = vec![expr_id];
+    let mut seen = HashSet::new();
+    while let Some(expr_id) = stack.pop() {
+        if !seen.insert(expr_id) {
+            continue;
+        }
+        let Some(expr) = program.expr(expr_id) else {
+            continue;
+        };
+        match &expr.kind {
+            ExprKind::BuiltinCall { .. } => return true,
+            ExprKind::Unary { expr, .. } | ExprKind::Field { base: expr, .. } => stack.push(*expr),
+            ExprKind::Binary { lhs, rhs, .. } => {
+                stack.push(*lhs);
+                stack.push(*rhs);
+            }
+            ExprKind::PureCall { args, .. }
+            | ExprKind::MakeStruct { fields: args, .. }
+            | ExprKind::MakeEnum { fields: args, .. } => stack.extend(args.iter().copied()),
+            ExprKind::Var(_) | ExprKind::Literal(_) | ExprKind::Error(_) => {}
         }
     }
     false
@@ -891,6 +934,7 @@ fn collect_expr_var_uses(
             collect_expr_var_uses(program, *rhs, seen_exprs, uses);
         }
         ExprKind::PureCall { args, .. }
+        | ExprKind::BuiltinCall { args, .. }
         | ExprKind::MakeStruct { fields: args, .. }
         | ExprKind::MakeEnum { fields: args, .. } => {
             for arg in args {
@@ -942,6 +986,11 @@ fn collect_expr_call_counts(
         ExprKind::PureCall { callee, args } => {
             let next = calls.get(callee).copied().unwrap_or(0).saturating_add(1);
             calls.insert(*callee, next);
+            for arg in args {
+                collect_expr_call_counts(program, *arg, seen_exprs, calls);
+            }
+        }
+        ExprKind::BuiltinCall { args, .. } => {
             for arg in args {
                 collect_expr_call_counts(program, *arg, seen_exprs, calls);
             }
@@ -1072,7 +1121,9 @@ fn count_expr_nodes(program: &CoreProgram, root: ExprId) -> usize {
                     stack.push(*lhs);
                     stack.push(*rhs);
                 }
-                ExprKind::PureCall { args, .. } => stack.extend(args.iter().copied()),
+                ExprKind::PureCall { args, .. } | ExprKind::BuiltinCall { args, .. } => {
+                    stack.extend(args.iter().copied())
+                }
                 ExprKind::MakeStruct { fields, .. } | ExprKind::MakeEnum { fields, .. } => {
                     stack.extend(fields.iter().copied());
                 }
@@ -1103,7 +1154,12 @@ fn expr_is_inlineable(
                     return false;
                 }
             }
-            ExprKind::PureCall { .. } | ExprKind::Field { .. } | ExprKind::Error(_) => {
+            // A builtin is never duplicated or dropped by inlining: its output
+            // is observable, so copying the call would double it.
+            ExprKind::PureCall { .. }
+            | ExprKind::BuiltinCall { .. }
+            | ExprKind::Field { .. }
+            | ExprKind::Error(_) => {
                 return false;
             }
             ExprKind::Literal(_) => {}
@@ -1181,6 +1237,10 @@ fn expr_calls_target(
                 .copied()
                 .any(|arg| expr_calls_target(program, arg, target, seen))
         }
+        ExprKind::BuiltinCall { args, .. } => args
+            .iter()
+            .copied()
+            .any(|arg| expr_calls_target(program, arg, target, seen)),
         ExprKind::Field { base, .. } => expr_calls_target(program, *base, target, seen),
         ExprKind::Unary { expr, .. } => expr_calls_target(program, *expr, target, seen),
         ExprKind::Binary { lhs, rhs, .. } => {

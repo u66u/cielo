@@ -8,6 +8,7 @@ use std::fs;
 
 use cielo_base::{DiagnosticBag, Interner, SourceId};
 use cielo_frontend::{ParseOutput, parse_source};
+use cielo_ir::builtins::BuiltinSymbols;
 use cielo_ir::{cfg::CfgProgram, core::CoreProgram, linear::LinearProgram};
 use cielo_lowering::{LowerConfig, LowerOutput, TargetBuiltinSymbols, lower_program};
 use cielo_memory::{MemoryInput, MemoryPreset, MemoryProfile, MemoryReport};
@@ -89,9 +90,12 @@ impl PassHarness {
         let parsed = self.parse(source, source_id, interner);
         let main = interner.intern("main");
         let builtins = TargetBuiltinSymbols::intern(interner);
+        let runtime_builtins = BuiltinSymbols::intern(interner);
         self.lower_parsed_to_core_with_config(
             parsed,
-            LowerConfig::with_entrypoint(main).with_target_builtins(self.config.target, builtins),
+            LowerConfig::with_entrypoint(main)
+                .with_target_builtins(self.config.target, builtins)
+                .with_builtins(runtime_builtins),
         )
     }
 
