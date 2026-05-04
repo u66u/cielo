@@ -7,10 +7,13 @@
 
 use crate::builtins::Builtin;
 use crate::core::{BinaryOp, Literal, StageDirective, UnaryOp};
+use crate::ownership::OperandRole;
 use cielo_base::{
     CfgBlockId, CfgExprId, CfgFuncId, CfgHandlerId, CfgInstId, CfgValueId, EffectLabelId,
     LinearExprId, LinearStmtId, SymbolId, VarId,
 };
+use smallvec::{SmallVec, smallvec};
+use std::hash::{Hash, Hasher};
 
 #[derive(Clone, Debug, Default)]
 pub struct CfgProgram {
@@ -224,6 +227,69 @@ pub enum CfgExpr {
     Error,
 }
 
+impl CfgExpr {
+    /// See [`crate::core::ExprKind::operands`]. Reference counting reads the
+    /// roles here directly, so an operand listed as `Owned` gets a retain and
+    /// one listed as `Read` does not.
+    pub fn operands(&self) -> SmallVec<[(CfgExprId, OperandRole); 4]> {
+        match self {
+            Self::Value(_) | Self::Literal(_) | Self::Error => SmallVec::new(),
+            Self::Unary { expr: operand, .. } | Self::Field { base: operand, .. } => {
+                smallvec![(*operand, OperandRole::Read)]
+            }
+            Self::Binary { lhs, rhs, .. } => {
+                smallvec![(*lhs, OperandRole::Read), (*rhs, OperandRole::Read)]
+            }
+            Self::PureCall { args: operands, .. }
+            | Self::MakeStruct {
+                fields: operands, ..
+            }
+            | Self::MakeEnum {
+                fields: operands, ..
+            } => operands
+                .iter()
+                .map(|operand| (*operand, OperandRole::Owned))
+                .collect(),
+        }
+    }
+
+    pub fn child_exprs(&self) -> SmallVec<[CfgExprId; 4]> {
+        self.operands().into_iter().map(|(expr, _)| expr).collect()
+    }
+
+    pub const fn tag(&self) -> &'static str {
+        match self {
+            Self::Literal(_) => "lit",
+            Self::Value(_) => "val",
+            Self::Unary { .. } => "un",
+            Self::Field { .. } => "field",
+            Self::Binary { .. } => "bin",
+            Self::PureCall { .. } => "call",
+            Self::MakeStruct { .. } => "mk_struct",
+            Self::MakeEnum { .. } => "mk_enum",
+            Self::Error => "err",
+        }
+    }
+
+    pub fn hash_own<H: Hasher>(&self, hasher: &mut H) {
+        self.tag().hash(hasher);
+        match self {
+            Self::Value(value) => value.as_u32().hash(hasher),
+            Self::Literal(literal) => literal.hash_structural(hasher),
+            Self::Unary { op, .. } => std::mem::discriminant(op).hash(hasher),
+            Self::Binary { op, .. } => std::mem::discriminant(op).hash(hasher),
+            Self::Field { index, .. } => index.hash(hasher),
+            Self::PureCall { callee, .. } => callee.as_u32().hash(hasher),
+            Self::MakeStruct { ty, .. } => ty.as_u32().hash(hasher),
+            Self::MakeEnum { ty, variant, .. } => {
+                ty.as_u32().hash(hasher);
+                variant.as_u32().hash(hasher);
+            }
+            Self::Error => {}
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CfgInstructionNode {
     pub id: CfgInstId,
@@ -258,6 +324,40 @@ pub enum CfgInstruction {
     },
     Hole,
     Error,
+}
+
+impl CfgInstruction {
+    /// `Let` binds its operand to a value that outlives the instruction, so it
+    /// takes ownership; `Eval` discards the result and only reads.
+    pub fn operands(&self) -> SmallVec<[(CfgExprId, OperandRole); 2]> {
+        match self {
+            Self::Let { value, .. } => smallvec![(*value, OperandRole::Owned)],
+            Self::Eval { value, .. } => smallvec![(*value, OperandRole::Read)],
+            Self::HandlerEnter { .. }
+            | Self::HandlerExit { .. }
+            | Self::StageEnter { .. }
+            | Self::StageExit { .. }
+            | Self::Hole
+            | Self::Error => SmallVec::new(),
+        }
+    }
+
+    pub fn child_exprs(&self) -> SmallVec<[CfgExprId; 2]> {
+        self.operands().into_iter().map(|(expr, _)| expr).collect()
+    }
+
+    /// The value this instruction defines, if any.
+    pub fn result(&self) -> Option<CfgValueId> {
+        match self {
+            Self::Let { result, .. } | Self::Eval { result, .. } => Some(*result),
+            Self::HandlerEnter { .. }
+            | Self::HandlerExit { .. }
+            | Self::StageEnter { .. }
+            | Self::StageExit { .. }
+            | Self::Hole
+            | Self::Error => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -393,6 +493,79 @@ impl CfgTerminator {
             Self::Perform { result, target, .. } => {
                 vec![(*target, usize::from(result.is_some()))]
             }
+        }
+    }
+
+    /// Every successor slot, for rewriting an edge in place.
+    pub fn successors_mut(&mut self) -> SmallVec<[&mut CfgBlockId; 4]> {
+        match self {
+            Self::Return(_) | Self::Unreachable => SmallVec::new(),
+            Self::Goto { target, .. }
+            | Self::Call { target, .. }
+            | Self::Perform { target, .. } => {
+                smallvec![target]
+            }
+            Self::Branch {
+                then_target,
+                else_target,
+                ..
+            } => smallvec![then_target, else_target],
+            Self::Match { arms, default, .. } => {
+                let mut targets: SmallVec<[&mut CfgBlockId; 4]> =
+                    arms.iter_mut().map(|arm| &mut arm.target).collect();
+                targets.push(default);
+                targets
+            }
+            Self::Switch {
+                targets, default, ..
+            } => {
+                let mut slots: SmallVec<[&mut CfgBlockId; 4]> = targets.iter_mut().collect();
+                slots.push(default);
+                slots
+            }
+        }
+    }
+
+    /// Operands read by the terminator itself, with the role each one gets.
+    ///
+    /// Everything handed to a successor block, a callee, or the caller is
+    /// `Owned`; a selector that only picks an edge is `Read`. Reference counting
+    /// depends on that split, so it lives here rather than in the ARC pass.
+    pub fn operands(&self) -> SmallVec<[(CfgExprId, OperandRole); 4]> {
+        match self {
+            Self::Unreachable => SmallVec::new(),
+            Self::Return(value) => smallvec![(*value, OperandRole::Owned)],
+            Self::Branch { cond: selector, .. }
+            | Self::Match {
+                scrutinee: selector,
+                ..
+            }
+            | Self::Switch { selector, .. } => smallvec![(*selector, OperandRole::Read)],
+            Self::Goto { args, .. } | Self::Call { args, .. } | Self::Perform { args, .. } => {
+                args.iter().map(|arg| (*arg, OperandRole::Owned)).collect()
+            }
+        }
+    }
+
+    pub fn child_exprs(&self) -> SmallVec<[CfgExprId; 4]> {
+        self.operands().into_iter().map(|(expr, _)| expr).collect()
+    }
+
+    /// Values the terminator makes available to its successors: a call or
+    /// perform result, and the binders projected out on a match arm.
+    pub fn defined_values(&self) -> SmallVec<[CfgValueId; 4]> {
+        match self {
+            Self::Return(_)
+            | Self::Goto { .. }
+            | Self::Branch { .. }
+            | Self::Switch { .. }
+            | Self::Unreachable => SmallVec::new(),
+            Self::Call { result, .. } => smallvec![*result],
+            Self::Perform { result, .. } => result.iter().copied().collect(),
+            Self::Match { arms, .. } => arms
+                .iter()
+                .flat_map(|arm| arm.binders.iter().copied())
+                .collect(),
         }
     }
 }

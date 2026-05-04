@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use cielo_base::ids::{ExprId, FuncId, StmtId};
 
 use crate::core::{CoreProgram, ExprKind, StmtKind};
+use crate::walk::{Walk, walk_exprs_from};
 
 pub fn collect_reachable_functions(program: &CoreProgram) -> Vec<FuncId> {
     let mut seen = HashSet::new();
@@ -56,35 +57,12 @@ fn collect_expr_callees(
     seen_exprs: &mut HashSet<ExprId>,
     out: &mut HashSet<FuncId>,
 ) {
-    if !seen_exprs.insert(expr_id) {
-        return;
-    }
-    let Some(expr) = program.expr(expr_id) else {
-        return;
-    };
-    match &expr.kind {
-        ExprKind::Unary { expr, .. } | ExprKind::Field { base: expr, .. } => {
-            collect_expr_callees(program, *expr, seen_exprs, out)
-        }
-        ExprKind::Binary { lhs, rhs, .. } => {
-            collect_expr_callees(program, *lhs, seen_exprs, out);
-            collect_expr_callees(program, *rhs, seen_exprs, out);
-        }
-        ExprKind::PureCall { callee, args } => {
+    walk_exprs_from(program, expr_id, seen_exprs, &mut |_, expr| {
+        if let ExprKind::PureCall { callee, .. } = &expr.kind {
             out.insert(*callee);
-            for arg in args {
-                collect_expr_callees(program, *arg, seen_exprs, out);
-            }
         }
-        ExprKind::MakeStruct { fields, .. }
-        | ExprKind::MakeEnum { fields, .. }
-        | ExprKind::BuiltinCall { args: fields, .. } => {
-            for field in fields {
-                collect_expr_callees(program, *field, seen_exprs, out);
-            }
-        }
-        ExprKind::Var(_) | ExprKind::Literal(_) | ExprKind::Error(_) => {}
-    }
+        Walk::Descend
+    });
 }
 
 pub fn dense_remap(total_functions: usize, reachable: &[FuncId]) -> Vec<Option<FuncId>> {

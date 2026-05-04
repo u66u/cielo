@@ -1,41 +1,31 @@
 use std::marker::PhantomData;
 
-use crate::ids::{ExprId, HandlerId, VarId};
+use crate::ids::{CfgExprId, ExprId, HandlerId, LinearExprId, VarId};
 
 pub trait DenseId: Copy {
     fn from_index(index: usize) -> Self;
     fn index(self) -> usize;
 }
 
-impl DenseId for ExprId {
-    fn from_index(index: usize) -> Self {
-        ExprId::new(index)
-    }
+macro_rules! impl_dense_id {
+    ($name:ident) => {
+        impl DenseId for $name {
+            fn from_index(index: usize) -> Self {
+                $name::new(index)
+            }
 
-    fn index(self) -> usize {
-        ExprId::index(self)
-    }
+            fn index(self) -> usize {
+                $name::index(self)
+            }
+        }
+    };
 }
 
-impl DenseId for VarId {
-    fn from_index(index: usize) -> Self {
-        VarId::new(index)
-    }
-
-    fn index(self) -> usize {
-        VarId::index(self)
-    }
-}
-
-impl DenseId for HandlerId {
-    fn from_index(index: usize) -> Self {
-        HandlerId::new(index)
-    }
-
-    fn index(self) -> usize {
-        HandlerId::index(self)
-    }
-}
+impl_dense_id!(ExprId);
+impl_dense_id!(VarId);
+impl_dense_id!(HandlerId);
+impl_dense_id!(LinearExprId);
+impl_dense_id!(CfgExprId);
 
 #[derive(Clone, Debug)]
 pub struct DenseMap<I: DenseId, V> {

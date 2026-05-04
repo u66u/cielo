@@ -1,5 +1,6 @@
 use crate::builtins::Builtin;
 use crate::effect::{EffectProperties, SortedEffectRow};
+use crate::ownership::OperandRole;
 use cielo_base::Span;
 use cielo_base::diagnostics::ErrorNode;
 use cielo_base::{EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, TypeId, VarId};
@@ -39,6 +40,37 @@ impl PartialEq for Literal {
 }
 
 impl Eq for Literal {}
+
+impl Literal {
+    /// Hashes with explicit variant tags instead of `mem::discriminant`, whose
+    /// value is an implementation detail. The result reaches staging snapshot
+    /// files and is compared across compiler runs.
+    pub fn hash_structural<H: Hasher>(&self, hasher: &mut H) {
+        match self {
+            Self::Unit => 0u8.hash(hasher),
+            Self::Bool(value) => {
+                1u8.hash(hasher);
+                value.hash(hasher);
+            }
+            Self::Int(value) => {
+                2u8.hash(hasher);
+                value.hash(hasher);
+            }
+            Self::Float(value) => {
+                3u8.hash(hasher);
+                value.to_bits().hash(hasher);
+            }
+            Self::Char(value) => {
+                4u8.hash(hasher);
+                value.hash(hasher);
+            }
+            Self::String(value) => {
+                5u8.hash(hasher);
+                value.hash(hasher);
+            }
+        }
+    }
+}
 
 impl Hash for Literal {
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -200,6 +232,79 @@ pub enum ExprKind {
         fields: Vec<ExprId>,
     },
     Error(ErrorNode),
+}
+
+impl ExprKind {
+    /// Sub-expressions paired with the role this node gives each one.
+    ///
+    /// Every expression traversal in the compiler is derived from this listing,
+    /// so a new variant needs an arm here and nowhere else unless it also has
+    /// behaviour of its own.
+    pub fn operands(&self) -> SmallVec<[(ExprId, OperandRole); 4]> {
+        match self {
+            Self::Var(_) | Self::Literal(_) | Self::Error(_) => SmallVec::new(),
+            Self::Unary { expr: operand, .. } | Self::Field { base: operand, .. } => {
+                smallvec![(*operand, OperandRole::Read)]
+            }
+            Self::Binary { lhs, rhs, .. } => {
+                smallvec![(*lhs, OperandRole::Read), (*rhs, OperandRole::Read)]
+            }
+            Self::PureCall { args: operands, .. }
+            | Self::MakeStruct {
+                fields: operands, ..
+            }
+            | Self::MakeEnum {
+                fields: operands, ..
+            } => operands
+                .iter()
+                .map(|operand| (*operand, OperandRole::Owned))
+                .collect(),
+        }
+    }
+
+    pub fn child_exprs(&self) -> SmallVec<[ExprId; 4]> {
+        self.operands().into_iter().map(|(expr, _)| expr).collect()
+    }
+
+    /// Stable variant discriminator. The strings end up in staging snapshot
+    /// files, so an existing one must not be renamed.
+    pub const fn tag(&self) -> &'static str {
+        match self {
+            Self::Literal(_) => "lit",
+            Self::Var(_) => "var",
+            Self::Unary { .. } => "un",
+            Self::Field { .. } => "field",
+            Self::Binary { .. } => "bin",
+            Self::PureCall { .. } => "call",
+            Self::MakeStruct { .. } => "mk_struct",
+            Self::MakeEnum { .. } => "mk_enum",
+            Self::Error(_) => "err",
+        }
+    }
+
+    /// Hashes the tag and every payload field that is not a child expression.
+    /// Callers fold the children in themselves so that fingerprints memoize.
+    pub fn hash_own<H: Hasher>(&self, hasher: &mut H) {
+        self.tag().hash(hasher);
+        match self {
+            Self::Var(var) => var.as_u32().hash(hasher),
+            Self::Literal(literal) => literal.hash_structural(hasher),
+            Self::Unary { op, .. } => std::mem::discriminant(op).hash(hasher),
+            Self::Binary { op, .. } => std::mem::discriminant(op).hash(hasher),
+            Self::Field { field, .. } => field.as_u32().hash(hasher),
+            Self::PureCall { callee, .. } => callee.as_u32().hash(hasher),
+            Self::MakeStruct { ty, .. } => ty.as_u32().hash(hasher),
+            Self::MakeEnum { ty, variant, .. } => {
+                ty.as_u32().hash(hasher);
+                variant.as_u32().hash(hasher);
+            }
+            Self::Error(error) => {
+                error.span.start.hash(hasher);
+                error.span.end.hash(hasher);
+                error.message.hash(hasher);
+            }
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]

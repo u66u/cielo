@@ -1,7 +1,9 @@
 use crate::builtins::Builtin;
 use crate::core::{BinaryOp, Literal, StageDirective, UnaryOp};
+use crate::ownership::OperandRole;
 use cielo_base::{EffectLabelId, LinearExprId, LinearFuncId, LinearStmtId, Span, SymbolId, VarId};
 use smallvec::{SmallVec, smallvec};
+use std::hash::{Hash, Hasher};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CallConvention {
@@ -200,6 +202,68 @@ pub enum LinearExpr {
         fields: Vec<LinearExprId>,
     },
     Error,
+}
+
+impl LinearExpr {
+    /// See [`crate::core::ExprKind::operands`]: the single per-node listing that
+    /// every Linear expression traversal is derived from.
+    pub fn operands(&self) -> SmallVec<[(LinearExprId, OperandRole); 4]> {
+        match self {
+            Self::Var(_) | Self::Literal(_) | Self::Error => SmallVec::new(),
+            Self::Unary { expr: operand, .. } | Self::Field { base: operand, .. } => {
+                smallvec![(*operand, OperandRole::Read)]
+            }
+            Self::Binary { lhs, rhs, .. } => {
+                smallvec![(*lhs, OperandRole::Read), (*rhs, OperandRole::Read)]
+            }
+            Self::PureCall { args: operands, .. }
+            | Self::MakeStruct {
+                fields: operands, ..
+            }
+            | Self::MakeEnum {
+                fields: operands, ..
+            } => operands
+                .iter()
+                .map(|operand| (*operand, OperandRole::Owned))
+                .collect(),
+        }
+    }
+
+    pub fn child_exprs(&self) -> SmallVec<[LinearExprId; 4]> {
+        self.operands().into_iter().map(|(expr, _)| expr).collect()
+    }
+
+    pub const fn tag(&self) -> &'static str {
+        match self {
+            Self::Literal(_) => "lit",
+            Self::Var(_) => "var",
+            Self::Unary { .. } => "un",
+            Self::Field { .. } => "field",
+            Self::Binary { .. } => "bin",
+            Self::PureCall { .. } => "call",
+            Self::MakeStruct { .. } => "mk_struct",
+            Self::MakeEnum { .. } => "mk_enum",
+            Self::Error => "err",
+        }
+    }
+
+    pub fn hash_own<H: Hasher>(&self, hasher: &mut H) {
+        self.tag().hash(hasher);
+        match self {
+            Self::Var(var) => var.as_u32().hash(hasher),
+            Self::Literal(literal) => literal.hash_structural(hasher),
+            Self::Unary { op, .. } => std::mem::discriminant(op).hash(hasher),
+            Self::Binary { op, .. } => std::mem::discriminant(op).hash(hasher),
+            Self::Field { index, .. } => index.hash(hasher),
+            Self::PureCall { callee, .. } => callee.as_u32().hash(hasher),
+            Self::MakeStruct { ty, .. } => ty.as_u32().hash(hasher),
+            Self::MakeEnum { ty, variant, .. } => {
+                ty.as_u32().hash(hasher);
+                variant.as_u32().hash(hasher);
+            }
+            Self::Error => {}
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
