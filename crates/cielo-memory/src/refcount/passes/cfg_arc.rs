@@ -12,6 +12,8 @@ use cielo_base::ids::{CfgBlockId, CfgExprId, CfgInstId, CfgValueId};
 use cielo_ir::cfg::{
     CfgArcOp, CfgArcOpKind, CfgExpr, CfgInstruction, CfgProgram, CfgProjectionMode, CfgTerminator,
 };
+use cielo_ir::ownership::OperandRole;
+use cielo_ir::walk::walk_operands;
 
 use crate::ArcConfig;
 use crate::refcount::ArcStats;
@@ -21,12 +23,6 @@ use crate::refcount::analysis::cfg_liveness::{CfgLiveness, CfgUseSite};
 struct UseCount {
     borrows: u32,
     consumes: u32,
-}
-
-#[derive(Clone, Copy)]
-enum UseMode {
-    Borrow,
-    Consume,
 }
 
 pub fn run(cfg: &mut CfgProgram, managed: &[bool], config: &ArcConfig) -> ArcStats {
@@ -76,14 +72,8 @@ pub fn run(cfg: &mut CfgProgram, managed: &[bool], config: &ArcConfig) -> ArcSta
             let site = CfgUseSite::Instruction(*instruction_id);
             let live_after = liveness.live_after(site).cloned().unwrap_or_default();
             let mut counts = HashMap::new();
-            match &instruction {
-                CfgInstruction::Let { value, .. } => {
-                    collect_expr_uses(cfg, *value, UseMode::Consume, &mut counts)
-                }
-                CfgInstruction::Eval { value, .. } => {
-                    collect_expr_uses(cfg, *value, UseMode::Borrow, &mut counts)
-                }
-                _ => {}
+            for (operand, role) in instruction.operands() {
+                collect_expr_uses(cfg, operand, role, &mut counts);
             }
             let (pre, mut post) =
                 plan_uses(&counts, &live_after, managed, optimize_moves, &mut stats);
@@ -197,66 +187,31 @@ fn collect_terminator_uses(
     terminator: &CfgTerminator,
     counts: &mut HashMap<CfgValueId, UseCount>,
 ) {
-    match terminator {
-        CfgTerminator::Return(value) => collect_expr_uses(cfg, *value, UseMode::Consume, counts),
-        CfgTerminator::Goto { args, .. }
-        | CfgTerminator::Call { args, .. }
-        | CfgTerminator::Perform { args, .. } => {
-            for arg in args {
-                collect_expr_uses(cfg, *arg, UseMode::Consume, counts);
-            }
-        }
-        CfgTerminator::Branch { cond, .. } => {
-            collect_expr_uses(cfg, *cond, UseMode::Borrow, counts)
-        }
-        CfgTerminator::Match { scrutinee, .. } => {
-            collect_expr_uses(cfg, *scrutinee, UseMode::Borrow, counts)
-        }
-        CfgTerminator::Switch { selector, .. } => {
-            collect_expr_uses(cfg, *selector, UseMode::Borrow, counts)
-        }
-        CfgTerminator::Unreachable => {}
+    for (operand, role) in terminator.operands() {
+        collect_expr_uses(cfg, operand, role, counts);
     }
 }
 
+/// Counts occurrences, not distinct expression nodes: two parents that each own
+/// the same nested value need two references, so a sub-expression reachable
+/// twice must be charged twice. `borrow_hazard` deliberately counts the other
+/// way.
 fn collect_expr_uses(
     cfg: &CfgProgram,
     expression: CfgExprId,
-    mode: UseMode,
+    role: OperandRole,
     counts: &mut HashMap<CfgValueId, UseCount>,
 ) {
-    let Some(expression) = cfg.expr(expression) else {
-        return;
-    };
-    match &expression.kind {
-        CfgExpr::Value(value) => {
-            let count = counts.entry(*value).or_default();
-            match mode {
-                UseMode::Borrow => count.borrows = count.borrows.saturating_add(1),
-                UseMode::Consume => count.consumes = count.consumes.saturating_add(1),
-            }
+    walk_operands(cfg, expression, role, &mut |_, node, role| {
+        let CfgExpr::Value(value) = &node.kind else {
+            return;
+        };
+        let count = counts.entry(*value).or_default();
+        match role {
+            OperandRole::Read => count.borrows = count.borrows.saturating_add(1),
+            OperandRole::Owned => count.consumes = count.consumes.saturating_add(1),
         }
-        CfgExpr::Unary { expr, .. } | CfgExpr::Field { base: expr, .. } => {
-            collect_expr_uses(cfg, *expr, UseMode::Borrow, counts)
-        }
-        CfgExpr::Binary { lhs, rhs, .. } => {
-            collect_expr_uses(cfg, *lhs, UseMode::Borrow, counts);
-            collect_expr_uses(cfg, *rhs, UseMode::Borrow, counts);
-        }
-        // Builtin arguments are sink arguments, like constructor fields and
-        // the arguments of a Call or Perform terminator: the runtime releases
-        // them. Borrowing instead would leak any argument that is a nested
-        // call's result, since such a temporary has no value id to release.
-        CfgExpr::PureCall { args, .. }
-        | CfgExpr::BuiltinCall { args, .. }
-        | CfgExpr::MakeStruct { fields: args, .. }
-        | CfgExpr::MakeEnum { fields: args, .. } => {
-            for arg in args {
-                collect_expr_uses(cfg, *arg, UseMode::Consume, counts);
-            }
-        }
-        CfgExpr::Literal(_) | CfgExpr::Error => {}
-    }
+    });
 }
 
 fn plan_uses(
@@ -393,39 +348,10 @@ fn plan_edge_drops(
 /// sharing a target still get their own edge block.
 fn redirect_edges(terminator: &mut CfgTerminator, rewrites: &[(CfgBlockId, CfgBlockId)]) {
     let mut remaining = rewrites.to_vec();
-    let mut take = |target: &mut CfgBlockId| {
+    for target in terminator.successors_mut() {
         if let Some(index) = remaining.iter().position(|(from, _)| from == target) {
             *target = remaining.remove(index).1;
         }
-    };
-    match terminator {
-        CfgTerminator::Branch {
-            then_target,
-            else_target,
-            ..
-        } => {
-            take(then_target);
-            take(else_target);
-        }
-        CfgTerminator::Match { arms, default, .. } => {
-            for arm in arms.iter_mut() {
-                take(&mut arm.target);
-            }
-            take(default);
-        }
-        CfgTerminator::Switch {
-            targets, default, ..
-        } => {
-            for target in targets.iter_mut() {
-                take(target);
-            }
-            take(default);
-        }
-        CfgTerminator::Goto { .. }
-        | CfgTerminator::Call { .. }
-        | CfgTerminator::Perform { .. }
-        | CfgTerminator::Return(_)
-        | CfgTerminator::Unreachable => {}
     }
 }
 

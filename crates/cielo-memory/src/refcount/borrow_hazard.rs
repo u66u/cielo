@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use cielo_base::{CfgBlockId, CfgExprId, CfgInstId, CfgValueId, DiagnosticBag, Span};
 use cielo_ir::cfg::{CfgExpr, CfgInstruction, CfgProgram, CfgTerminator};
 use cielo_ir::runtime::RuntimeSourceMap;
+use cielo_ir::walk::{Walk, walk_exprs_from};
 
 use crate::refcount::analysis::managed::is_managed;
 
@@ -182,60 +183,28 @@ fn count_terminator_uses(
     seen: &mut HashSet<CfgExprId>,
     counts: &mut HashMap<CfgValueId, u32>,
 ) {
-    match terminator {
-        CfgTerminator::Return(value)
-        | CfgTerminator::Branch { cond: value, .. }
-        | CfgTerminator::Match {
-            scrutinee: value, ..
-        }
-        | CfgTerminator::Switch {
-            selector: value, ..
-        } => count_expr_uses(cfg, *value, seen, counts),
-        CfgTerminator::Goto { args, .. }
-        | CfgTerminator::Call { args, .. }
-        | CfgTerminator::Perform { args, .. } => {
-            for argument in args {
-                count_expr_uses(cfg, *argument, seen, counts);
-            }
-        }
-        CfgTerminator::Unreachable => {}
+    for operand in terminator.child_exprs() {
+        count_expr_uses(cfg, operand, seen, counts);
     }
 }
 
+/// Counts distinct expression nodes, not occurrences: hazard reporting asks
+/// "does more than one place read this value", so a sub-expression shared by two
+/// parents must not answer that on its own. `cfg_arc` deliberately counts the
+/// other way.
 fn count_expr_uses(
     cfg: &CfgProgram,
     expression: CfgExprId,
     seen: &mut HashSet<CfgExprId>,
     counts: &mut HashMap<CfgValueId, u32>,
 ) {
-    if !seen.insert(expression) {
-        return;
-    }
-    let Some(expression) = cfg.expr(expression) else {
-        return;
-    };
-    match &expression.kind {
-        CfgExpr::Value(value) => {
+    walk_exprs_from(cfg, expression, seen, &mut |_, node| {
+        if let CfgExpr::Value(value) = &node.kind {
             let count = counts.entry(*value).or_default();
             *count = (*count).saturating_add(1);
         }
-        CfgExpr::Unary { expr, .. } | CfgExpr::Field { base: expr, .. } => {
-            count_expr_uses(cfg, *expr, seen, counts)
-        }
-        CfgExpr::Binary { lhs, rhs, .. } => {
-            count_expr_uses(cfg, *lhs, seen, counts);
-            count_expr_uses(cfg, *rhs, seen, counts);
-        }
-        CfgExpr::PureCall { args, .. }
-        | CfgExpr::MakeStruct { fields: args, .. }
-        | CfgExpr::MakeEnum { fields: args, .. }
-        | CfgExpr::BuiltinCall { args, .. } => {
-            for argument in args {
-                count_expr_uses(cfg, *argument, seen, counts);
-            }
-        }
-        CfgExpr::Literal(_) | CfgExpr::Error => {}
-    }
+        Walk::Descend
+    });
 }
 
 fn managed_values_in_expr(
@@ -244,40 +213,16 @@ fn managed_values_in_expr(
     managed: &[bool],
     seen: &mut HashSet<CfgExprId>,
 ) -> Vec<CfgValueId> {
-    if !seen.insert(expression) {
-        return Vec::new();
-    }
-    let Some(expression) = cfg.expr(expression) else {
-        return Vec::new();
-    };
-    match &expression.kind {
-        CfgExpr::Value(value) if is_managed(managed, *value) => vec![*value],
-        CfgExpr::Unary { expr, .. } | CfgExpr::Field { base: expr, .. } => {
-            managed_values_in_expr(cfg, *expr, managed, seen)
+    let mut values = Vec::new();
+    walk_exprs_from(cfg, expression, seen, &mut |_, node| {
+        if let CfgExpr::Value(value) = &node.kind
+            && is_managed(managed, *value)
+        {
+            push_unique(&mut values, *value);
         }
-        CfgExpr::Binary { lhs, rhs, .. } => {
-            let mut values = managed_values_in_expr(cfg, *lhs, managed, seen);
-            extend_unique(
-                &mut values,
-                managed_values_in_expr(cfg, *rhs, managed, seen),
-            );
-            values
-        }
-        CfgExpr::PureCall { args, .. }
-        | CfgExpr::MakeStruct { fields: args, .. }
-        | CfgExpr::MakeEnum { fields: args, .. }
-        | CfgExpr::BuiltinCall { args, .. } => {
-            let mut values = Vec::new();
-            for argument in args {
-                extend_unique(
-                    &mut values,
-                    managed_values_in_expr(cfg, *argument, managed, seen),
-                );
-            }
-            values
-        }
-        CfgExpr::Literal(_) | CfgExpr::Error | CfgExpr::Value(_) => Vec::new(),
-    }
+        Walk::Descend
+    });
+    values
 }
 
 pub fn emit_diagnostics(
@@ -365,11 +310,5 @@ fn direct_value(cfg: &CfgProgram, expression: CfgExprId) -> Option<CfgValueId> {
 fn push_unique<T: Copy + PartialEq>(values: &mut Vec<T>, value: T) {
     if !values.contains(&value) {
         values.push(value);
-    }
-}
-
-fn extend_unique<T: Copy + PartialEq>(values: &mut Vec<T>, additions: Vec<T>) {
-    for value in additions {
-        push_unique(values, value);
     }
 }

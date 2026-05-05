@@ -4,6 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use cielo_base::ids::{CfgBlockId, CfgExprId, CfgInstId, CfgValueId};
 use cielo_ir::cfg::{CfgExpr, CfgInstruction, CfgProgram, CfgTerminator};
+use cielo_ir::walk::{Walk, walk_exprs};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum CfgUseSite {
@@ -182,12 +183,7 @@ fn record_last_uses(
 }
 
 fn collect_instruction_defs(instruction: &CfgInstruction, output: &mut BTreeSet<CfgValueId>) {
-    match instruction {
-        CfgInstruction::Let { result, .. } | CfgInstruction::Eval { result, .. } => {
-            output.insert(*result);
-        }
-        _ => {}
-    }
+    output.extend(instruction.result());
 }
 
 fn collect_instruction_uses(
@@ -195,11 +191,8 @@ fn collect_instruction_uses(
     instruction: &CfgInstruction,
     output: &mut BTreeSet<CfgValueId>,
 ) {
-    match instruction {
-        CfgInstruction::Let { value, .. } | CfgInstruction::Eval { value, .. } => {
-            collect_expr_uses(program, *value, output);
-        }
-        _ => {}
+    for operand in instruction.child_exprs() {
+        collect_expr_uses(program, operand, output);
     }
 }
 
@@ -208,19 +201,8 @@ fn collect_terminator_uses(
     terminator: &CfgTerminator,
     output: &mut BTreeSet<CfgValueId>,
 ) {
-    match terminator {
-        CfgTerminator::Return(value) => collect_expr_uses(program, *value, output),
-        CfgTerminator::Goto { args, .. }
-        | CfgTerminator::Call { args, .. }
-        | CfgTerminator::Perform { args, .. } => {
-            for arg in args {
-                collect_expr_uses(program, *arg, output);
-            }
-        }
-        CfgTerminator::Branch { cond, .. } => collect_expr_uses(program, *cond, output),
-        CfgTerminator::Match { scrutinee, .. } => collect_expr_uses(program, *scrutinee, output),
-        CfgTerminator::Switch { selector, .. } => collect_expr_uses(program, *selector, output),
-        CfgTerminator::Unreachable => {}
+    for operand in terminator.child_exprs() {
+        collect_expr_uses(program, operand, output);
     }
 }
 
@@ -229,28 +211,10 @@ fn collect_expr_uses(
     expression: CfgExprId,
     output: &mut BTreeSet<CfgValueId>,
 ) {
-    let Some(expression) = program.expr(expression) else {
-        return;
-    };
-    match &expression.kind {
-        CfgExpr::Value(value) => {
+    walk_exprs(program, expression, &mut |_, node| {
+        if let CfgExpr::Value(value) = &node.kind {
             output.insert(*value);
         }
-        CfgExpr::Unary { expr, .. } | CfgExpr::Field { base: expr, .. } => {
-            collect_expr_uses(program, *expr, output)
-        }
-        CfgExpr::Binary { lhs, rhs, .. } => {
-            collect_expr_uses(program, *lhs, output);
-            collect_expr_uses(program, *rhs, output);
-        }
-        CfgExpr::PureCall { args, .. }
-        | CfgExpr::MakeStruct { fields: args, .. }
-        | CfgExpr::MakeEnum { fields: args, .. }
-        | CfgExpr::BuiltinCall { args, .. } => {
-            for arg in args {
-                collect_expr_uses(program, *arg, output);
-            }
-        }
-        CfgExpr::Literal(_) | CfgExpr::Error => {}
-    }
+        Walk::Descend
+    });
 }
