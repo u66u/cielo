@@ -7,6 +7,7 @@ use cielo_base::Interner;
 use cielo_base::{FuncId, HandlerId, SourceId};
 use cielo_ir::core::Literal;
 use cielo_ir::core::{ExprKind, StmtKind};
+use cielo_ir::walk::{Walk, any_expr_from, walk_exprs_from};
 use cielo_test_support::{PassConfig, PassHarness};
 use helpers::bta::{reason_has_valid_func_ids, stage_has_valid_func_ids};
 use helpers::ir::reachable_stmt_count;
@@ -491,35 +492,12 @@ fn collect_expr_callees(
     out: &mut HashSet<FuncId>,
     seen: &mut HashSet<cielo_base::ExprId>,
 ) {
-    if !seen.insert(root) {
-        return;
-    }
-    let Some(expr) = program.expr(root) else {
-        return;
-    };
-    match &expr.kind {
-        ExprKind::PureCall { callee, args } => {
+    walk_exprs_from(program, root, seen, &mut |_, expr| {
+        if let ExprKind::PureCall { callee, .. } = &expr.kind {
             out.insert(*callee);
-            for arg in args {
-                collect_expr_callees(program, *arg, out, seen);
-            }
         }
-        ExprKind::Unary { expr, .. } | ExprKind::Field { base: expr, .. } => {
-            collect_expr_callees(program, *expr, out, seen)
-        }
-        ExprKind::Binary { lhs, rhs, .. } => {
-            collect_expr_callees(program, *lhs, out, seen);
-            collect_expr_callees(program, *rhs, out, seen);
-        }
-        ExprKind::MakeStruct { fields, .. }
-        | ExprKind::MakeEnum { fields, .. }
-        | ExprKind::BuiltinCall { args: fields, .. } => {
-            for field in fields {
-                collect_expr_callees(program, *field, out, seen);
-            }
-        }
-        ExprKind::Var(_) | ExprKind::Literal(_) | ExprKind::Error(_) => {}
-    }
+        Walk::Descend
+    });
 }
 
 fn function_calls_target(
@@ -556,33 +534,10 @@ fn expr_calls_target(
     target: FuncId,
     seen: &mut HashSet<cielo_base::ExprId>,
 ) -> bool {
-    if !seen.insert(root) {
-        return false;
-    }
-    let Some(expr) = program.expr(root) else {
-        return false;
-    };
-    match &expr.kind {
-        ExprKind::PureCall { callee, args } => {
-            if *callee == target {
-                return true;
-            }
-            args.iter()
-                .copied()
-                .any(|arg| expr_calls_target(program, arg, target, seen))
-        }
-        ExprKind::Field { base, .. } => expr_calls_target(program, *base, target, seen),
-        ExprKind::Unary { expr, .. } => expr_calls_target(program, *expr, target, seen),
-        ExprKind::Binary { lhs, rhs, .. } => {
-            expr_calls_target(program, *lhs, target, seen)
-                || expr_calls_target(program, *rhs, target, seen)
-        }
-        ExprKind::MakeStruct { fields, .. }
-        | ExprKind::MakeEnum { fields, .. }
-        | ExprKind::BuiltinCall { args: fields, .. } => fields
-            .iter()
-            .copied()
-            .any(|field| expr_calls_target(program, field, target, seen)),
-        ExprKind::Var(_) | ExprKind::Literal(_) | ExprKind::Error(_) => false,
-    }
+    any_expr_from(
+        program,
+        root,
+        seen,
+        &mut |_, expr| matches!(&expr.kind, ExprKind::PureCall { callee, .. } if *callee == target),
+    )
 }

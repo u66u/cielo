@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 #[path = "helpers/mod.rs"]
 mod helpers;
 
@@ -12,6 +10,7 @@ use cielo_ir::core::{
     PrimitiveTypeRef, StmtKind, StmtNode,
 };
 use cielo_ir::effect::SortedEffectRow;
+use cielo_ir::walk::any_expr;
 use cielo_sema::SemanticTables;
 use cielo_staging::passes::normalize;
 use cielo_staging::pipeline::phases::{ResidualFacts, StagedCore, StagingReport};
@@ -873,32 +872,9 @@ fn residualized(program: CoreProgram) -> StagedCore {
 }
 
 fn expr_contains_var(program: &CoreProgram, root: ExprId, target: VarId) -> bool {
-    let mut seen_exprs = HashSet::new();
-    let mut stack = vec![root];
-    while let Some(expr_id) = stack.pop() {
-        if !seen_exprs.insert(expr_id) {
-            continue;
-        }
-        let Some(expr) = program.expr(expr_id) else {
-            continue;
-        };
-        match &expr.kind {
-            ExprKind::Var(var) => {
-                if *var == target {
-                    return true;
-                }
-            }
-            ExprKind::Unary { expr, .. } | ExprKind::Field { base: expr, .. } => stack.push(*expr),
-            ExprKind::Binary { lhs, rhs, .. } => {
-                stack.push(*lhs);
-                stack.push(*rhs);
-            }
-            ExprKind::PureCall { args, .. }
-            | ExprKind::BuiltinCall { args, .. }
-            | ExprKind::MakeStruct { fields: args, .. }
-            | ExprKind::MakeEnum { fields: args, .. } => stack.extend(args.iter().copied()),
-            ExprKind::Literal(_) | ExprKind::Error(_) => {}
-        }
-    }
-    false
+    any_expr(
+        program,
+        root,
+        &mut |_, expr| matches!(&expr.kind, ExprKind::Var(var) if *var == target),
+    )
 }

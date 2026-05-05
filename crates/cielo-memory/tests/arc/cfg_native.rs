@@ -1,6 +1,8 @@
 use cielo_base::Interner;
-use cielo_base::SourceId;
-use cielo_ir::cfg::{CfgArcOpKind, CfgExpr, CfgProgram, CfgProjectionMode, CfgTerminator};
+use cielo_base::{SourceId, SymbolId};
+use cielo_ir::cfg::{
+    CfgArcOpKind, CfgExpr, CfgInstruction, CfgProgram, CfgProjectionMode, CfgTerminator,
+};
 use cielo_ir::core::Literal;
 use cielo_memory::MemoryPreset;
 use cielo_memory::{ArcConfig, ArcFeatures};
@@ -200,6 +202,70 @@ fn main() -> Int { let value = Wrap(1); match value { | Wrap(n) => n | _ => 0 } 
                 !diagnostic.code.starts_with("CFG_ARC_VERIFY")
                     && !diagnostic.code.starts_with("CFG_VERIFY")
             })
+    );
+}
+
+/// CIELO-7: a value reachable only below a constructor used to get no ARC ops at
+/// all, because the use collector stopped at the top-level node instead of
+/// walking into the operands it owns.
+#[test]
+fn cfg_arc_retains_a_value_nested_below_a_constructor() {
+    let mut cfg = CfgProgram::default();
+    let empty = cfg.push_expr(
+        CfgExpr::MakeStruct {
+            ty: SymbolId::from_u32(1),
+            fields: Vec::new(),
+        },
+        None,
+    );
+    let boxed = cfg.push_value(None);
+    let boxed_expr = cfg.push_expr(CfgExpr::Value(boxed), None);
+    let wrapper = cfg.push_expr(
+        CfgExpr::MakeStruct {
+            ty: SymbolId::from_u32(2),
+            fields: vec![boxed_expr],
+        },
+        None,
+    );
+
+    let entry = cfg.push_block(Vec::new(), None);
+    let define = cfg.push_instruction(
+        entry,
+        CfgInstruction::Let {
+            result: boxed,
+            value: empty,
+        },
+        None,
+    );
+    cfg.set_terminator(entry, CfgTerminator::Return(wrapper));
+
+    let config = ArcConfig {
+        features: ArcFeatures::INSERTION,
+    };
+    cielo_memory::refcount::passes::cfg_arc::run(&mut cfg, &[true], &config);
+
+    let terminator_arc = &cfg.block(entry).expect("entry block").terminator_arc;
+    assert_eq!(
+        terminator_arc
+            .pre
+            .iter()
+            .map(|op| (op.kind, op.value))
+            .collect::<Vec<_>>(),
+        vec![(CfgArcOpKind::Retain, boxed)],
+        "the nested constructor field is consumed and must be retained"
+    );
+    assert_eq!(
+        terminator_arc
+            .post
+            .iter()
+            .map(|op| (op.kind, op.value))
+            .collect::<Vec<_>>(),
+        vec![(CfgArcOpKind::Release, boxed)]
+    );
+    let define = cfg.instruction(define).expect("defining instruction");
+    assert!(
+        define.arc.post.is_empty(),
+        "the definition is still live at the terminator"
     );
 }
 
