@@ -216,7 +216,8 @@ impl LinearExpr {
             Self::Binary { lhs, rhs, .. } => {
                 smallvec![(*lhs, OperandRole::Read), (*rhs, OperandRole::Read)]
             }
-            Self::PureCall { args: operands, .. }
+            Self::BuiltinCall { args: operands, .. }
+            | Self::PureCall { args: operands, .. }
             | Self::MakeStruct {
                 fields: operands, ..
             }
@@ -241,6 +242,7 @@ impl LinearExpr {
             Self::Field { .. } => "field",
             Self::Binary { .. } => "bin",
             Self::PureCall { .. } => "call",
+            Self::BuiltinCall { .. } => "builtin",
             Self::MakeStruct { .. } => "mk_struct",
             Self::MakeEnum { .. } => "mk_enum",
             Self::Error => "err",
@@ -256,6 +258,9 @@ impl LinearExpr {
             Self::Binary { op, .. } => std::mem::discriminant(op).hash(hasher),
             Self::Field { index, .. } => index.hash(hasher),
             Self::PureCall { callee, .. } => callee.as_u32().hash(hasher),
+            // The name, not the discriminant: fingerprints reach snapshot
+            // files, so reordering the enum must not change them.
+            Self::BuiltinCall { builtin, .. } => builtin.name().hash(hasher),
             Self::MakeStruct { ty, .. } => ty.as_u32().hash(hasher),
             Self::MakeEnum { ty, variant, .. } => {
                 ty.as_u32().hash(hasher);

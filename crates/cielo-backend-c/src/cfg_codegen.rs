@@ -8,6 +8,7 @@ use cielo_base::ids::{
     CfgBlockId, CfgExprId, CfgFuncId, CfgHandlerId, CfgValueId, EffectLabelId, SymbolId,
 };
 use cielo_base::symbols::Interner;
+use cielo_ir::builtins::Builtin;
 use cielo_ir::cfg::{
     CfgArcOp, CfgArcOpKind, CfgCallConvention, CfgExpr, CfgFunction, CfgInstruction, CfgProgram,
     CfgProjectionMode, CfgTerminator,
@@ -17,7 +18,6 @@ use cielo_ir::core::Literal;
 use cielo_ir::walk::{Walk, walk_exprs};
 
 const C_RUNTIME_HEADER: &str = include_str!("cielo_runtime.h");
-const BUILTIN_PRINT_OP_NAME: &str = "print";
 
 pub fn emit(
     program: &CfgProgram,
@@ -26,15 +26,19 @@ pub fn emit(
     arc_trace: bool,
 ) -> String {
     let mut out = String::new();
-    if let Some(symbol) = builtin_print_symbol(program, interner) {
-        writeln!(out, "#define CIELO_OP_SYMBOL_PRINT {}u", symbol.as_u32())
-            .expect("in-memory write");
-    }
+    emit_builtin_table(&mut out, program, interner);
     out.push_str(C_RUNTIME_HEADER);
     if !out.ends_with('\n') {
         out.push('\n');
     }
-    let pools = CConstantPools::build(constants, interner);
+    let mut pools = CConstantPools::build(constants, interner);
+    // The constant table drops strings once its size budget is spent, but a
+    // string literal has no inline form, so every one still needs an object.
+    for expression in program.exprs() {
+        if let CfgExpr::Literal(Literal::String(value)) = &expression.kind {
+            pools.ensure_string(value);
+        }
+    }
     out.push_str(&pools.declarations);
     if !pools.declarations.is_empty() {
         out.push('\n');
@@ -429,6 +433,18 @@ fn emit_expr(expression: CfgExprId, cx: &mut EmitCx<'_>) -> String {
                 .collect::<Vec<_>>();
             format!("CIELO_CALL_PURE({name}({}))", args.join(", "))
         }
+        CfgExpr::BuiltinCall { builtin, args } => {
+            let args = args
+                .iter()
+                .map(|arg| emit_expr(*arg, cx))
+                .collect::<Vec<_>>();
+            let array = if args.is_empty() {
+                "NULL".to_owned()
+            } else {
+                format!("(CieloValue[]){{{}}}", args.join(", "))
+            };
+            format!("{}({}, {array})", builtin.c_symbol(), args.len())
+        }
         CfgExpr::MakeStruct { ty, fields } => emit_ctor(*ty, SymbolId::INVALID, fields, cx),
         CfgExpr::MakeEnum {
             ty,
@@ -486,10 +502,13 @@ fn emit_literal(literal: &Literal, pools: &CConstantPools) -> String {
             .scalar(ScalarLiteralKey::Char(*value))
             .map(str::to_owned)
             .unwrap_or_else(|| format!("cv_char({}u)", *value as u32)),
+        // `emit` pools every string in the program, so the lookup cannot miss.
+        // There is no inline fallback: a CieloValue names a CieloStr, and only
+        // static storage can back one.
         Literal::String(value) => pools
             .string(value)
-            .map(|symbol| format!("cv_string({symbol})"))
-            .unwrap_or_else(|| format!("cv_string(\"{}\")", escape(value))),
+            .expect("string literal was pooled")
+            .to_owned(),
     }
 }
 
@@ -700,18 +719,31 @@ fn active_handler_states(
     terminator_states
 }
 
-fn builtin_print_symbol(program: &CfgProgram, interner: &Interner) -> Option<SymbolId> {
-    program
+/// Maps the operation symbols this program performs onto builtins, so an
+/// effect operation that reaches the end of the handler chain still resolves.
+/// Direct `BuiltinCall`s bypass this table entirely.
+fn emit_builtin_table(out: &mut String, program: &CfgProgram, interner: &Interner) {
+    let mut entries = program
         .blocks()
         .iter()
-        .find_map(|block| match &block.terminator {
-            CfgTerminator::Perform { operation, .. }
-                if interner.resolve(*operation) == Some(BUILTIN_PRINT_OP_NAME) =>
-            {
-                Some(*operation)
-            }
+        .filter_map(|block| match &block.terminator {
+            CfgTerminator::Perform { operation, .. } => interner
+                .resolve(*operation)
+                .and_then(Builtin::from_name)
+                .map(|builtin| (operation.as_u32(), builtin)),
             _ => None,
         })
+        .collect::<Vec<_>>();
+    entries.sort_unstable();
+    entries.dedup();
+    if entries.is_empty() {
+        return;
+    }
+    out.push_str("#define CIELO_BUILTIN_TABLE(X)");
+    for (symbol, builtin) in entries {
+        write!(out, " \\\n    X({symbol}u, {})", builtin.c_symbol()).expect("in-memory write");
+    }
+    out.push('\n');
 }
 
 fn emit_main(out: &mut String, program: &CfgProgram, names: &HashMap<CfgFuncId, String>) {

@@ -408,6 +408,7 @@ impl IrExprNode for CfgExprNode {
             | CfgExpr::Unary { .. }
             | CfgExpr::Binary { .. }
             | CfgExpr::PureCall { .. }
+            | CfgExpr::BuiltinCall { .. }
             | CfgExpr::Field { .. }
             | CfgExpr::Error => None,
         }
