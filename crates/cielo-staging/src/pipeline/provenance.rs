@@ -116,32 +116,14 @@ fn infer_runtime_dependency_from_expr(
     expr_id: ExprId,
 ) -> Option<Cursor> {
     let expr = program.expr(expr_id)?;
-    match &expr.kind {
-        ExprKind::Var(var) => Some(Cursor::Var(*var)),
-        ExprKind::Unary { expr, .. } | ExprKind::Field { base: expr, .. } => {
-            is_runtime_expr(*expr, bta).then_some(Cursor::Expr(*expr))
-        }
-        ExprKind::Binary { lhs, rhs, .. } => {
-            if is_runtime_expr(*lhs, bta) {
-                Some(Cursor::Expr(*lhs))
-            } else if is_runtime_expr(*rhs, bta) {
-                Some(Cursor::Expr(*rhs))
-            } else {
-                None
-            }
-        }
-        ExprKind::PureCall { args, .. } | ExprKind::BuiltinCall { args, .. } => args
-            .iter()
-            .find(|arg| is_runtime_expr(**arg, bta))
-            .copied()
-            .map(Cursor::Expr),
-        ExprKind::MakeStruct { fields, .. } | ExprKind::MakeEnum { fields, .. } => fields
-            .iter()
-            .find(|field| is_runtime_expr(**field, bta))
-            .copied()
-            .map(Cursor::Expr),
-        ExprKind::Literal(_) | ExprKind::Error(_) => None,
+    if let ExprKind::Var(var) = &expr.kind {
+        return Some(Cursor::Var(*var));
     }
+    expr.kind
+        .child_exprs()
+        .into_iter()
+        .find(|operand| is_runtime_expr(*operand, bta))
+        .map(Cursor::Expr)
 }
 
 fn is_runtime_expr(expr_id: ExprId, bta: &BtaTables) -> bool {

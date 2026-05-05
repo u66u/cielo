@@ -3,11 +3,11 @@ use std::collections::{HashMap, HashSet};
 use cielo_base::ids::{EffectLabelId, ExprId, LinearStmtId, StmtId, VarId};
 use cielo_ir::core::{CoreProgram, ExprKind, HandlerClause, HandlerDef, StmtKind};
 use cielo_ir::linear::{LinearProgram, LinearStmt};
+use cielo_ir::walk::any_expr;
 use cielo_sema::SemanticTables;
 
 use super::types::{
-    ClauseConvention, ClauseResumeAnalysis, ResumeQualifier, ResumeStrategy, ResumeUseBound,
-    ResumeUseRange,
+    ClauseConvention, ClauseResumeAnalysis, ResumeQualifier, ResumeUseBound, ResumeUseRange,
 };
 
 pub(super) fn is_identity_return_of_var(
@@ -122,12 +122,10 @@ pub(super) fn analyze_clause_resume(
             min_uses: ResumeUseBound::Zero,
             max_uses: ResumeUseBound::Zero,
             tail_resumptive: true,
-            sites: 0,
         };
     };
     let range = clause_resume_use_range(program, clause.body, resume_var);
     let tail_resumptive = is_tail_resumptive_clause(program, clause.body, resume_var);
-    let sites = count_resume_sites(program, clause.body, resume_var);
     let qualifier = if range.max.is_many() {
         ResumeQualifier::Multi
     } else if matches!(range.max, ResumeUseBound::Zero) {
@@ -143,18 +141,6 @@ pub(super) fn analyze_clause_resume(
         min_uses: range.min,
         max_uses: range.max,
         tail_resumptive,
-        sites,
-    }
-}
-
-/// Merging is only sound when every path resumes in tail position: an arm that
-/// performs or calls before resuming would have those effects hoisted past the
-/// join. One site already shares the continuation, so leave it inlined.
-pub(super) fn resume_strategy(resume: ClauseResumeAnalysis) -> ResumeStrategy {
-    if resume.tail_resumptive && resume.sites > 1 {
-        ResumeStrategy::Join
-    } else {
-        ResumeStrategy::Inline
     }
 }
 
@@ -289,83 +275,6 @@ fn is_tail_resumptive_stmt(
     visiting.remove(&stmt_id);
     memo.insert(stmt_id, is_tail);
     is_tail
-}
-
-fn count_resume_sites(program: &CoreProgram, root: StmtId, resume_var: VarId) -> usize {
-    let mut stack = vec![root];
-    let mut seen = HashSet::new();
-    let mut sites = 0;
-    while let Some(stmt_id) = stack.pop() {
-        if !seen.insert(stmt_id) {
-            continue;
-        }
-        let Some(stmt) = program.stmt(stmt_id) else {
-            continue;
-        };
-        if matches!(stmt.kind, StmtKind::Resume { resume, .. } if resume == resume_var) {
-            sites += 1;
-        }
-        stack.extend(stmt.child_stmts());
-    }
-    sites
-}
-
-/// A join point needs a binder even when the perform result is discarded. Var
-/// ids are dense from lowering, so one past the largest is unused.
-pub(super) fn fresh_var_base(program: &CoreProgram) -> u32 {
-    fn bump(next: &mut u32, var: VarId) {
-        if var.is_valid() {
-            *next = (*next).max(var.as_u32() + 1);
-        }
-    }
-
-    let mut next = 0;
-    for expr in program.exprs() {
-        if let ExprKind::Var(var) = expr.kind {
-            bump(&mut next, var);
-        }
-    }
-    for stmt in program.stmts() {
-        match &stmt.kind {
-            StmtKind::Let { binding, .. } | StmtKind::Val { binding, .. } => {
-                bump(&mut next, *binding)
-            }
-            StmtKind::Call { result, .. } => bump(&mut next, *result),
-            StmtKind::Perform {
-                result: Some(result),
-                ..
-            } => bump(&mut next, *result),
-            StmtKind::Resume { result, resume, .. } => {
-                bump(&mut next, *result);
-                bump(&mut next, *resume);
-            }
-            StmtKind::Match { arms, .. } => {
-                for binder in arms.iter().flat_map(|arm| arm.binders.iter()) {
-                    bump(&mut next, *binder);
-                }
-            }
-            _ => {}
-        }
-    }
-    for param in program
-        .functions()
-        .iter()
-        .flat_map(|func| func.params.iter())
-    {
-        bump(&mut next, *param);
-    }
-    for handler in program.handlers() {
-        bump(&mut next, handler.return_param);
-        for clause in &handler.clauses {
-            for param in &clause.params {
-                bump(&mut next, *param);
-            }
-            if let Some(resume) = clause.resume_param {
-                bump(&mut next, resume);
-            }
-        }
-    }
-    next
 }
 
 fn stmt_mentions_var(program: &CoreProgram, root: StmtId, var: VarId) -> bool {
@@ -548,36 +457,9 @@ fn clause_resume_use_range_stmt(
 }
 
 fn expr_mentions_var(program: &CoreProgram, root: ExprId, var: VarId) -> bool {
-    let mut stack = vec![root];
-    let mut seen_exprs = HashSet::new();
-    while let Some(expr_id) = stack.pop() {
-        if !seen_exprs.insert(expr_id) {
-            continue;
-        }
-        let Some(expr) = program.expr(expr_id) else {
-            continue;
-        };
-        match &expr.kind {
-            ExprKind::Var(found) => {
-                if *found == var {
-                    return true;
-                }
-            }
-            ExprKind::Unary { expr, .. } | ExprKind::Field { base: expr, .. } => stack.push(*expr),
-            ExprKind::Binary { lhs, rhs, .. } => {
-                stack.push(*rhs);
-                stack.push(*lhs);
-            }
-            ExprKind::PureCall { args, .. }
-            | ExprKind::BuiltinCall { args, .. }
-            | ExprKind::MakeStruct { fields: args, .. }
-            | ExprKind::MakeEnum { fields: args, .. } => {
-                for arg in args {
-                    stack.push(*arg);
-                }
-            }
-            ExprKind::Literal(_) | ExprKind::Error(_) => {}
-        }
-    }
-    false
+    any_expr(
+        program,
+        root,
+        &mut |_, expr| matches!(&expr.kind, ExprKind::Var(found) if *found == var),
+    )
 }

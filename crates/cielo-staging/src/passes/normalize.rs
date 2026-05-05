@@ -30,6 +30,7 @@ use cielo_base::span::Span;
 use cielo_base::{ExprId, FuncId, HandlerId, StmtId, VarId};
 use cielo_ir::core::{CoreProgram, ExprKind, ExprNode, MatchArm, StmtKind, StmtNode};
 use cielo_ir::function_graph::collect_reachable_functions;
+use cielo_ir::walk::{Walk, any_expr, any_expr_from, walk_exprs, walk_exprs_from};
 use cielo_sema::typecheck::typecheck_residual_core;
 
 const MAX_SHRINK_ITERS: usize = 16;
@@ -828,36 +829,11 @@ fn stmt_mentions_var(program: &CoreProgram, root: StmtId, var: VarId) -> bool {
 }
 
 fn expr_mentions_var(program: &CoreProgram, root: ExprId, var: VarId) -> bool {
-    let mut stack = vec![root];
-    let mut seen = HashSet::new();
-    while let Some(expr_id) = stack.pop() {
-        if !seen.insert(expr_id) {
-            continue;
-        }
-        let Some(expr) = program.expr(expr_id) else {
-            continue;
-        };
-        match &expr.kind {
-            ExprKind::Var(bound) => {
-                if *bound == var {
-                    return true;
-                }
-            }
-            ExprKind::Unary { expr, .. } | ExprKind::Field { base: expr, .. } => stack.push(*expr),
-            ExprKind::Binary { lhs, rhs, .. } => {
-                stack.push(*lhs);
-                stack.push(*rhs);
-            }
-            ExprKind::PureCall { args, .. }
-            | ExprKind::BuiltinCall { args, .. }
-            | ExprKind::MakeStruct { fields: args, .. }
-            | ExprKind::MakeEnum { fields: args, .. } => {
-                stack.extend(args.iter().copied());
-            }
-            ExprKind::Literal(_) | ExprKind::Error(_) => {}
-        }
-    }
-    false
+    any_expr(
+        program,
+        root,
+        &mut |_, expr| matches!(&expr.kind, ExprKind::Var(bound) if *bound == var),
+    )
 }
 
 /// True when evaluating `expr` produces output. Such an expression cannot be
@@ -920,34 +896,13 @@ fn collect_expr_var_uses(
     seen_exprs: &mut HashSet<ExprId>,
     uses: &mut HashMap<VarId, usize>,
 ) {
-    if !seen_exprs.insert(expr_id) {
-        return;
-    }
-    let Some(expr) = program.expr(expr_id) else {
-        return;
-    };
-    match &expr.kind {
-        ExprKind::Var(var) => {
+    walk_exprs_from(program, expr_id, seen_exprs, &mut |_, expr| {
+        if let ExprKind::Var(var) = &expr.kind {
             let next = uses.get(var).copied().unwrap_or(0).saturating_add(1);
             uses.insert(*var, next);
         }
-        ExprKind::Unary { expr, .. } | ExprKind::Field { base: expr, .. } => {
-            collect_expr_var_uses(program, *expr, seen_exprs, uses)
-        }
-        ExprKind::Binary { lhs, rhs, .. } => {
-            collect_expr_var_uses(program, *lhs, seen_exprs, uses);
-            collect_expr_var_uses(program, *rhs, seen_exprs, uses);
-        }
-        ExprKind::PureCall { args, .. }
-        | ExprKind::BuiltinCall { args, .. }
-        | ExprKind::MakeStruct { fields: args, .. }
-        | ExprKind::MakeEnum { fields: args, .. } => {
-            for arg in args {
-                collect_expr_var_uses(program, *arg, seen_exprs, uses);
-            }
-        }
-        ExprKind::Literal(_) | ExprKind::Error(_) => {}
-    }
+        Walk::Descend
+    });
 }
 
 fn collect_call_counts(program: &CoreProgram, roots: &[FuncId]) -> HashMap<FuncId, usize> {
@@ -981,39 +936,13 @@ fn collect_expr_call_counts(
     seen_exprs: &mut HashSet<ExprId>,
     calls: &mut HashMap<FuncId, usize>,
 ) {
-    if !seen_exprs.insert(expr_id) {
-        return;
-    }
-    let Some(expr) = program.expr(expr_id) else {
-        return;
-    };
-    match &expr.kind {
-        ExprKind::PureCall { callee, args } => {
+    walk_exprs_from(program, expr_id, seen_exprs, &mut |_, expr| {
+        if let ExprKind::PureCall { callee, .. } = &expr.kind {
             let next = calls.get(callee).copied().unwrap_or(0).saturating_add(1);
             calls.insert(*callee, next);
-            for arg in args {
-                collect_expr_call_counts(program, *arg, seen_exprs, calls);
-            }
         }
-        ExprKind::BuiltinCall { args, .. } => {
-            for arg in args {
-                collect_expr_call_counts(program, *arg, seen_exprs, calls);
-            }
-        }
-        ExprKind::Unary { expr, .. } | ExprKind::Field { base: expr, .. } => {
-            collect_expr_call_counts(program, *expr, seen_exprs, calls)
-        }
-        ExprKind::Binary { lhs, rhs, .. } => {
-            collect_expr_call_counts(program, *lhs, seen_exprs, calls);
-            collect_expr_call_counts(program, *rhs, seen_exprs, calls);
-        }
-        ExprKind::MakeStruct { fields, .. } | ExprKind::MakeEnum { fields, .. } => {
-            for field in fields {
-                collect_expr_call_counts(program, *field, seen_exprs, calls);
-            }
-        }
-        ExprKind::Var(_) | ExprKind::Literal(_) | ExprKind::Error(_) => {}
-    }
+        Walk::Descend
+    });
 }
 
 fn collect_analysis_roots(program: &CoreProgram, roots: &[FuncId]) -> Vec<StmtId> {
@@ -1110,35 +1039,17 @@ fn count_stmt_nodes(program: &CoreProgram, root: StmtId) -> usize {
 
 fn count_expr_nodes(program: &CoreProgram, root: ExprId) -> usize {
     let mut count = 0usize;
-    let mut stack = vec![root];
-    let mut seen = HashSet::new();
-    while let Some(expr_id) = stack.pop() {
-        if !seen.insert(expr_id) {
-            continue;
-        }
-        if let Some(expr) = program.expr(expr_id) {
-            count = count.saturating_add(1);
-            match &expr.kind {
-                ExprKind::Unary { expr, .. } | ExprKind::Field { base: expr, .. } => {
-                    stack.push(*expr)
-                }
-                ExprKind::Binary { lhs, rhs, .. } => {
-                    stack.push(*lhs);
-                    stack.push(*rhs);
-                }
-                ExprKind::PureCall { args, .. } | ExprKind::BuiltinCall { args, .. } => {
-                    stack.extend(args.iter().copied())
-                }
-                ExprKind::MakeStruct { fields, .. } | ExprKind::MakeEnum { fields, .. } => {
-                    stack.extend(fields.iter().copied());
-                }
-                ExprKind::Var(_) | ExprKind::Literal(_) | ExprKind::Error(_) => {}
-            }
-        }
-    }
+    walk_exprs(program, root, &mut |_, _| {
+        count = count.saturating_add(1);
+        Walk::Descend
+    });
     count
 }
 
+/// Kept as an explicit per-kind match rather than a generic walk: the arms are a
+/// policy, not mechanical recursion, and a new node kind has to be classified
+/// here before it can be substituted into a call site. An operand missing from
+/// the arena is treated as not inlineable for the same reason.
 fn expr_is_inlineable(
     program: &CoreProgram,
     expr_id: ExprId,
@@ -1159,23 +1070,19 @@ fn expr_is_inlineable(
                     return false;
                 }
             }
-            // A builtin is never duplicated or dropped by inlining: its output
-            // is observable, so copying the call would double it.
+            // Re-evaluated at every site the body is copied into. For a builtin
+            // that also doubles observable output.
             ExprKind::PureCall { .. }
             | ExprKind::BuiltinCall { .. }
             | ExprKind::Field { .. }
             | ExprKind::Error(_) => {
                 return false;
             }
-            ExprKind::Literal(_) => {}
-            ExprKind::Unary { expr, .. } => stack.push(*expr),
-            ExprKind::Binary { lhs, rhs, .. } => {
-                stack.push(*lhs);
-                stack.push(*rhs);
-            }
-            ExprKind::MakeStruct { fields, .. } | ExprKind::MakeEnum { fields, .. } => {
-                stack.extend(fields.iter().copied());
-            }
+            ExprKind::Literal(_)
+            | ExprKind::Unary { .. }
+            | ExprKind::Binary { .. }
+            | ExprKind::MakeStruct { .. }
+            | ExprKind::MakeEnum { .. } => stack.extend(expr.kind.child_exprs()),
         }
     }
     true
@@ -1227,35 +1134,10 @@ fn expr_calls_target(
     target: FuncId,
     seen: &mut HashSet<ExprId>,
 ) -> bool {
-    if !seen.insert(root) {
-        return false;
-    }
-    let Some(expr) = program.expr(root) else {
-        return false;
-    };
-    match &expr.kind {
-        ExprKind::PureCall { callee, args } => {
-            if *callee == target {
-                return true;
-            }
-            args.iter()
-                .copied()
-                .any(|arg| expr_calls_target(program, arg, target, seen))
-        }
-        ExprKind::BuiltinCall { args, .. } => args
-            .iter()
-            .copied()
-            .any(|arg| expr_calls_target(program, arg, target, seen)),
-        ExprKind::Field { base, .. } => expr_calls_target(program, *base, target, seen),
-        ExprKind::Unary { expr, .. } => expr_calls_target(program, *expr, target, seen),
-        ExprKind::Binary { lhs, rhs, .. } => {
-            expr_calls_target(program, *lhs, target, seen)
-                || expr_calls_target(program, *rhs, target, seen)
-        }
-        ExprKind::MakeStruct { fields, .. } | ExprKind::MakeEnum { fields, .. } => fields
-            .iter()
-            .copied()
-            .any(|field| expr_calls_target(program, field, target, seen)),
-        ExprKind::Var(_) | ExprKind::Literal(_) | ExprKind::Error(_) => false,
-    }
+    any_expr_from(
+        program,
+        root,
+        seen,
+        &mut |_, expr| matches!(&expr.kind, ExprKind::PureCall { callee, .. } if *callee == target),
+    )
 }

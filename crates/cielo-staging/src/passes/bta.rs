@@ -125,31 +125,10 @@ impl ExprUseIndex {
         let mut expr_parents = vec![Vec::new(); expr_count];
         for (parent_idx, expr) in program.exprs().iter().enumerate() {
             let parent_id = ExprId::new(parent_idx);
-            match &expr.kind {
-                ExprKind::Unary { expr, .. } | ExprKind::Field { base: expr, .. } => {
-                    if expr.index() < expr_count {
-                        expr_parents[expr.index()].push(parent_id);
-                    }
+            for operand in expr.kind.child_exprs() {
+                if operand.index() < expr_count {
+                    expr_parents[operand.index()].push(parent_id);
                 }
-                ExprKind::Binary { lhs, rhs, .. } => {
-                    if lhs.index() < expr_count {
-                        expr_parents[lhs.index()].push(parent_id);
-                    }
-                    if rhs.index() < expr_count {
-                        expr_parents[rhs.index()].push(parent_id);
-                    }
-                }
-                ExprKind::PureCall { args, .. }
-                | ExprKind::BuiltinCall { args, .. }
-                | ExprKind::MakeStruct { fields: args, .. }
-                | ExprKind::MakeEnum { fields: args, .. } => {
-                    for arg in args {
-                        if arg.index() < expr_count {
-                            expr_parents[arg.index()].push(parent_id);
-                        }
-                    }
-                }
-                ExprKind::Var(_) | ExprKind::Literal(_) | ExprKind::Error(_) => {}
             }
         }
 
@@ -630,7 +609,7 @@ fn propagate_expr_reasons(program: &CoreProgram, bta: &mut BtaTables) -> bool {
         if matches!(bta.stage_of_expr.get(&expr_id), Some(Stage::Ct)) {
             continue;
         }
-        let Some(reason) = infer_expr_runtime_reason(program, bta, expr_id, &expr.kind) else {
+        let Some(reason) = infer_expr_runtime_reason(bta, &expr.kind) else {
             continue;
         };
         changed |= refine_expr_stage(expr_id, reason, bta);
@@ -638,37 +617,22 @@ fn propagate_expr_reasons(program: &CoreProgram, bta: &mut BtaTables) -> bool {
     changed
 }
 
-fn infer_expr_runtime_reason(
-    _program: &CoreProgram,
-    bta: &BtaTables,
-    _expr_id: ExprId,
-    kind: &ExprKind,
-) -> Option<Reason> {
+/// A `Var` carries its own stage; every other node inherits the reason of its
+/// first runtime operand, so operand order decides which reason is reported.
+fn infer_expr_runtime_reason(bta: &BtaTables, kind: &ExprKind) -> Option<Reason> {
     match kind {
         ExprKind::Var(var) => {
-            if matches!(bta.stage_of_var.get(var), Some(Stage::Rt(_))) {
-                Some(Reason::DependsOnVar(*var))
-            } else {
-                None
-            }
+            return matches!(bta.stage_of_var.get(var), Some(Stage::Rt(_)))
+                .then_some(Reason::DependsOnVar(*var));
         }
-        ExprKind::Unary { expr, .. } | ExprKind::Field { base: expr, .. } => {
-            stage_reason_of_expr(bta, *expr)
-        }
-        ExprKind::Binary { lhs, rhs, .. } => {
-            stage_reason_of_expr(bta, *lhs).or_else(|| stage_reason_of_expr(bta, *rhs))
-        }
-        ExprKind::PureCall { args, .. } => {
-            args.iter().find_map(|arg| stage_reason_of_expr(bta, *arg))
-        }
-        ExprKind::MakeStruct { fields, .. } | ExprKind::MakeEnum { fields, .. } => fields
-            .iter()
-            .find_map(|field| stage_reason_of_expr(bta, *field)),
-        // A builtin's effect is observable, so it can never be folded away at
-        // compile time regardless of how static its arguments are.
-        ExprKind::BuiltinCall { .. } => Some(Reason::UnclassifiedRuntime),
-        ExprKind::Literal(_) | ExprKind::Error(_) => None,
+        // Output is observable, so a builtin stays runtime however static its
+        // arguments are. Inheriting from operands would fold the call away.
+        ExprKind::BuiltinCall { .. } => return Some(Reason::UnclassifiedRuntime),
+        _ => {}
     }
+    kind.child_exprs()
+        .into_iter()
+        .find_map(|operand| stage_reason_of_expr(bta, operand))
 }
 
 fn stage_reason_of_expr(bta: &BtaTables, expr: ExprId) -> Option<Reason> {

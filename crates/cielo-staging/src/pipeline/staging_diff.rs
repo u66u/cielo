@@ -7,6 +7,7 @@ use std::path::Path;
 use crate::pipeline::phases::{BtaTables, Stage};
 use cielo_base::ExprId;
 use cielo_ir::core::{CoreProgram, ExprKind};
+use cielo_ir::walk::fingerprint_exprs;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct StageSnapshotEntry {
@@ -63,7 +64,7 @@ pub struct StageDiff {
 }
 
 pub fn collect_snapshot(program: &CoreProgram, bta: &BtaTables) -> Vec<StageSnapshotEntry> {
-    let fingerprints = collect_expr_fingerprints(program);
+    let fingerprints = fingerprint_exprs(program);
     let mut entries = Vec::new();
     for (idx, expr) in program.exprs().iter().enumerate() {
         let expr_id = ExprId::new(idx);
@@ -171,153 +172,11 @@ fn as_map(entries: &[StageSnapshotEntry]) -> BTreeMap<String, StageSnapshotEntry
 }
 
 fn stable_expr_id(start: u32, end: u32, kind: &ExprKind, fingerprint: u64) -> String {
-    format!(
-        "{}-{}:{}:{:016x}",
-        start,
-        end,
-        expr_kind_tag(kind),
-        fingerprint
-    )
-}
-
-fn expr_kind_tag(kind: &ExprKind) -> &'static str {
-    match kind {
-        ExprKind::Literal(_) => "lit",
-        ExprKind::Var(_) => "var",
-        ExprKind::Unary { .. } => "un",
-        ExprKind::Field { .. } => "field",
-        ExprKind::Binary { .. } => "bin",
-        ExprKind::PureCall { .. } => "call",
-        ExprKind::BuiltinCall { .. } => "builtin",
-        ExprKind::MakeStruct { .. } => "mk_struct",
-        ExprKind::MakeEnum { .. } => "mk_enum",
-        ExprKind::Error(_) => "err",
-    }
+    format!("{}-{}:{}:{:016x}", start, end, kind.tag(), fingerprint)
 }
 
 fn hash_reason(reason: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     reason.hash(&mut hasher);
     hasher.finish()
-}
-
-fn collect_expr_fingerprints(program: &CoreProgram) -> Vec<u64> {
-    let mut memo = vec![None; program.exprs().len()];
-    let mut visiting = vec![false; program.exprs().len()];
-    for idx in 0..program.exprs().len() {
-        let expr_id = ExprId::new(idx);
-        let _ = expr_fingerprint(program, expr_id, &mut memo, &mut visiting);
-    }
-    memo.into_iter()
-        .map(|entry| entry.unwrap_or_default())
-        .collect()
-}
-
-fn expr_fingerprint(
-    program: &CoreProgram,
-    expr_id: ExprId,
-    memo: &mut [Option<u64>],
-    visiting: &mut [bool],
-) -> u64 {
-    if let Some(value) = memo.get(expr_id.index()).copied().flatten() {
-        return value;
-    }
-    if visiting.get(expr_id.index()).copied().unwrap_or(false) {
-        return 0;
-    }
-    if expr_id.index() >= visiting.len() || expr_id.index() >= memo.len() {
-        return 0;
-    }
-    visiting[expr_id.index()] = true;
-
-    let value = if let Some(expr) = program.expr(expr_id) {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        expr.span.start.hash(&mut hasher);
-        expr.span.end.hash(&mut hasher);
-        expr_kind_tag(&expr.kind).hash(&mut hasher);
-        match &expr.kind {
-            ExprKind::Var(var) => var.as_u32().hash(&mut hasher),
-            ExprKind::Literal(literal) => hash_literal(literal, &mut hasher),
-            ExprKind::Unary { op, expr } => {
-                std::mem::discriminant(op).hash(&mut hasher);
-                expr_fingerprint(program, *expr, memo, visiting).hash(&mut hasher);
-            }
-            ExprKind::Field { base, field } => {
-                field.as_u32().hash(&mut hasher);
-                expr_fingerprint(program, *base, memo, visiting).hash(&mut hasher);
-            }
-            ExprKind::Binary { op, lhs, rhs } => {
-                std::mem::discriminant(op).hash(&mut hasher);
-                expr_fingerprint(program, *lhs, memo, visiting).hash(&mut hasher);
-                expr_fingerprint(program, *rhs, memo, visiting).hash(&mut hasher);
-            }
-            ExprKind::PureCall { callee, args } => {
-                callee.as_u32().hash(&mut hasher);
-                for arg in args {
-                    expr_fingerprint(program, *arg, memo, visiting).hash(&mut hasher);
-                }
-            }
-            ExprKind::BuiltinCall { builtin, args } => {
-                std::mem::discriminant(builtin).hash(&mut hasher);
-                for arg in args {
-                    expr_fingerprint(program, *arg, memo, visiting).hash(&mut hasher);
-                }
-            }
-            ExprKind::MakeStruct { ty, fields } => {
-                ty.as_u32().hash(&mut hasher);
-                for field in fields {
-                    expr_fingerprint(program, *field, memo, visiting).hash(&mut hasher);
-                }
-            }
-            ExprKind::MakeEnum {
-                ty,
-                variant,
-                fields,
-            } => {
-                ty.as_u32().hash(&mut hasher);
-                variant.as_u32().hash(&mut hasher);
-                for field in fields {
-                    expr_fingerprint(program, *field, memo, visiting).hash(&mut hasher);
-                }
-            }
-            ExprKind::Error(error) => {
-                error.span.start.hash(&mut hasher);
-                error.span.end.hash(&mut hasher);
-                error.message.hash(&mut hasher);
-            }
-        }
-        hasher.finish()
-    } else {
-        0
-    };
-
-    visiting[expr_id.index()] = false;
-    memo[expr_id.index()] = Some(value);
-    value
-}
-
-fn hash_literal<H: Hasher>(literal: &cielo_ir::core::Literal, hasher: &mut H) {
-    match literal {
-        cielo_ir::core::Literal::Unit => 0u8.hash(hasher),
-        cielo_ir::core::Literal::Bool(value) => {
-            1u8.hash(hasher);
-            value.hash(hasher);
-        }
-        cielo_ir::core::Literal::Int(value) => {
-            2u8.hash(hasher);
-            value.hash(hasher);
-        }
-        cielo_ir::core::Literal::Float(value) => {
-            3u8.hash(hasher);
-            value.to_bits().hash(hasher);
-        }
-        cielo_ir::core::Literal::Char(value) => {
-            4u8.hash(hasher);
-            value.hash(hasher);
-        }
-        cielo_ir::core::Literal::String(value) => {
-            5u8.hash(hasher);
-            value.hash(hasher);
-        }
-    }
 }

@@ -7,7 +7,7 @@ use cielo_ir::constants::{
 };
 use cielo_ir::core::CoreProgram;
 use cielo_ir::linear::LinearProgram;
-use cielo_ir::walk::{IrExprNode, IrProgram};
+use cielo_ir::walk::{IrExprArena, IrExprNode};
 
 pub const MAX_CONST_ENTRY_BYTES: usize = 1024;
 pub const MAX_CONST_POOL_BYTES: usize = 16 * 1024;
@@ -23,7 +23,7 @@ pub fn build_for_linear(program: &LinearProgram) -> ConstantTable {
     build_constant_table(program)
 }
 
-pub fn build_constant_table<P: IrProgram>(program: &P) -> ConstantTable {
+pub fn build_constant_table<P: IrExprArena>(program: &P) -> ConstantTable {
     let mut counts = ConstantCounts::default();
     let mut seen_strings = HashSet::new();
     let mut field_key_memo: HashMap<P::ExprId, Option<CtorFieldKey>> = HashMap::new();
@@ -144,7 +144,7 @@ impl ConstPoolBudget {
     }
 }
 
-fn ctor_key_from_fields<P: IrProgram>(
+fn ctor_key_from_fields<P: IrExprArena>(
     program: &P,
     ty: SymbolId,
     variant: SymbolId,
@@ -166,7 +166,7 @@ fn ctor_key_from_fields<P: IrProgram>(
     })
 }
 
-fn ctor_field_key_from_expr<P: IrProgram>(
+fn ctor_field_key_from_expr<P: IrExprArena>(
     program: &P,
     expr_id: P::ExprId,
     field_key_memo: &mut HashMap<P::ExprId, Option<CtorFieldKey>>,
