@@ -19,6 +19,7 @@ pub enum Item {
 #[derive(Clone, Debug)]
 pub struct FunctionDecl {
     pub name: SymbolId,
+    pub type_params: Vec<SymbolId>,
     pub params: Vec<Param>,
     pub return_type: Option<TypeExpr>,
     pub effects: Vec<SymbolId>,
@@ -37,6 +38,7 @@ pub struct Param {
 #[derive(Clone, Debug)]
 pub struct StructDecl {
     pub name: SymbolId,
+    pub type_params: Vec<SymbolId>,
     pub fields: Vec<FieldDecl>,
     pub span: Span,
 }
@@ -44,6 +46,7 @@ pub struct StructDecl {
 #[derive(Clone, Debug)]
 pub struct EnumDecl {
     pub name: SymbolId,
+    pub type_params: Vec<SymbolId>,
     pub variants: Vec<EnumVariantDecl>,
     pub span: Span,
 }

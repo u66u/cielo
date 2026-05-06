@@ -1,5 +1,5 @@
-use cielo_base::{Interner, SourceId};
-use cielo_frontend::ast::{ExprKind, Item, Stmt};
+use cielo_base::{Interner, SourceId, SymbolId};
+use cielo_frontend::ast::{ExprKind, Item, Stmt, TypeExprKind};
 use cielo_frontend::lexer::{Keyword, TokenKind, lex};
 use cielo_frontend::parser::parse_source;
 
@@ -170,4 +170,109 @@ fn main() -> Int {
     });
     assert!(has_match);
     assert!(!parsed.diagnostics.has_errors());
+}
+
+#[test]
+fn parse_type_parameter_lists() {
+    let src = r#"
+struct Pair[A, B] { first: A, second: B }
+enum Option[T] { Some(T), None }
+fn identity[T](x: T) -> T { x }
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    assert!(!parsed.diagnostics.has_errors(), "{:?}", parsed.diagnostics);
+
+    let names = |symbols: &[SymbolId]| {
+        symbols
+            .iter()
+            .map(|symbol| interner.resolve(*symbol).unwrap_or("<missing>").to_owned())
+            .collect::<Vec<_>>()
+    };
+
+    for item in &parsed.program.items {
+        match item {
+            Item::Struct(decl) => assert_eq!(names(&decl.type_params), vec!["A", "B"]),
+            Item::Enum(decl) => assert_eq!(names(&decl.type_params), vec!["T"]),
+            Item::Function(decl) => assert_eq!(names(&decl.type_params), vec!["T"]),
+            _ => panic!("unexpected item"),
+        }
+    }
+}
+
+#[test]
+fn parse_keeps_type_arguments_at_use_sites() {
+    let src = r#"
+enum Option[T] { Some(T), None }
+fn unwrap_or[T](opt: Option[T], fallback: T) -> T { fallback }
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    assert!(!parsed.diagnostics.has_errors(), "{:?}", parsed.diagnostics);
+
+    let function = parsed
+        .program
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Function(function) => Some(function),
+            _ => None,
+        })
+        .expect("expected function");
+    let TypeExprKind::Path { name, args } = &function.params[0].ty.kind else {
+        panic!("expected a path type for the first parameter");
+    };
+    assert_eq!(interner.resolve(*name), Some("Option"));
+    assert_eq!(args.len(), 1);
+    assert!(matches!(args[0].kind, TypeExprKind::Path { .. }));
+}
+
+#[test]
+fn reject_duplicate_type_parameter() {
+    let src = "fn f[T, T](x: T) -> T { x }";
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    assert!(
+        parsed
+            .diagnostics
+            .entries()
+            .iter()
+            .any(|entry| entry.code == "PARSE_DUP_TYPE_PARAM")
+    );
+}
+
+#[test]
+fn reject_generic_effect_declarations_and_rows() {
+    let src = r#"
+effect State[S] { fn get() -> Int }
+fn f(x: Int) -> Int with State[Int] { x }
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    assert_eq!(
+        parsed
+            .diagnostics
+            .entries()
+            .iter()
+            .filter(|entry| entry.code == "PARSE_GENERIC_EFFECT_ARGS")
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn reject_type_arguments_in_expression_position() {
+    let src = r#"
+fn identity[T](x: T) -> T { x }
+fn main() -> Int { identity[Int](1) }
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    assert!(
+        parsed
+            .diagnostics
+            .entries()
+            .iter()
+            .any(|entry| entry.code == "PARSE_TYPE_ARGS_IN_EXPR")
+    );
 }

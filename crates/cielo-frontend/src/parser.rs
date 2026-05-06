@@ -157,6 +157,7 @@ impl Parser {
     fn parse_function(&mut self, ct_only: bool) -> FunctionDecl {
         let start = self.expect_keyword(Keyword::Fn).span;
         let name = self.expect_identifier("Expected function name after `fn`");
+        let type_params = self.parse_type_params();
         self.expect_kind(TokenKind::LParen, "Expected `(` after function name");
         let params = self.parse_params();
         self.expect_kind(TokenKind::RParen, "Expected `)` after function parameters");
@@ -171,6 +172,7 @@ impl Parser {
         if self.consume_keyword(Keyword::With).is_some() {
             loop {
                 effects.push(self.expect_identifier("Expected effect name in `with` clause"));
+                self.reject_effect_type_args();
                 if self.consume_kind(TokenKind::Comma).is_none() {
                     break;
                 }
@@ -181,6 +183,7 @@ impl Parser {
         let span = span_join(start, body.span);
         FunctionDecl {
             name,
+            type_params,
             params,
             return_type,
             effects,
@@ -190,9 +193,71 @@ impl Parser {
         }
     }
 
+    /// `[T]` / `[T, U]` after a declaration name. Absent means non-generic:
+    /// an undeclared capitalized name in a signature is an error, never an
+    /// implicit type variable.
+    fn parse_type_params(&mut self) -> Vec<SymbolId> {
+        let mut params = Vec::new();
+        if self.consume_kind(TokenKind::LBracket).is_none() {
+            return params;
+        }
+
+        if !self.check_kind(TokenKind::RBracket) {
+            loop {
+                let span = self.current_span();
+                let name = self.expect_identifier("Expected type parameter name");
+                if params.contains(&name) {
+                    self.diagnostics.error(
+                        "PARSE_DUP_TYPE_PARAM",
+                        "Duplicate type parameter name",
+                        span,
+                    );
+                }
+                params.push(name);
+                if self.consume_kind(TokenKind::Comma).is_none() {
+                    break;
+                }
+            }
+        }
+
+        self.expect_kind(TokenKind::RBracket, "Expected `]` after type parameters");
+        params
+    }
+
+    /// Effect rows are monomorphic here: `with State[Int]` would have to survive
+    /// specialization as part of the row, which the effect machinery cannot express.
+    fn reject_effect_type_args(&mut self) {
+        if !self.check_kind(TokenKind::LBracket) {
+            return;
+        }
+        let span = self.current_span();
+        self.skip_bracket_group();
+        self.diagnostics.error(
+            "PARSE_GENERIC_EFFECT_ARGS",
+            "Effect type arguments are not supported; effects must be monomorphic",
+            span,
+        );
+    }
+
+    fn skip_bracket_group(&mut self) {
+        if self.consume_kind(TokenKind::LBracket).is_none() {
+            return;
+        }
+        let mut depth = 1usize;
+        while depth > 0 && !self.at_eof() {
+            if self.check_kind(TokenKind::LBracket) {
+                depth += 1;
+            } else if self.check_kind(TokenKind::RBracket) {
+                depth -= 1;
+            }
+            self.bump();
+        }
+    }
+
     fn parse_struct(&mut self) -> StructDecl {
         let start = self.expect_keyword(Keyword::Struct).span;
         let name = self.expect_identifier("Expected struct name after `struct`");
+        let type_params = self.parse_type_params();
         self.expect_kind(TokenKind::LBrace, "Expected `{` after struct name");
 
         let mut fields = Vec::new();
@@ -217,6 +282,7 @@ impl Parser {
             .span;
         StructDecl {
             name,
+            type_params,
             fields,
             span: span_join(start, end),
         }
@@ -225,6 +291,7 @@ impl Parser {
     fn parse_enum(&mut self) -> EnumDecl {
         let start = self.expect_keyword(Keyword::Enum).span;
         let name = self.expect_identifier("Expected enum name after `enum`");
+        let type_params = self.parse_type_params();
         self.expect_kind(TokenKind::LBrace, "Expected `{` after enum name");
 
         let mut variants = Vec::new();
@@ -262,6 +329,7 @@ impl Parser {
             .span;
         EnumDecl {
             name,
+            type_params,
             variants,
             span: span_join(start, end),
         }
@@ -270,6 +338,7 @@ impl Parser {
     fn parse_effect(&mut self) -> EffectDecl {
         let start = self.expect_keyword(Keyword::Effect).span;
         let name = self.expect_identifier("Expected effect name after `effect`");
+        self.reject_effect_type_args();
         self.expect_kind(TokenKind::LBrace, "Expected `{` after effect name");
 
         let mut operations = Vec::new();
@@ -493,6 +562,16 @@ impl Parser {
         loop {
             if self.check_kind(TokenKind::LParen) {
                 lhs = self.parse_call_expr(lhs);
+                continue;
+            }
+            if self.check_kind(TokenKind::LBracket) {
+                let span = self.current_span();
+                self.skip_bracket_group();
+                self.diagnostics.error(
+                    "PARSE_TYPE_ARGS_IN_EXPR",
+                    "Type arguments at a use site are not supported; type arguments are inferred from the call's arguments",
+                    span,
+                );
                 continue;
             }
             if self.check_kind(TokenKind::Dot) {
@@ -788,6 +867,7 @@ impl Parser {
         let body = self.parse_expr(0);
         self.expect_keyword(Keyword::With);
         let name = self.expect_identifier("Expected effect or handler name after `with`");
+        self.reject_effect_type_args();
 
         // A clause block only follows an effect name; a declared handler stands alone.
         let (handler, end) = if self.check_kind(TokenKind::LBrace) {
@@ -817,6 +897,7 @@ impl Parser {
         let name = self.expect_identifier("Expected handler name after `handler`");
         self.expect_keyword(Keyword::With);
         let effect = self.expect_identifier("Expected effect name after `with`");
+        self.reject_effect_type_args();
         let (clauses, end) = self.parse_handler_clauses();
         HandlerDecl {
             name,
