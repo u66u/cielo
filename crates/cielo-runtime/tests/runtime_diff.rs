@@ -515,6 +515,21 @@ fn main() -> Int {
 "#,
         ),
         (
+            // Specialization inlines `mk` into a constructor sitting directly
+            // under the projection. `cielo_ctor_field_copy` does not release its
+            // base, and before the constructor was bound to a value there was no
+            // name for a release to mention: ASan reported 80 bytes.
+            "ctor_produced_in_expression_position",
+            r#"
+struct Pair { a: Int, b: Int }
+fn mk(x: Int) -> Pair { Pair(x, 2) }
+fn main() -> Int {
+  let v = mk(1).a;
+  v + 2
+}
+"#,
+        ),
+        (
             // Same shape, but the parent is read twice, so the take must keep
             // its runtime gate. This is the CIELO-3 regression in the presence
             // of the new unchecked path.
@@ -529,6 +544,31 @@ fn main() -> Int {
   let seed = @runtime { 1 + 2 };
   let boxed = if seed > 2 { Wrap(N(seed)) } else { Wrap(N(0)) };
   peel(boxed) + peel(boxed)
+}
+"#,
+        ),
+        (
+            // Same shape one level out: the concatenated string is an operand of
+            // `==`, and `cv_eq` releases nothing.
+            "string_builtin_in_expression_position",
+            r#"
+fn main() -> Int {
+  let same = str_concat("ab", "c") == "abc";
+  if same { 3 } else { 4 }
+}
+"#,
+        ),
+        (
+            // A producer in the scrutinee is read, not consumed, so it needs a
+            // name too, and the arm still moves fields out of it.
+            "ctor_produced_in_scrutinee_position",
+            r#"
+enum Box { B(Int) }
+fn mk(x: Int) -> Box { B(x) }
+fn main() -> Int {
+  match mk(6) {
+    B(x) => x
+  }
 }
 "#,
         ),

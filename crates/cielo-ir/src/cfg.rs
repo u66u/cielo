@@ -5,6 +5,8 @@
 //! variables are preserved as optional provenance while synthetic block values
 //! are free to model continuations and cleanup paths.
 
+use std::collections::{HashMap, HashSet};
+
 use crate::builtins::Builtin;
 use crate::constants::{CtorFieldKey, CtorLiteralKey};
 use crate::core::{BinaryOp, Literal, StageDirective, UnaryOp};
@@ -118,9 +120,11 @@ impl CfgProgram {
         &self.blocks
     }
 
-    /// Checks arena references, successor references, and continuation arity.
+    /// Checks arena references, successor references, continuation arity, and
+    /// that every value an expression reads is defined on the way in.
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
+        self.check_value_definitions(&mut errors);
         for block in &self.blocks {
             for param in &block.params {
                 if self.value(*param).is_none() {
@@ -175,6 +179,192 @@ impl CfgProgram {
         } else {
             Err(errors)
         }
+    }
+
+    /// Reports reads of a value that some path into the block leaves undefined.
+    ///
+    /// A pass that binds a subexpression to a fresh value has to put the
+    /// binding in the block that reads it. Caching such a binding across blocks
+    /// yields a graph that still passes every structural check above and still
+    /// emits, but reads an uninitialised local on the path that skips the
+    /// definition.
+    ///
+    /// Definedness, not dominance: one `CfgValueId` is deliberately the
+    /// parameter of several sibling continuations that share a `next` block, so
+    /// a value can be defined on every path in without any single definition
+    /// dominating the read.
+    fn check_value_definitions(&self, errors: &mut Vec<String>) {
+        for function in &self.functions {
+            for (block, incoming) in self.definitions_on_entry(function.entry) {
+                let Some(node) = self.block(block) else {
+                    continue;
+                };
+                let mut defined = incoming;
+                defined.extend(node.params.iter().copied());
+                for instruction in &node.instructions {
+                    let Some(instruction) = self.instruction(*instruction) else {
+                        continue;
+                    };
+                    if let CfgInstruction::Let { result, value }
+                    | CfgInstruction::Eval { result, value } = instruction.kind
+                    {
+                        self.check_expr_reads(value, &defined, block, errors);
+                        defined.insert(result);
+                    }
+                }
+                for operand in node.terminator.child_exprs() {
+                    self.check_expr_reads(operand, &defined, block, errors);
+                }
+            }
+        }
+    }
+
+    fn check_expr_reads(
+        &self,
+        expression: CfgExprId,
+        defined: &HashSet<CfgValueId>,
+        block: CfgBlockId,
+        errors: &mut Vec<String>,
+    ) {
+        let Some(node) = self.expr(expression) else {
+            return;
+        };
+        match &node.kind {
+            CfgExpr::Value(value) => {
+                if !defined.contains(value) {
+                    errors.push(format!(
+                        "block {block} reads {value}, which some path into it leaves undefined"
+                    ));
+                }
+            }
+            CfgExpr::Unary { expr, .. } | CfgExpr::Field { base: expr, .. } => {
+                self.check_expr_reads(*expr, defined, block, errors);
+            }
+            CfgExpr::Binary { lhs, rhs, .. } => {
+                self.check_expr_reads(*lhs, defined, block, errors);
+                self.check_expr_reads(*rhs, defined, block, errors);
+            }
+            CfgExpr::PureCall { args, .. }
+            | CfgExpr::BuiltinCall { args, .. }
+            | CfgExpr::MakeStruct { fields: args, .. }
+            | CfgExpr::MakeEnum { fields: args, .. } => {
+                for arg in args {
+                    self.check_expr_reads(*arg, defined, block, errors);
+                }
+            }
+            CfgExpr::Literal(_) | CfgExpr::Error => {}
+        }
+    }
+
+    /// Every value `block` itself defines: its parameters, which a `Call`,
+    /// `Perform` or match arm edge also fills in, plus its instruction results.
+    fn definitions_in(&self, block: CfgBlockId) -> Vec<CfgValueId> {
+        let Some(node) = self.block(block) else {
+            return Vec::new();
+        };
+        let mut defined = node.params.clone();
+        for instruction in &node.instructions {
+            if let Some(CfgInstruction::Let { result, .. } | CfgInstruction::Eval { result, .. }) =
+                self.instruction(*instruction).map(|node| &node.kind)
+            {
+                defined.push(*result);
+            }
+        }
+        defined
+    }
+
+    /// For each block reachable from `entry`, the values every path into it has
+    /// already defined. Unreachable blocks are absent: nothing emits them, so
+    /// nothing in them can be read.
+    ///
+    /// A "must" fixpoint, so the non-entry blocks start optimistic at the full
+    /// set and shrink. Starting them empty would instead make a value defined
+    /// only inside a cycle look undefined forever.
+    fn definitions_on_entry(&self, entry: CfgBlockId) -> Vec<(CfgBlockId, HashSet<CfgValueId>)> {
+        let mut reachable = vec![entry];
+        let mut seen = HashSet::from([entry]);
+        let mut index = 0;
+        while index < reachable.len() {
+            let block = reachable[index];
+            index += 1;
+            let Some(node) = self.block(block) else {
+                continue;
+            };
+            for successor in node.terminator.successors() {
+                if self.block(successor).is_some() && seen.insert(successor) {
+                    reachable.push(successor);
+                }
+            }
+        }
+
+        let mut predecessors: HashMap<CfgBlockId, Vec<CfgBlockId>> = HashMap::new();
+        let mut produced: HashMap<CfgBlockId, Vec<CfgValueId>> = HashMap::new();
+        for block in &reachable {
+            produced.insert(*block, self.definitions_in(*block));
+            let Some(node) = self.block(*block) else {
+                continue;
+            };
+            for successor in node.terminator.successors() {
+                if seen.contains(&successor) {
+                    predecessors.entry(successor).or_default().push(*block);
+                }
+            }
+        }
+
+        let universe = produced.values().flatten().copied().collect::<HashSet<_>>();
+        let mut on_exit = reachable
+            .iter()
+            .map(|block| {
+                let set = if *block == entry {
+                    produced[block].iter().copied().collect()
+                } else {
+                    universe.clone()
+                };
+                (*block, set)
+            })
+            .collect::<HashMap<_, HashSet<_>>>();
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for block in &reachable {
+                if *block == entry {
+                    continue;
+                }
+                let mut incoming: Option<HashSet<CfgValueId>> = None;
+                for predecessor in predecessors.get(block).map(Vec::as_slice).unwrap_or(&[]) {
+                    let available = &on_exit[predecessor];
+                    incoming = Some(match incoming {
+                        Some(current) => current.intersection(available).copied().collect(),
+                        None => available.clone(),
+                    });
+                }
+                let mut next = incoming.unwrap_or_default();
+                next.extend(produced[block].iter().copied());
+                if next != on_exit[block] {
+                    on_exit.insert(*block, next);
+                    changed = true;
+                }
+            }
+        }
+
+        reachable
+            .into_iter()
+            .map(|block| {
+                let incoming = predecessors
+                    .get(&block)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|predecessor| &on_exit[predecessor])
+                    .cloned()
+                    .reduce(|current, available| {
+                        current.intersection(&available).copied().collect()
+                    })
+                    .unwrap_or_default();
+                (block, incoming)
+            })
+            .collect()
     }
 }
 
@@ -409,6 +599,33 @@ impl CfgInstruction {
             | Self::StageExit { .. }
             | Self::Hole
             | Self::Error => None,
+        }
+    }
+}
+
+impl CfgExpr {
+    /// Whether evaluating this hands back a reference the evaluator now owns.
+    ///
+    /// ARC keys every op on a `CfgValueId`, so an owning expression that is not
+    /// bound to one has no name a release can mention and leaks. Lowering uses
+    /// this to decide what to materialise, which makes the `false` arms the
+    /// dangerous ones: a new variant belongs on the `true` side unless the
+    /// runtime helper it emits provably yields a scalar or a borrow. Being
+    /// wrong the other way only costs a temporary, since retain and release are
+    /// no-ops on an unmanaged tag.
+    pub fn produces_owned(&self) -> bool {
+        match self {
+            // `cielo_ctor_field_copy` retains, so a projection is owned even
+            // though it allocates nothing.
+            Self::Field { .. }
+            | Self::PureCall { .. }
+            | Self::BuiltinCall { .. }
+            | Self::MakeStruct { .. }
+            | Self::MakeEnum { .. } => true,
+            // `Unary` and `Binary` are the `cv_*` scalar helpers, and literals
+            // are immortal statics.
+            Self::Value(_) | Self::Literal(_) | Self::Unary { .. } | Self::Binary { .. } => false,
+            Self::Error => false,
         }
     }
 }

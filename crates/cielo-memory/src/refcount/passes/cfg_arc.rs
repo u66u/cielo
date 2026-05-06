@@ -285,15 +285,8 @@ fn plan_uses(
 }
 
 fn expr_produces_owned(cfg: &CfgProgram, expression: CfgExprId) -> bool {
-    cfg.expr(expression).is_some_and(|expression| {
-        matches!(
-            &expression.kind,
-            CfgExpr::PureCall { .. }
-                | CfgExpr::MakeStruct { .. }
-                | CfgExpr::MakeEnum { .. }
-                | CfgExpr::Field { .. }
-        )
-    })
+    cfg.expr(expression)
+        .is_some_and(|expression| expression.kind.produces_owned())
 }
 
 fn direct_value(cfg: &CfgProgram, expression: CfgExprId) -> Option<CfgValueId> {

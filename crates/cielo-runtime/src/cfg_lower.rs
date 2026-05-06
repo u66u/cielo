@@ -22,7 +22,8 @@ pub fn run(linear: &LinearProgram) -> CfgProgram {
     let cfg = lower_program(linear);
     debug_assert!(
         cfg.validate().is_ok(),
-        "cfg_lower produced an invalid control-flow graph"
+        "cfg_lower produced an invalid control-flow graph: {:?}",
+        cfg.validate().err().unwrap_or_default()
     );
     cfg
 }
@@ -42,7 +43,10 @@ struct Lowerer<'a> {
     linear: &'a LinearProgram,
     cfg: CfgProgram,
     values: HashMap<VarId, CfgValueId>,
-    expressions: HashMap<LinearExprId, CfgExprId>,
+    /// Keyed by block because `lower_borrowed` binds producers in the block
+    /// that reads them. A hit from another block would hand back a value that
+    /// this block has no path to a definition of.
+    expressions: HashMap<(LinearExprId, CfgBlockId), CfgExprId>,
     statements: HashMap<(LinearStmtId, Exit), CfgBlockId>,
     functions: HashMap<LinearFuncId, CfgFuncId>,
     unit: Option<CfgExprId>,
@@ -131,8 +135,13 @@ impl<'a> Lowerer<'a> {
         unit
     }
 
-    fn lower_expr(&mut self, id: LinearExprId) -> CfgExprId {
-        if let Some(lowered) = self.expressions.get(&id) {
+    /// Lowers `id` into `block` for a position that takes ownership of the
+    /// result: an instruction that binds it, a constructor field, a call or
+    /// builtin argument, a block argument, a return. Each of those has a
+    /// consumer that eventually releases the reference, so the outermost node
+    /// needs no name of its own.
+    fn lower_owned(&mut self, block: CfgBlockId, id: LinearExprId) -> CfgExprId {
+        if let Some(lowered) = self.expressions.get(&(id, block)) {
             return *lowered;
         }
         let kind = match self.linear.expr(id).map(|node| node.kind.clone()) {
@@ -140,15 +149,15 @@ impl<'a> Lowerer<'a> {
             Some(LinearExpr::Literal(literal)) => CfgExpr::Literal(literal),
             Some(LinearExpr::Unary { op, expr }) => CfgExpr::Unary {
                 op,
-                expr: self.lower_expr(expr),
+                expr: self.lower_borrowed(block, expr),
             },
             Some(LinearExpr::Binary { op, lhs, rhs }) => CfgExpr::Binary {
                 op,
-                lhs: self.lower_expr(lhs),
-                rhs: self.lower_expr(rhs),
+                lhs: self.lower_borrowed(block, lhs),
+                rhs: self.lower_borrowed(block, rhs),
             },
             Some(LinearExpr::Field { base, index }) => CfgExpr::Field {
-                base: self.lower_expr(base),
+                base: self.lower_borrowed(block, base),
                 index,
             },
             Some(LinearExpr::PureCall {
@@ -158,17 +167,23 @@ impl<'a> Lowerer<'a> {
             }) => CfgExpr::PureCall {
                 callee,
                 callee_fn: self.cfg_func_id(callee_fn),
-                args: args.into_iter().map(|arg| self.lower_expr(arg)).collect(),
+                args: args
+                    .into_iter()
+                    .map(|arg| self.lower_owned(block, arg))
+                    .collect(),
             },
             Some(LinearExpr::BuiltinCall { builtin, args }) => CfgExpr::BuiltinCall {
                 builtin,
-                args: args.into_iter().map(|arg| self.lower_expr(arg)).collect(),
+                args: args
+                    .into_iter()
+                    .map(|arg| self.lower_owned(block, arg))
+                    .collect(),
             },
             Some(LinearExpr::MakeStruct { ty, fields }) => CfgExpr::MakeStruct {
                 ty,
                 fields: fields
                     .into_iter()
-                    .map(|field| self.lower_expr(field))
+                    .map(|field| self.lower_owned(block, field))
                     .collect(),
             },
             Some(LinearExpr::MakeEnum {
@@ -180,14 +195,44 @@ impl<'a> Lowerer<'a> {
                 variant,
                 fields: fields
                     .into_iter()
-                    .map(|field| self.lower_expr(field))
+                    .map(|field| self.lower_owned(block, field))
                     .collect(),
             },
             Some(LinearExpr::Error) | None => CfgExpr::Error,
         };
         let lowered = self.cfg.push_expr(kind, Some(id));
-        self.expressions.insert(id, lowered);
+        self.expressions.insert((id, block), lowered);
         lowered
+    }
+
+    /// Lowers `id` into `block` for a position that only reads the result and
+    /// releases nothing: a `Unary`, `Binary` or `Field` operand, or the selector
+    /// of a branching terminator. A producer there hands back a reference that
+    /// no `CfgValueId` names, and ARC keys every op on a value, so it is bound
+    /// to a fresh one first.
+    ///
+    /// Operands are lowered before their parent, so the bindings land innermost
+    /// first and each one only mentions values already bound above it.
+    fn lower_borrowed(&mut self, block: CfgBlockId, id: LinearExprId) -> CfgExprId {
+        let lowered = self.lower_owned(block, id);
+        let Some(node) = self.cfg.expr(lowered) else {
+            return lowered;
+        };
+        if !node.kind.produces_owned() {
+            return lowered;
+        }
+        let source = node.source;
+        let result = self.synthetic_value();
+        let stmt = self.cfg.block(block).and_then(|block| block.source);
+        self.cfg.push_instruction(
+            block,
+            CfgInstruction::Let {
+                result,
+                value: lowered,
+            },
+            stmt,
+        );
+        self.cfg.push_expr(CfgExpr::Value(result), source)
     }
 
     fn lower_stmt(&mut self, id: LinearStmtId, exit: Exit) -> CfgBlockId {
@@ -202,8 +247,8 @@ impl<'a> Lowerer<'a> {
             .unwrap_or(LinearStmt::Error);
         let entry = match kind {
             LinearStmt::Return(value) => {
-                let value = self.lower_expr(value);
                 let block = self.cfg.push_block(Vec::new(), Some(id));
+                let value = self.lower_owned(block, value);
                 self.set_exit(block, value, exit);
                 block
             }
@@ -213,9 +258,9 @@ impl<'a> Lowerer<'a> {
                 next,
             } => {
                 let next = self.lower_stmt(next, exit);
-                let value = self.lower_expr(value);
-                let result = self.value_for_var(binding);
                 let block = self.cfg.push_block(Vec::new(), Some(id));
+                let value = self.lower_owned(block, value);
+                let result = self.value_for_var(binding);
                 self.cfg
                     .push_instruction(block, CfgInstruction::Let { result, value }, Some(id));
                 self.cfg.set_terminator(
@@ -299,8 +344,8 @@ impl<'a> Lowerer<'a> {
             } => {
                 let then_target = self.lower_stmt(then_branch, exit);
                 let else_target = self.lower_stmt(else_branch, exit);
-                let cond = self.lower_expr(cond);
                 let block = self.cfg.push_block(Vec::new(), Some(id));
+                let cond = self.lower_borrowed(block, cond);
                 self.cfg.set_terminator(
                     block,
                     CfgTerminator::Branch {
@@ -343,8 +388,8 @@ impl<'a> Lowerer<'a> {
                     Some(default) => self.lower_stmt(default, exit),
                     None => self.unit_exit_block(id, exit),
                 };
-                let scrutinee = self.lower_expr(scrutinee);
                 let block = self.cfg.push_block(Vec::new(), Some(id));
+                let scrutinee = self.lower_borrowed(block, scrutinee);
                 self.cfg.set_terminator(
                     block,
                     CfgTerminator::Match {
@@ -374,8 +419,11 @@ impl<'a> Lowerer<'a> {
                         args: Vec::new(),
                     },
                 );
-                let args = args.into_iter().map(|arg| self.lower_expr(arg)).collect();
                 let block = self.cfg.push_block(Vec::new(), Some(id));
+                let args = args
+                    .into_iter()
+                    .map(|arg| self.lower_owned(block, arg))
+                    .collect();
                 self.cfg.set_terminator(
                     block,
                     CfgTerminator::Perform {
@@ -534,8 +582,11 @@ impl<'a> Lowerer<'a> {
                 args: Vec::new(),
             },
         );
-        let args = args.into_iter().map(|arg| self.lower_expr(arg)).collect();
         let block = self.cfg.push_block(Vec::new(), Some(id));
+        let args = args
+            .into_iter()
+            .map(|arg| self.lower_owned(block, arg))
+            .collect();
         self.cfg.set_terminator(
             block,
             CfgTerminator::Call {
