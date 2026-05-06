@@ -3,6 +3,7 @@ use cielo_base::{SourceId, SymbolId};
 use cielo_ir::cfg::{
     CfgArcOpKind, CfgExpr, CfgInstruction, CfgProgram, CfgProjectionMode, CfgTerminator,
 };
+use cielo_ir::constants::ConstantTable;
 use cielo_ir::core::Literal;
 use cielo_memory::MemoryPreset;
 use cielo_memory::{ArcConfig, ArcFeatures};
@@ -321,7 +322,12 @@ fn cfg_arc_retains_a_value_nested_below_a_constructor() {
     let config = ArcConfig {
         features: ArcFeatures::INSERTION,
     };
-    cielo_memory::refcount::passes::cfg_arc::run(&mut cfg, &[true], &config);
+    cielo_memory::refcount::passes::cfg_arc::run(
+        &mut cfg,
+        &[true],
+        &ConstantTable::default(),
+        &config,
+    );
 
     let terminator_arc = &cfg.block(entry).expect("entry block").terminator_arc;
     assert_eq!(

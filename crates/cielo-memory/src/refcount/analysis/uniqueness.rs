@@ -177,6 +177,7 @@ fn record_expr_uses(
             record_expr_uses(cfg, *rhs, site, uses);
         }
         CfgExpr::PureCall { args, .. }
+        | CfgExpr::BuiltinCall { args, .. }
         | CfgExpr::MakeStruct { fields: args, .. }
         | CfgExpr::MakeEnum { fields: args, .. } => {
             for arg in args {
@@ -327,7 +328,10 @@ fn expr_origin(
             variant,
             fields,
         } => ctor_origin(cfg, constants, expression, *ty, *variant, fields, pooled),
-        CfgExpr::Literal(_)
+        // A builtin result is heap-fresh today, but nothing in the signature
+        // says so: an interning or caching builtin would return an alias.
+        CfgExpr::BuiltinCall { .. }
+        | CfgExpr::Literal(_)
         | CfgExpr::Unary { .. }
         | CfgExpr::Binary { .. }
         | CfgExpr::PureCall { .. }
