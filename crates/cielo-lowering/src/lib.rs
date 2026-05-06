@@ -176,12 +176,12 @@ impl Lowerer {
                             param_types: operation
                                 .params
                                 .iter()
-                                .map(|param| lower_type_ref(&param.ty))
+                                .map(|param| lower_type_ref(&param.ty, &[]))
                                 .collect(),
                             return_type: operation
                                 .return_type
                                 .as_ref()
-                                .map(lower_type_ref)
+                                .map(|ty| lower_type_ref(ty, &[]))
                                 .unwrap_or(CoreTypeRef::Unit),
                             span: operation.span,
                         });
@@ -198,10 +198,11 @@ impl Lowerer {
                     self.struct_ctors.insert(decl.name, decl.fields.len());
                     self.program.add_struct(AdtStructDecl {
                         name: decl.name,
+                        type_params: decl.type_params.clone(),
                         fields: decl
                             .fields
                             .iter()
-                            .map(|field| lower_type_ref(&field.ty))
+                            .map(|field| lower_type_ref(&field.ty, &decl.type_params))
                             .collect(),
                         field_names: decl.fields.iter().map(|field| field.name).collect(),
                         span: decl.span,
@@ -214,12 +215,17 @@ impl Lowerer {
                             .insert(variant.name, (decl.name, variant.fields.len()));
                         variants.push(AdtEnumVariantDecl {
                             name: variant.name,
-                            fields: variant.fields.iter().map(lower_type_ref).collect(),
+                            fields: variant
+                                .fields
+                                .iter()
+                                .map(|field| lower_type_ref(field, &decl.type_params))
+                                .collect(),
                             span: variant.span,
                         });
                     }
                     self.program.add_enum(AdtEnumDecl {
                         name: decl.name,
+                        type_params: decl.type_params.clone(),
                         variants,
                         span: decl.span,
                     });
@@ -263,12 +269,12 @@ impl Lowerer {
                     param_types: function
                         .params
                         .iter()
-                        .map(|param| lower_type_ref(&param.ty))
+                        .map(|param| lower_type_ref(&param.ty, &function.type_params))
                         .collect(),
                     return_type: function
                         .return_type
                         .as_ref()
-                        .map(lower_type_ref)
+                        .map(|ty| lower_type_ref(ty, &function.type_params))
                         .unwrap_or(CoreTypeRef::Unknown),
                     declared_effects: SortedEffectRow::new(declared_effects),
                     body: dummy,
@@ -1065,11 +1071,27 @@ impl Lowerer {
     }
 }
 
-fn lower_type_ref(ty: &TypeExpr) -> CoreTypeRef {
+/// `type_params` are the enclosing declaration's `[T]` names. A path that
+/// matches one becomes `Param`; everything else stays `Named` for typecheck to
+/// resolve or reject.
+fn lower_type_ref(ty: &TypeExpr, type_params: &[SymbolId]) -> CoreTypeRef {
     match &ty.kind {
         TypeExprKind::Unit => CoreTypeRef::Unit,
         TypeExprKind::Builtin(builtin) => CoreTypeRef::Primitive(map_builtin_type(*builtin)),
-        TypeExprKind::Path { name, .. } => CoreTypeRef::Named(*name),
+        TypeExprKind::Path { name, args } if args.is_empty() => {
+            if type_params.contains(name) {
+                CoreTypeRef::Param(*name)
+            } else {
+                CoreTypeRef::Named(*name)
+            }
+        }
+        TypeExprKind::Path { name, args } => CoreTypeRef::Applied {
+            name: *name,
+            args: args
+                .iter()
+                .map(|arg| lower_type_ref(arg, type_params))
+                .collect(),
+        },
         TypeExprKind::Error(_) => CoreTypeRef::Unknown,
     }
 }

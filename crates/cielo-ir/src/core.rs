@@ -179,12 +179,50 @@ pub enum PrimitiveTypeRef {
     String,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum CoreTypeRef {
     Unit,
     Primitive(PrimitiveTypeRef),
     Named(SymbolId),
+    /// A type parameter declared by the enclosing function or ADT. Lowering
+    /// resolves the name against the declaration's `[T]` list, so a name that
+    /// stays `Named` and matches no declared type is a typo, not a type variable.
+    Param(SymbolId),
+    /// `Name[A, B]` at a use site.
+    Applied {
+        name: SymbolId,
+        args: Vec<CoreTypeRef>,
+    },
     Unknown,
+}
+
+impl CoreTypeRef {
+    pub fn mentions_param(&self) -> bool {
+        match self {
+            Self::Param(_) => true,
+            Self::Applied { args, .. } => args.iter().any(Self::mentions_param),
+            Self::Unit | Self::Primitive(_) | Self::Named(_) | Self::Unknown => false,
+        }
+    }
+
+    /// Nesting depth of type application, used to bound polymorphic recursion.
+    pub fn depth(&self) -> usize {
+        match self {
+            Self::Applied { args, .. } => 1 + args.iter().map(Self::depth).max().unwrap_or(0),
+            _ => 0,
+        }
+    }
+
+    pub fn substitute(&self, bindings: &dyn Fn(SymbolId) -> Option<Self>) -> Self {
+        match self {
+            Self::Param(name) => bindings(*name).unwrap_or_else(|| self.clone()),
+            Self::Applied { name, args } => Self::Applied {
+                name: *name,
+                args: args.iter().map(|arg| arg.substitute(bindings)).collect(),
+            },
+            other => other.clone(),
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -489,6 +527,8 @@ pub struct FunctionDecl {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct AdtStructDecl {
     pub name: SymbolId,
+    /// Positional: `Applied` arguments at use sites bind to these in order.
+    pub type_params: Vec<SymbolId>,
     pub fields: Vec<CoreTypeRef>,
     /// Parallel to `fields`. Needed so `base.field` can resolve to an index.
     pub field_names: Vec<SymbolId>,
@@ -505,6 +545,8 @@ pub struct AdtEnumVariantDecl {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct AdtEnumDecl {
     pub name: SymbolId,
+    /// Positional: `Applied` arguments at use sites bind to these in order.
+    pub type_params: Vec<SymbolId>,
     pub variants: Vec<AdtEnumVariantDecl>,
     pub span: Span,
 }

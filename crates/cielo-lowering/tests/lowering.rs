@@ -1,6 +1,6 @@
 use cielo_base::{Interner, SourceId};
 use cielo_frontend::parser::parse_source;
-use cielo_ir::core::StmtKind;
+use cielo_ir::core::{CoreTypeRef, StmtKind};
 use cielo_lowering::{LowerConfig, lower_program};
 
 #[test]
@@ -611,4 +611,46 @@ fn main() -> Int {
         .iter()
         .any(|expr| matches!(expr.kind, cielo_ir::core::ExprKind::MakeStruct { .. }));
     assert!(has_ctor);
+}
+
+#[test]
+fn lowers_type_arguments_into_core() {
+    let src = r#"
+enum Option[T] { Some(T), None }
+fn unwrap_or[T](opt: Option[T], fallback: T) -> T { fallback }
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    assert!(!lowered.diagnostics.has_errors());
+
+    let option = interner.intern("Option");
+    let param = interner.intern("T");
+    let decl = lowered.program.enums().first().expect("enum decl");
+    assert_eq!(decl.type_params, vec![param]);
+    assert_eq!(decl.variants[0].fields, vec![CoreTypeRef::Param(param)]);
+
+    let function = lowered.program.functions().first().expect("function");
+    assert_eq!(
+        function.param_types[0],
+        CoreTypeRef::Applied {
+            name: option,
+            args: vec![CoreTypeRef::Param(param)],
+        }
+    );
+    assert_eq!(function.param_types[1], CoreTypeRef::Param(param));
+    assert_eq!(function.return_type, CoreTypeRef::Param(param));
+}
+
+#[test]
+fn lowers_undeclared_type_name_as_named_not_param() {
+    let src = "fn f(x: Itn) -> Int { 0 }";
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let function = lowered.program.functions().first().expect("function");
+    assert_eq!(
+        function.param_types[0],
+        CoreTypeRef::Named(interner.intern("Itn"))
+    );
 }
