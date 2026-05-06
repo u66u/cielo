@@ -548,6 +548,23 @@ fn main() -> Int {
 "#,
         ),
         (
+            // Returning a binder makes the arm edge carry a drop, so ARC
+            // interposes a block on it. With parameters of its own that block
+            // wrote unit over the payload: 0 instead of 7, under ARC only.
+            "match_binder_returned_across_an_edge_drop",
+            r#"
+enum OptInt { SomeI(Int), NoneI }
+enum OptOpt { SomeO(OptInt), NoneO }
+fn unwrap_o(opt: OptOpt, fallback: OptInt) -> OptInt {
+  match opt { | SomeO(v) => v | _ => fallback }
+}
+fn main() -> Int {
+  let back = unwrap_o(SomeO(SomeI(7)), NoneI());
+  match back { | SomeI(n) => n | _ => 5 }
+}
+"#,
+        ),
+        (
             // Same shape one level out: the concatenated string is an operand of
             // `==`, and `cv_eq` releases nothing.
             "string_builtin_in_expression_position",

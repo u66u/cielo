@@ -320,7 +320,7 @@ fn plan_edge_drops(
         let live_out = liveness.live_out(block.id).cloned().unwrap_or_default();
 
         let mut rewrites: Vec<(CfgBlockId, CfgBlockId)> = Vec::new();
-        for (target, arity) in edges {
+        for (target, _) in edges {
             let target_live_in = liveness.live_in(target).cloned().unwrap_or_default();
             let drops = live_out
                 .iter()
@@ -335,7 +335,13 @@ fn plan_edge_drops(
                 continue;
             }
 
-            let params = (0..arity).map(|_| cfg.push_value(None)).collect::<Vec<_>>();
+            // Successor's own parameters, not fresh ones: a match assigns arm
+            // binders by name, so fresh parameters are never written and the
+            // forwarding Goto clobbers the payload with unit.
+            let params = cfg
+                .block(target)
+                .map(|successor| successor.params.clone())
+                .unwrap_or_default();
             let args = params
                 .iter()
                 .map(|param| cfg.push_expr(CfgExpr::Value(*param), None))
