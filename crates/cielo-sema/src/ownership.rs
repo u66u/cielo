@@ -31,7 +31,9 @@ pub fn classify_core_type_ref(ty: &CoreTypeRef) -> OwnershipClass {
             | cielo_ir::core::PrimitiveTypeRef::Float
             | cielo_ir::core::PrimitiveTypeRef::Char => OwnershipClass::Trivial,
         },
-        CoreTypeRef::Named(_) => OwnershipClass::Managed,
-        CoreTypeRef::Unknown => OwnershipClass::BorrowedView,
+        CoreTypeRef::Named(_) | CoreTypeRef::Applied { .. } => OwnershipClass::Managed,
+        // A type parameter is only seen on an unspecialized signature, whose
+        // instances carry the real ownership class.
+        CoreTypeRef::Param(_) | CoreTypeRef::Unknown => OwnershipClass::BorrowedView,
     }
 }

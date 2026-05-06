@@ -21,7 +21,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::facts::SemanticTables;
+use crate::facts::{CallSite, SemanticTables};
 use crate::ownership::{classify_core_type_ref, classify_type_kind};
 use crate::ty::{EnumVariant, PrimitiveType, StructField, TypeKind, TypeStore};
 use cielo_base::Span;
@@ -58,6 +58,38 @@ define_primitive_type_ids! {
     string => String,
 }
 
+/// Instantiating a declaration deeper than this means it instantiates itself at
+/// an ever larger type, which never terminates.
+const MAX_ADT_INSTANTIATION_DEPTH: usize = 16;
+
+#[derive(Clone, Copy)]
+struct CtorCodes {
+    unknown: &'static str,
+    unknown_message: &'static str,
+    arity: &'static str,
+    arity_message: &'static str,
+    field: &'static str,
+    field_message: &'static str,
+}
+
+const STRUCT_CTOR_CODES: CtorCodes = CtorCodes {
+    unknown: "TYPE_UNKNOWN_STRUCT_CTOR",
+    unknown_message: "Unknown struct constructor",
+    arity: "TYPE_BAD_STRUCT_CTOR_ARITY",
+    arity_message: "Struct constructor arity mismatch",
+    field: "TYPE_STRUCT_FIELD_MISMATCH",
+    field_message: "Struct field type mismatch",
+};
+
+const ENUM_CTOR_CODES: CtorCodes = CtorCodes {
+    unknown: "TYPE_UNKNOWN_ENUM_CTOR",
+    unknown_message: "Unknown enum constructor",
+    arity: "TYPE_BAD_ENUM_CTOR_ARITY",
+    arity_message: "Enum constructor arity mismatch",
+    field: "TYPE_ENUM_FIELD_MISMATCH",
+    field_message: "Enum field type mismatch",
+};
+
 #[derive(Clone, Debug)]
 struct EffectSignature {
     param_types: Vec<Option<TypeId>>,
@@ -66,30 +98,50 @@ struct EffectSignature {
 
 type EffectSignatureTable = HashMap<(EffectLabelId, SymbolId), EffectSignature>;
 
+/// The declared shape of one ADT, kept in `CoreTypeRef` form so a generic
+/// declaration can be instantiated more than once.
 #[derive(Clone, Debug)]
-struct StructCtorSig {
-    result: TypeId,
-    fields: Vec<TypeId>,
+struct AdtTemplate {
+    type_params: Vec<SymbolId>,
+    shape: AdtShape,
+    span: Span,
 }
 
 #[derive(Clone, Debug)]
-struct EnumCtorSig {
-    result: TypeId,
-    fields: Vec<TypeId>,
+enum AdtShape {
+    Struct {
+        field_names: Vec<SymbolId>,
+        fields: Vec<CoreTypeRef>,
+    },
+    Enum {
+        variants: Vec<(SymbolId, Vec<CoreTypeRef>)>,
+    },
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum TypeTemplate {
-    Concrete(TypeId),
-    Generic(u16),
+/// A constructor call resolved back to its declaring ADT. `variant` is `None`
+/// for a struct constructor.
+#[derive(Clone, Debug)]
+struct CtorTemplate {
+    adt: SymbolId,
+    variant: Option<SymbolId>,
+    fields: Vec<CoreTypeRef>,
 }
 
 #[derive(Clone, Debug)]
 struct FunctionTemplate {
-    params: Vec<TypeTemplate>,
-    ret: Option<TypeTemplate>,
-    generic_count: usize,
+    params: Vec<CoreTypeRef>,
+    ret: Option<CoreTypeRef>,
+    /// Type-parameter names in first-occurrence order across the signature.
+    generic_names: Vec<SymbolId>,
     inferred_ret_var: Option<InferVarId>,
+}
+
+/// A call whose callee is generic, held until inference finishes: the
+/// instantiation variables are only meaningful once every constraint is in.
+struct PendingCallTypeArgs {
+    site: CallSite,
+    bindings: Vec<(SymbolId, InferTy)>,
+    span: Span,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -106,10 +158,22 @@ impl InferVarId {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+struct AppId(u32);
+
+impl AppId {
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum InferTy {
     Concrete(TypeId),
     Var(InferVarId),
+    /// `Name[..]` whose arguments are not all known yet. Collapses to
+    /// `Concrete` once every argument resolves and the instance is interned.
+    App(AppId),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -121,8 +185,8 @@ enum Scheme {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct TypeMismatch {
-    left: TypeId,
-    right: TypeId,
+    left: InferTy,
+    right: InferTy,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -134,11 +198,25 @@ struct ResumeExpectation {
 type Env = HashMap<VarId, Scheme>;
 type ResumeCtx = HashMap<VarId, ResumeExpectation>;
 
+#[derive(Clone, Debug)]
+struct AppTy {
+    name: SymbolId,
+    args: Vec<InferTy>,
+}
+
 #[derive(Clone, Debug, Default)]
 struct InferState {
     parent: Vec<InferVarId>,
     rank: Vec<u8>,
-    binding: Vec<Option<TypeId>>,
+    binding: Vec<Option<InferTy>>,
+    /// Which declared type parameter a variable stands for, when it is a
+    /// function's own generic slot. Monomorphization needs the name to write
+    /// substituted signatures, and the index alone would not survive union.
+    label: Vec<Option<SymbolId>>,
+    apps: Vec<AppTy>,
+    /// Identity `(name, args)` of every interned ADT instance. Kept beside the
+    /// solver so `unify` can decompose `Name[..] ~ instance` without the store.
+    instance_shape: HashMap<TypeId, (SymbolId, Vec<TypeId>)>,
 }
 
 impl InferState {
@@ -147,11 +225,30 @@ impl InferState {
         self.parent.push(id);
         self.rank.push(0);
         self.binding.push(None);
+        self.label.push(None);
         id
     }
 
     fn fresh_ty(&mut self) -> InferTy {
         InferTy::Var(self.fresh_var())
+    }
+
+    fn app(&mut self, name: SymbolId, args: Vec<InferTy>) -> InferTy {
+        let id = AppId(self.apps.len() as u32);
+        self.apps.push(AppTy { name, args });
+        InferTy::App(id)
+    }
+
+    fn set_label(&mut self, ty: InferTy, name: SymbolId) {
+        if let InferTy::Var(var) = ty {
+            let root = self.find(var);
+            self.label[root.index()].get_or_insert(name);
+        }
+    }
+
+    fn label_of(&mut self, var: InferVarId) -> Option<SymbolId> {
+        let root = self.find(var);
+        self.label[root.index()]
     }
 
     fn find(&mut self, var: InferVarId) -> InferVarId {
@@ -165,15 +262,18 @@ impl InferState {
         root
     }
 
+    /// Follows variable bindings to a head that is `Concrete`, an unbound
+    /// `Var`, or an `App`. `App` arguments are left unresolved; callers that
+    /// need them resolve recursively.
     fn resolve(&mut self, ty: InferTy) -> InferTy {
         match ty {
             InferTy::Concrete(ty) => InferTy::Concrete(ty),
+            InferTy::App(app) => InferTy::App(app),
             InferTy::Var(var) => {
                 let root = self.find(var);
-                if let Some(bound) = self.binding[root.index()] {
-                    InferTy::Concrete(bound)
-                } else {
-                    InferTy::Var(root)
+                match self.binding[root.index()] {
+                    Some(bound) => self.resolve(bound),
+                    None => InferTy::Var(root),
                 }
             }
         }
@@ -182,7 +282,7 @@ impl InferState {
     fn resolve_concrete(&mut self, ty: InferTy) -> Option<TypeId> {
         match self.resolve(ty) {
             InferTy::Concrete(ty) => Some(ty),
-            InferTy::Var(_) => None,
+            InferTy::Var(_) | InferTy::App(_) => None,
         }
     }
 
@@ -194,33 +294,71 @@ impl InferState {
                 if lhs == rhs {
                     Ok(InferTy::Concrete(lhs))
                 } else {
-                    Err(TypeMismatch {
-                        left: lhs,
-                        right: rhs,
-                    })
+                    Err(TypeMismatch { left, right })
                 }
             }
-            (InferTy::Var(var), InferTy::Concrete(ty))
-            | (InferTy::Concrete(ty), InferTy::Var(var)) => {
-                self.bind_var(var, ty)?;
+            (InferTy::Var(lhs), InferTy::Var(rhs)) => self.union_vars(lhs, rhs),
+            (InferTy::Var(var), other) | (other, InferTy::Var(var)) => {
+                if self.occurs_in(var, other) {
+                    return Err(TypeMismatch {
+                        left: InferTy::Var(var),
+                        right: other,
+                    });
+                }
+                self.binding[var.index()] = Some(other);
+                Ok(other)
+            }
+            (InferTy::App(lhs), InferTy::App(rhs)) => {
+                let left_app = self.apps[lhs.index()].clone();
+                let right_app = self.apps[rhs.index()].clone();
+                if left_app.name != right_app.name || left_app.args.len() != right_app.args.len() {
+                    return Err(TypeMismatch { left, right });
+                }
+                for (lhs_arg, rhs_arg) in left_app.args.iter().zip(right_app.args.iter()) {
+                    self.unify(*lhs_arg, *rhs_arg)?;
+                }
+                Ok(left)
+            }
+            (InferTy::App(app), InferTy::Concrete(ty))
+            | (InferTy::Concrete(ty), InferTy::App(app)) => {
+                self.unify_app_with_instance(app, ty)?;
                 Ok(InferTy::Concrete(ty))
             }
-            (InferTy::Var(lhs), InferTy::Var(rhs)) => self.union_vars(lhs, rhs),
         }
     }
 
-    fn bind_var(&mut self, var: InferVarId, ty: TypeId) -> Result<(), TypeMismatch> {
-        let root = self.find(var);
-        let idx = root.index();
-        match self.binding[idx] {
-            Some(existing) if existing == ty => Ok(()),
-            Some(existing) => Err(TypeMismatch {
-                left: existing,
-                right: ty,
-            }),
-            None => {
-                self.binding[idx] = Some(ty);
-                Ok(())
+    /// Decomposes `Name[..] ~ <interned instance of Name>` through the
+    /// instance's recorded arguments. Instance identity is `(name, args)`, so
+    /// this is the only place structure re-enters the solver.
+    fn unify_app_with_instance(
+        &mut self,
+        app: AppId,
+        instance: TypeId,
+    ) -> Result<(), TypeMismatch> {
+        let mismatch = TypeMismatch {
+            left: InferTy::App(app),
+            right: InferTy::Concrete(instance),
+        };
+        let Some((name, args)) = self.instance_shape.get(&instance).cloned() else {
+            return Err(mismatch);
+        };
+        let pending = self.apps[app.index()].clone();
+        if pending.name != name || pending.args.len() != args.len() {
+            return Err(mismatch);
+        }
+        for (arg, instance_arg) in pending.args.iter().zip(args.iter()) {
+            self.unify(*arg, InferTy::Concrete(*instance_arg))?;
+        }
+        Ok(())
+    }
+
+    fn occurs_in(&mut self, var: InferVarId, ty: InferTy) -> bool {
+        match self.resolve(ty) {
+            InferTy::Concrete(_) => false,
+            InferTy::Var(other) => other == var,
+            InferTy::App(app) => {
+                let args = self.apps[app.index()].args.clone();
+                args.into_iter().any(|arg| self.occurs_in(var, arg))
             }
         }
     }
@@ -229,23 +367,11 @@ impl InferState {
         let left_root = self.find(left);
         let right_root = self.find(right);
         if left_root == right_root {
-            return Ok(self.resolve(InferTy::Var(left_root)));
+            return Ok(InferTy::Var(left_root));
         }
 
         let left_idx = left_root.index();
         let right_idx = right_root.index();
-        let left_binding = self.binding[left_idx];
-        let right_binding = self.binding[right_idx];
-
-        if let (Some(lhs), Some(rhs)) = (left_binding, right_binding)
-            && lhs != rhs
-        {
-            return Err(TypeMismatch {
-                left: lhs,
-                right: rhs,
-            });
-        }
-
         let (root, child) = match self.rank[left_idx].cmp(&self.rank[right_idx]) {
             std::cmp::Ordering::Less => (right_root, left_root),
             std::cmp::Ordering::Greater => (left_root, right_root),
@@ -255,17 +381,11 @@ impl InferState {
             }
         };
 
-        let root_idx = root.index();
-        let child_idx = child.index();
-        self.parent[child_idx] = root;
-
-        let merged_binding = self.binding[root_idx].or(self.binding[child_idx]);
-        self.binding[root_idx] = merged_binding;
-
-        Ok(match merged_binding {
-            Some(ty) => InferTy::Concrete(ty),
-            None => InferTy::Var(root),
-        })
+        self.parent[child.index()] = root;
+        if self.label[root.index()].is_none() {
+            self.label[root.index()] = self.label[child.index()];
+        }
+        Ok(InferTy::Var(root))
     }
 }
 
@@ -275,14 +395,16 @@ struct TypeChecker<'a> {
     store: TypeStore,
     prim: PrimitiveTypeIds,
     error_type: TypeId,
-    struct_ctors: HashMap<SymbolId, StructCtorSig>,
-    enum_ctors: HashMap<SymbolId, EnumCtorSig>,
+    adts: HashMap<SymbolId, AdtTemplate>,
+    ctors: HashMap<SymbolId, CtorTemplate>,
+    instances: HashMap<(SymbolId, Vec<TypeId>), TypeId>,
     effect_signatures: EffectSignatureTable,
     function_templates: Vec<FunctionTemplate>,
     infer: InferState,
     expr_tys: Vec<Option<InferTy>>,
     unresolved_type_params: HashMap<InferVarId, TypeId>,
     field_indices: HashMap<ExprId, u32>,
+    pending_call_type_args: Vec<PendingCallTypeArgs>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -290,26 +412,362 @@ impl<'a> TypeChecker<'a> {
         let mut store = TypeStore::new();
         let prim = intern_primitives(&mut store);
         let error_type = store.intern(TypeKind::Error);
-        let adt_types = intern_program_adts(program, &mut store, prim, error_type, diagnostics);
-        let (struct_ctors, enum_ctors) = build_ctor_signatures(program, &store, &adt_types);
-        let effect_signatures = build_effect_signatures(program, &adt_types, prim);
-        let function_templates =
-            build_function_templates(program, &adt_types, prim, error_type, diagnostics);
 
-        Self {
+        let mut checker = Self {
             program,
             diagnostics,
             store,
             prim,
             error_type,
-            struct_ctors,
-            enum_ctors,
-            effect_signatures,
-            function_templates,
+            adts: HashMap::new(),
+            ctors: HashMap::new(),
+            instances: HashMap::new(),
+            effect_signatures: EffectSignatureTable::new(),
+            function_templates: Vec::new(),
             infer: InferState::default(),
             expr_tys: vec![None; program.exprs().len()],
             unresolved_type_params: HashMap::new(),
             field_indices: HashMap::new(),
+            pending_call_type_args: Vec::new(),
+        };
+        checker.register_adts();
+        checker.intern_non_generic_adts();
+        checker.build_effect_signatures();
+        checker.build_function_templates();
+        checker
+    }
+
+    fn register_adts(&mut self) {
+        for decl in self.program.structs() {
+            self.adts.entry(decl.name).or_insert_with(|| AdtTemplate {
+                type_params: decl.type_params.clone(),
+                shape: AdtShape::Struct {
+                    field_names: decl.field_names.clone(),
+                    fields: decl.fields.clone(),
+                },
+                span: decl.span,
+            });
+            self.ctors.insert(
+                decl.name,
+                CtorTemplate {
+                    adt: decl.name,
+                    variant: None,
+                    fields: decl.fields.clone(),
+                },
+            );
+        }
+
+        for decl in self.program.enums() {
+            self.adts.entry(decl.name).or_insert_with(|| AdtTemplate {
+                type_params: decl.type_params.clone(),
+                shape: AdtShape::Enum {
+                    variants: decl
+                        .variants
+                        .iter()
+                        .map(|variant| (variant.name, variant.fields.clone()))
+                        .collect(),
+                },
+                span: decl.span,
+            });
+            for variant in &decl.variants {
+                self.ctors.insert(
+                    variant.name,
+                    CtorTemplate {
+                        adt: decl.name,
+                        variant: Some(variant.name),
+                        fields: variant.fields.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    /// Non-generic declarations are interned up front so their `TypeId`s exist
+    /// even when nothing in the program mentions them.
+    fn intern_non_generic_adts(&mut self) {
+        let names = self
+            .adts
+            .iter()
+            .filter(|(_, decl)| decl.type_params.is_empty())
+            .map(|(name, decl)| (*name, decl.span))
+            .collect::<Vec<_>>();
+        for (name, span) in names {
+            let _ = self.adt_instance(name, Vec::new(), span, 0);
+        }
+    }
+
+    /// Interns `Name[args]` as a distinct type. The placeholder is registered
+    /// before field resolution so a recursive declaration terminates; the depth
+    /// bound catches a declaration whose instantiation grows without limit.
+    fn adt_instance(
+        &mut self,
+        name: SymbolId,
+        args: Vec<TypeId>,
+        span: Span,
+        depth: usize,
+    ) -> Option<TypeId> {
+        if let Some(existing) = self.instances.get(&(name, args.clone())).copied() {
+            return Some(existing);
+        }
+        let decl = self.adts.get(&name)?.clone();
+        if decl.type_params.len() != args.len() {
+            self.diagnostics.error(
+                "TYPE_BAD_TYPE_ARG_COUNT",
+                format!(
+                    "Type argument count mismatch: expected {}, got {}",
+                    decl.type_params.len(),
+                    args.len()
+                ),
+                span,
+            );
+            return None;
+        }
+        if depth > MAX_ADT_INSTANTIATION_DEPTH {
+            self.diagnostics.error(
+                "TYPE_ADT_INSTANTIATION_DEPTH",
+                "Type instantiation does not terminate: the declaration instantiates itself at an ever larger type",
+                span,
+            );
+            return None;
+        }
+
+        let placeholder = match &decl.shape {
+            AdtShape::Struct { field_names, .. } => TypeKind::Struct {
+                name,
+                args: args.clone(),
+                fields: field_names
+                    .iter()
+                    .map(|field| StructField {
+                        name: *field,
+                        ty: TypeId::INVALID,
+                    })
+                    .collect(),
+            },
+            AdtShape::Enum { variants } => TypeKind::Enum {
+                name,
+                args: args.clone(),
+                variants: variants
+                    .iter()
+                    .map(|(variant, fields)| EnumVariant {
+                        name: *variant,
+                        fields: fields.iter().map(|_| TypeId::INVALID).collect(),
+                    })
+                    .collect(),
+            },
+        };
+        let id = self.store.intern(placeholder);
+        self.instances.insert((name, args.clone()), id);
+        self.infer.instance_shape.insert(id, (name, args.clone()));
+
+        let subst = param_substitution(&decl.type_params, &args);
+        match &decl.shape {
+            AdtShape::Struct { fields, .. } => {
+                let resolved = fields
+                    .iter()
+                    .map(|field| self.adt_field_type(field, &subst, decl.span, depth + 1))
+                    .collect::<Vec<_>>();
+                if let Some(TypeKind::Struct { fields, .. }) = self.store.get_mut(id) {
+                    for (field, ty) in fields.iter_mut().zip(resolved) {
+                        field.ty = ty;
+                    }
+                }
+            }
+            AdtShape::Enum { variants } => {
+                let resolved = variants
+                    .iter()
+                    .map(|(_, fields)| {
+                        fields
+                            .iter()
+                            .map(|field| self.adt_field_type(field, &subst, decl.span, depth + 1))
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>();
+                if let Some(TypeKind::Enum { variants, .. }) = self.store.get_mut(id) {
+                    for (variant, fields) in variants.iter_mut().zip(resolved) {
+                        variant.fields = fields;
+                    }
+                }
+            }
+        }
+        Some(id)
+    }
+
+    fn adt_field_type(
+        &mut self,
+        ty: &CoreTypeRef,
+        subst: &HashMap<SymbolId, TypeId>,
+        span: Span,
+        depth: usize,
+    ) -> TypeId {
+        match self.concrete_type_ref(ty, subst, span, depth) {
+            Some(id) => id,
+            None => {
+                self.diagnostics.error(
+                    "TYPE_UNKNOWN_ADT_FIELD_TYPE",
+                    "Could not resolve declared field type",
+                    span,
+                );
+                self.error_type
+            }
+        }
+    }
+
+    /// A `CoreTypeRef` resolved all the way to a `TypeId`. Only valid where
+    /// every type parameter already has a concrete binding: ADT fields and
+    /// effect operation signatures. `None` means the name does not resolve.
+    fn concrete_type_ref(
+        &mut self,
+        ty: &CoreTypeRef,
+        subst: &HashMap<SymbolId, TypeId>,
+        span: Span,
+        depth: usize,
+    ) -> Option<TypeId> {
+        match ty {
+            CoreTypeRef::Unit => Some(self.prim.unit),
+            CoreTypeRef::Primitive(primitive) => Some(self.primitive_type(*primitive)),
+            CoreTypeRef::Named(name) => self.adt_instance(*name, Vec::new(), span, depth),
+            CoreTypeRef::Param(name) => subst.get(name).copied(),
+            CoreTypeRef::Applied { name, args } => {
+                let args = args
+                    .iter()
+                    .map(|arg| self.concrete_type_ref(arg, subst, span, depth))
+                    .collect::<Option<Vec<_>>>()?;
+                self.adt_instance(*name, args, span, depth)
+            }
+            CoreTypeRef::Unknown => None,
+        }
+    }
+
+    /// A `CoreTypeRef` as a solver type. Type parameters map to the caller's
+    /// instantiation variables, and an unresolved application stays an `App`
+    /// until its arguments are known.
+    fn infer_type_ref(&mut self, ty: &CoreTypeRef, subst: &HashMap<SymbolId, InferTy>) -> InferTy {
+        match ty {
+            CoreTypeRef::Unit => InferTy::Concrete(self.prim.unit),
+            CoreTypeRef::Primitive(primitive) => InferTy::Concrete(self.primitive_type(*primitive)),
+            CoreTypeRef::Named(name) => match self.instances.get(&(*name, Vec::new())).copied() {
+                Some(id) => InferTy::Concrete(id),
+                None => InferTy::Concrete(self.error_type),
+            },
+            CoreTypeRef::Param(name) => subst
+                .get(name)
+                .copied()
+                .unwrap_or(InferTy::Concrete(self.error_type)),
+            CoreTypeRef::Applied { name, args } => {
+                let args = args
+                    .iter()
+                    .map(|arg| self.infer_type_ref(arg, subst))
+                    .collect();
+                self.infer.app(*name, args)
+            }
+            CoreTypeRef::Unknown => InferTy::Concrete(self.error_type),
+        }
+    }
+
+    fn primitive_type(&self, primitive: PrimitiveTypeRef) -> TypeId {
+        match primitive {
+            PrimitiveTypeRef::Bool => self.prim.bool_,
+            PrimitiveTypeRef::Int => self.prim.int,
+            PrimitiveTypeRef::Float => self.prim.float,
+            PrimitiveTypeRef::Char => self.prim.char_,
+            PrimitiveTypeRef::String => self.prim.string,
+        }
+    }
+
+    fn build_effect_signatures(&mut self) {
+        let effects = self.program.effects().to_vec();
+        let empty = HashMap::new();
+        for effect in &effects {
+            for operation in &effect.operations {
+                let param_types = operation
+                    .param_types
+                    .iter()
+                    .map(|ty| self.optional_concrete_ref(ty, &empty, operation.span))
+                    .collect();
+                let return_type =
+                    self.optional_concrete_ref(&operation.return_type, &empty, operation.span);
+                self.effect_signatures.insert(
+                    (effect.label, operation.name),
+                    EffectSignature {
+                        param_types,
+                        return_type,
+                    },
+                );
+            }
+        }
+    }
+
+    fn optional_concrete_ref(
+        &mut self,
+        ty: &CoreTypeRef,
+        subst: &HashMap<SymbolId, TypeId>,
+        span: Span,
+    ) -> Option<TypeId> {
+        self.concrete_type_ref(ty, subst, span, 0)
+    }
+
+    /// A function is generic exactly when its signature mentions a declared
+    /// type parameter. An undeclared capitalized name stays `Named`, so it
+    /// reaches `concrete_type_ref` and is reported instead of silently
+    /// becoming a type variable.
+    fn build_function_templates(&mut self) {
+        let functions = self.program.functions().to_vec();
+        let mut templates = Vec::with_capacity(functions.len());
+        for function in &functions {
+            let mut generic_names = Vec::new();
+            for ty in function.param_types.iter().chain([&function.return_type]) {
+                collect_type_params(ty, &mut generic_names);
+            }
+            for ty in function.param_types.iter().chain([&function.return_type]) {
+                self.check_signature_type(ty, function.span);
+            }
+            templates.push(FunctionTemplate {
+                params: function.param_types.clone(),
+                ret: match function.return_type {
+                    CoreTypeRef::Unknown => None,
+                    _ => Some(function.return_type.clone()),
+                },
+                generic_names,
+                inferred_ret_var: None,
+            });
+        }
+        self.function_templates = templates;
+    }
+
+    /// A signature is checked structurally before inference runs: an
+    /// uninstantiated signature never reaches `adt_instance`, so this is the
+    /// only place its type names and arities are validated.
+    fn check_signature_type(&mut self, ty: &CoreTypeRef, span: Span) {
+        let (name, args) = match ty {
+            CoreTypeRef::Named(name) => (*name, [].as_slice()),
+            CoreTypeRef::Applied { name, args } => (*name, args.as_slice()),
+            CoreTypeRef::Unit
+            | CoreTypeRef::Primitive(_)
+            | CoreTypeRef::Param(_)
+            | CoreTypeRef::Unknown => return,
+        };
+
+        let Some(decl) = self.adts.get(&name) else {
+            self.diagnostics.error(
+                "TYPE_UNKNOWN_TYPE_NAME",
+                "Unknown type name; declare it, or add it to the enclosing `[..]` type parameter list",
+                span,
+            );
+            return;
+        };
+        if decl.type_params.len() != args.len() {
+            let expected = decl.type_params.len();
+            self.diagnostics.error(
+                "TYPE_BAD_TYPE_ARG_COUNT",
+                format!(
+                    "Type argument count mismatch: expected {expected}, got {}",
+                    args.len()
+                ),
+                span,
+            );
+        }
+        for arg in args {
+            self.check_signature_type(arg, span);
         }
     }
 
@@ -366,6 +824,7 @@ impl<'a> TypeChecker<'a> {
         sema.ownership_of_var = self.classify_var_ownership(&sema);
 
         sema.field_index_of_expr = std::mem::take(&mut self.field_indices);
+        sema.type_args_of_call = self.finalize_call_type_args();
         infer_stmt_effects(self.program, &mut sema.effects_of_stmt);
         if conformance == EffectConformance::Check {
             self.enforce_declared_effects(&sema);
@@ -488,37 +947,38 @@ impl<'a> TypeChecker<'a> {
         let Some(function) = self.program.function(func_id) else {
             return;
         };
+        let params = function.params.clone();
+        let body = function.body;
+        let span = function.span;
         let Some(template) = self.function_templates.get(func_id.index()).cloned() else {
             return;
         };
 
-        let mut generic_inst = Vec::with_capacity(template.generic_count);
-        for _ in 0..template.generic_count {
-            generic_inst.push(self.infer.fresh_ty());
-        }
+        let generic_inst = self.instantiate_generics(&template.generic_names);
 
         let mut env = Env::new();
-        for (idx, param_var) in function.params.iter().copied().enumerate() {
+        for (idx, param_var) in params.iter().copied().enumerate() {
             let param_ty = template
                 .params
                 .get(idx)
-                .map(|tpl| self.instantiate_template(*tpl, &generic_inst))
+                .map(|tpl| self.infer_type_ref(tpl, &generic_inst))
                 .unwrap_or(InferTy::Concrete(self.error_type));
             env.insert(param_var, self.mono_scheme(param_ty));
         }
 
         let expected_return = template
             .ret
-            .map(|tpl| self.instantiate_template(tpl, &generic_inst))
+            .as_ref()
+            .map(|tpl| self.infer_type_ref(tpl, &generic_inst))
             .or_else(|| template.inferred_ret_var.map(InferTy::Var))
             .unwrap_or(InferTy::Concrete(self.error_type));
 
         let mut resume_ctx = ResumeCtx::new();
-        let body_ty = self.infer_stmt(function.body, &mut env, &mut resume_ctx);
+        let body_ty = self.infer_stmt(body, &mut env, &mut resume_ctx);
         let _ = self.unify_with(
             body_ty,
             expected_return,
-            function.span,
+            span,
             "TYPE_RETURN_MISMATCH",
             "Function body type does not match return type",
         );
@@ -564,7 +1024,8 @@ impl<'a> TypeChecker<'a> {
                 next,
                 ..
             } => {
-                let ret_ty = self.infer_call(*callee, args, env, stmt.span);
+                let ret_ty =
+                    self.infer_call(CallSite::Stmt(stmt_id), *callee, args, env, stmt.span);
                 env.insert(*result, self.mono_scheme(ret_ty));
                 self.infer_stmt(*next, env, resume_ctx)
             }
@@ -631,13 +1092,13 @@ impl<'a> TypeChecker<'a> {
                             if let Some(actual) = self.infer.resolve_concrete(arg_ty)
                                 && actual != *expected_ty
                             {
+                                let expected_name = self.stored_type_name(*expected_ty);
+                                let actual_name = self.stored_type_name(actual);
                                 self.diagnostics.error(
                                     "TYPE_EFFECT_ARG_MISMATCH",
                                     format!(
-                                        "Effect argument #{} type mismatch: expected {}, got {}",
+                                        "Effect argument #{} type mismatch: expected {expected_name}, got {actual_name}",
                                         idx + 1,
-                                        self.type_name(*expected_ty),
-                                        self.type_name(actual)
                                     ),
                                     stmt.span,
                                 );
@@ -734,29 +1195,36 @@ impl<'a> TypeChecker<'a> {
             let mut arm_env = env.clone();
             let mut arm_resume = resume_ctx.clone();
 
-            if let Some(variant_sig) = self.enum_ctors.get(&arm.tag).cloned() {
+            if let Some(ctor) = self
+                .ctors
+                .get(&arm.tag)
+                .filter(|ctor| ctor.variant.is_some())
+                .cloned()
+            {
+                let (result, field_tys) = self.instantiate_ctor(&ctor);
                 let _ = self.unify_with(
                     scrutinee_ty,
-                    InferTy::Concrete(variant_sig.result),
+                    result,
                     arm.span,
                     "TYPE_MATCH_SCRUTINEE_MISMATCH",
                     "Match arm variant does not match scrutinee type",
                 );
 
-                if arm.binders.len() != variant_sig.fields.len() {
+                if arm.binders.len() != field_tys.len() {
                     self.diagnostics.error(
                         "TYPE_MATCH_ARM_ARITY",
                         format!(
                             "Match arm binder count mismatch: expected {}, got {}",
-                            variant_sig.fields.len(),
+                            field_tys.len(),
                             arm.binders.len()
                         ),
                         arm.span,
                     );
                 }
 
-                for (binder, field_ty) in arm.binders.iter().zip(variant_sig.fields.iter()) {
-                    arm_env.insert(*binder, Scheme::Concrete(*field_ty));
+                for (binder, field_ty) in arm.binders.iter().zip(field_tys.iter()) {
+                    let scheme = self.mono_scheme(*field_ty);
+                    arm_env.insert(*binder, scheme);
                 }
             } else {
                 self.diagnostics.error(
@@ -811,9 +1279,23 @@ impl<'a> TypeChecker<'a> {
         span: Span,
     ) -> InferTy {
         let base_ty = self.infer_expr(base, env);
-        let base_id = self.materialize_ty(base_ty);
-        let Some(TypeKind::Struct { fields, .. }) =
-            self.store.kinds().get(base_id.index()).cloned()
+        let Some((adt, args)) = self.adt_shape_of(base_ty) else {
+            self.diagnostics.error(
+                "TYPE_FIELD_ON_NON_STRUCT",
+                "Field access requires a struct value",
+                span,
+            );
+            return InferTy::Concrete(self.error_type);
+        };
+        let Some(AdtTemplate {
+            type_params,
+            shape:
+                AdtShape::Struct {
+                    field_names,
+                    fields,
+                },
+            ..
+        }) = self.adts.get(&adt).cloned()
         else {
             self.diagnostics.error(
                 "TYPE_FIELD_ON_NON_STRUCT",
@@ -823,7 +1305,7 @@ impl<'a> TypeChecker<'a> {
             return InferTy::Concrete(self.error_type);
         };
 
-        let Some(index) = fields.iter().position(|entry| entry.name == field) else {
+        let Some(index) = field_names.iter().position(|name| *name == field) else {
             self.diagnostics.error(
                 "TYPE_UNKNOWN_FIELD",
                 "Struct has no field with this name",
@@ -833,7 +1315,56 @@ impl<'a> TypeChecker<'a> {
         };
 
         self.field_indices.insert(expr_id, index as u32);
-        InferTy::Concrete(fields[index].ty)
+        let subst = param_substitution(&type_params, &args);
+        self.infer_type_ref(&fields[index], &subst)
+    }
+
+    /// The declaring name and instantiation of an ADT-valued type, whether it
+    /// is already interned or still an open application.
+    fn adt_shape_of(&mut self, ty: InferTy) -> Option<(SymbolId, Vec<InferTy>)> {
+        match self.infer.resolve(ty) {
+            InferTy::Concrete(id) => match self.store.get(id)? {
+                TypeKind::Struct { name, args, .. } | TypeKind::Enum { name, args, .. } => Some((
+                    *name,
+                    args.iter().map(|arg| InferTy::Concrete(*arg)).collect(),
+                )),
+                _ => None,
+            },
+            InferTy::App(app) => {
+                let pending = &self.infer.apps[app.index()];
+                Some((pending.name, pending.args.clone()))
+            }
+            InferTy::Var(_) => None,
+        }
+    }
+
+    /// Fresh instantiation variables for a constructor's ADT, giving the
+    /// result type and the field types it expects.
+    fn instantiate_ctor(&mut self, ctor: &CtorTemplate) -> (InferTy, Vec<InferTy>) {
+        let type_params = self
+            .adts
+            .get(&ctor.adt)
+            .map(|decl| decl.type_params.clone())
+            .unwrap_or_default();
+        let slots = type_params
+            .iter()
+            .map(|_| self.infer.fresh_ty())
+            .collect::<Vec<_>>();
+        let subst = param_substitution(&type_params, &slots);
+        let fields = ctor
+            .fields
+            .iter()
+            .map(|field| self.infer_type_ref(field, &subst))
+            .collect();
+        let result = if slots.is_empty() {
+            match self.instances.get(&(ctor.adt, Vec::new())).copied() {
+                Some(id) => InferTy::Concrete(id),
+                None => InferTy::Concrete(self.error_type),
+            }
+        } else {
+            self.infer.app(ctor.adt, slots)
+        };
+        (result, fields)
     }
 
     /// Without a default arm, an uncovered variant falls through to a
@@ -845,9 +1376,13 @@ impl<'a> TypeChecker<'a> {
         arms: &[cielo_ir::core::MatchArm],
         span: Span,
     ) {
-        let scrutinee = self.materialize_ty(scrutinee_ty);
-        let Some(TypeKind::Enum { variants, .. }) =
-            self.store.kinds().get(scrutinee.index()).cloned()
+        let Some((adt, _)) = self.adt_shape_of(scrutinee_ty) else {
+            return;
+        };
+        let Some(AdtTemplate {
+            shape: AdtShape::Enum { variants },
+            ..
+        }) = self.adts.get(&adt).cloned()
         else {
             return;
         };
@@ -865,7 +1400,7 @@ impl<'a> TypeChecker<'a> {
 
         let missing = variants
             .iter()
-            .filter(|variant| !covered.contains(&variant.name))
+            .filter(|(name, _)| !covered.contains(name))
             .count();
         if missing > 0 {
             self.diagnostics.error(
@@ -991,7 +1526,14 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn infer_call(&mut self, callee: FuncId, args: &[ExprId], env: &Env, span: Span) -> InferTy {
+    fn infer_call(
+        &mut self,
+        site: CallSite,
+        callee: FuncId,
+        args: &[ExprId],
+        env: &Env,
+        span: Span,
+    ) -> InferTy {
         let Some(template) = self.function_templates.get(callee.index()).cloned() else {
             self.diagnostics.error(
                 "TYPE_UNKNOWN_CALLEE",
@@ -1016,14 +1558,11 @@ impl<'a> TypeChecker<'a> {
             );
         }
 
-        let mut generic_inst = Vec::with_capacity(template.generic_count);
-        for _ in 0..template.generic_count {
-            generic_inst.push(self.infer.fresh_ty());
-        }
+        let generic_inst = self.instantiate_generics(&template.generic_names);
 
         for (arg_expr, expected_tpl) in args.iter().zip(template.params.iter()) {
             let arg_ty = self.infer_expr(*arg_expr, env);
-            let expected_ty = self.instantiate_template(*expected_tpl, &generic_inst);
+            let expected_ty = self.infer_type_ref(expected_tpl, &generic_inst);
             let _ = self.unify_with(
                 arg_ty,
                 expected_ty,
@@ -1033,28 +1572,132 @@ impl<'a> TypeChecker<'a> {
             );
         }
 
+        if !template.generic_names.is_empty() {
+            self.pending_call_type_args.push(PendingCallTypeArgs {
+                site,
+                bindings: template
+                    .generic_names
+                    .iter()
+                    .map(|name| (*name, generic_inst[name]))
+                    .collect(),
+                span,
+            });
+        }
+
         template
             .ret
-            .map(|ret| self.instantiate_template(ret, &generic_inst))
+            .as_ref()
+            .map(|ret| self.infer_type_ref(ret, &generic_inst))
             .or_else(|| template.inferred_ret_var.map(InferTy::Var))
             .unwrap_or(InferTy::Concrete(self.error_type))
-    }
-
-    fn primitive_type(&self, primitive: PrimitiveTypeRef) -> TypeId {
-        match primitive {
-            PrimitiveTypeRef::Bool => self.prim.bool_,
-            PrimitiveTypeRef::Int => self.prim.int,
-            PrimitiveTypeRef::Float => self.prim.float,
-            PrimitiveTypeRef::Char => self.prim.char_,
-            PrimitiveTypeRef::String => self.prim.string,
-        }
     }
 
     fn core_type_ref_id(&self, ty: &CoreTypeRef) -> TypeId {
         match ty {
             CoreTypeRef::Unit => self.prim.unit,
             CoreTypeRef::Primitive(primitive) => self.primitive_type(*primitive),
-            CoreTypeRef::Named(_) | CoreTypeRef::Unknown => self.error_type,
+            // Only builtin return types reach here, and no builtin returns a
+            // named or generic type.
+            CoreTypeRef::Named(_)
+            | CoreTypeRef::Param(_)
+            | CoreTypeRef::Applied { .. }
+            | CoreTypeRef::Unknown => self.error_type,
+        }
+    }
+
+    fn instantiate_generics(&mut self, names: &[SymbolId]) -> HashMap<SymbolId, InferTy> {
+        names
+            .iter()
+            .map(|name| {
+                let ty = self.infer.fresh_ty();
+                self.infer.set_label(ty, *name);
+                (*name, ty)
+            })
+            .collect()
+    }
+
+    /// Runs once inference is complete: a call's instantiation variables are
+    /// only fully constrained after every body has been walked.
+    fn finalize_call_type_args(&mut self) -> HashMap<CallSite, Vec<(SymbolId, CoreTypeRef)>> {
+        let pending = std::mem::take(&mut self.pending_call_type_args);
+        let mut out = HashMap::new();
+        for entry in pending {
+            let mut bindings = Vec::with_capacity(entry.bindings.len());
+            let mut resolved = true;
+            for (name, ty) in entry.bindings {
+                match self.core_type_ref_of(ty) {
+                    Some(core) => bindings.push((name, core)),
+                    None => {
+                        self.diagnostics.error(
+                            "TYPE_UNINFERRED_TYPE_ARG",
+                            "Could not infer the type arguments of this call; nothing at the call site determines them",
+                            entry.span,
+                        );
+                        resolved = false;
+                        break;
+                    }
+                }
+            }
+            if resolved {
+                out.insert(entry.site, bindings);
+            }
+        }
+        out
+    }
+
+    /// Solver type back to the syntactic form monomorphization substitutes
+    /// into signatures. `None` means the type is still open.
+    fn core_type_ref_of(&mut self, ty: InferTy) -> Option<CoreTypeRef> {
+        match self.infer.resolve(ty) {
+            InferTy::Concrete(id) => self.core_type_ref_of_id(id, 0),
+            InferTy::Var(var) => self.infer.label_of(var).map(CoreTypeRef::Param),
+            InferTy::App(app) => {
+                let pending = self.infer.apps[app.index()].clone();
+                let mut args = Vec::with_capacity(pending.args.len());
+                for arg in pending.args {
+                    args.push(self.core_type_ref_of(arg)?);
+                }
+                Some(CoreTypeRef::Applied {
+                    name: pending.name,
+                    args,
+                })
+            }
+        }
+    }
+
+    fn core_type_ref_of_id(&self, id: TypeId, depth: usize) -> Option<CoreTypeRef> {
+        if depth > MAX_ADT_INSTANTIATION_DEPTH {
+            return None;
+        }
+        match self.store.get(id)? {
+            TypeKind::Primitive(PrimitiveType::Unit) => Some(CoreTypeRef::Unit),
+            TypeKind::Primitive(PrimitiveType::Bool) => {
+                Some(CoreTypeRef::Primitive(PrimitiveTypeRef::Bool))
+            }
+            TypeKind::Primitive(PrimitiveType::Int) => {
+                Some(CoreTypeRef::Primitive(PrimitiveTypeRef::Int))
+            }
+            TypeKind::Primitive(PrimitiveType::Float) => {
+                Some(CoreTypeRef::Primitive(PrimitiveTypeRef::Float))
+            }
+            TypeKind::Primitive(PrimitiveType::Char) => {
+                Some(CoreTypeRef::Primitive(PrimitiveTypeRef::Char))
+            }
+            TypeKind::Primitive(PrimitiveType::String) => {
+                Some(CoreTypeRef::Primitive(PrimitiveTypeRef::String))
+            }
+            TypeKind::Struct { name, args, .. } | TypeKind::Enum { name, args, .. } => {
+                if args.is_empty() {
+                    return Some(CoreTypeRef::Named(*name));
+                }
+                let name = *name;
+                let args = args
+                    .iter()
+                    .map(|arg| self.core_type_ref_of_id(*arg, depth + 1))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(CoreTypeRef::Applied { name, args })
+            }
+            TypeKind::Function(_) | TypeKind::TypeParam(_) | TypeKind::Error => None,
         }
     }
 
@@ -1175,7 +1818,9 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
-            ExprKind::PureCall { callee, args } => self.infer_call(*callee, args, env, expr.span),
+            ExprKind::PureCall { callee, args } => {
+                self.infer_call(CallSite::Expr(expr_id), *callee, args, env, expr.span)
+            }
             ExprKind::BuiltinCall { builtin, args } => {
                 if args.len() != builtin.arity() {
                     self.diagnostics.error(
@@ -1208,87 +1853,58 @@ impl<'a> TypeChecker<'a> {
                 InferTy::Concrete(self.core_type_ref_id(&builtin.return_type()))
             }
             ExprKind::MakeStruct { ty, fields } => {
-                let sig = self.struct_ctors.get(ty).cloned();
-                if let Some(sig) = sig {
-                    if sig.fields.len() != fields.len() {
-                        self.diagnostics.error(
-                            "TYPE_BAD_STRUCT_CTOR_ARITY",
-                            format!(
-                                "Struct constructor arity mismatch: expected {}, got {}",
-                                sig.fields.len(),
-                                fields.len()
-                            ),
-                            expr.span,
-                        );
-                    }
-                    for (field_expr, expected_ty) in fields.iter().zip(sig.fields.iter()) {
-                        let field_ty = self.infer_expr(*field_expr, env);
-                        let _ = self.unify_with(
-                            field_ty,
-                            InferTy::Concrete(*expected_ty),
-                            expr.span,
-                            "TYPE_STRUCT_FIELD_MISMATCH",
-                            "Struct field type mismatch",
-                        );
-                    }
-                    InferTy::Concrete(sig.result)
-                } else {
-                    self.diagnostics.error(
-                        "TYPE_UNKNOWN_STRUCT_CTOR",
-                        "Unknown struct constructor",
-                        expr.span,
-                    );
-                    for field in fields {
-                        let _ = self.infer_expr(*field, env);
-                    }
-                    InferTy::Concrete(self.error_type)
-                }
+                self.infer_ctor_expr(*ty, fields, env, expr.span, STRUCT_CTOR_CODES)
             }
             ExprKind::MakeEnum {
-                ty: _,
-                variant,
-                fields,
-            } => {
-                let sig = self.enum_ctors.get(variant).cloned();
-                if let Some(sig) = sig {
-                    if sig.fields.len() != fields.len() {
-                        self.diagnostics.error(
-                            "TYPE_BAD_ENUM_CTOR_ARITY",
-                            format!(
-                                "Enum constructor arity mismatch: expected {}, got {}",
-                                sig.fields.len(),
-                                fields.len()
-                            ),
-                            expr.span,
-                        );
-                    }
-                    for (field_expr, expected_ty) in fields.iter().zip(sig.fields.iter()) {
-                        let field_ty = self.infer_expr(*field_expr, env);
-                        let _ = self.unify_with(
-                            field_ty,
-                            InferTy::Concrete(*expected_ty),
-                            expr.span,
-                            "TYPE_ENUM_FIELD_MISMATCH",
-                            "Enum field type mismatch",
-                        );
-                    }
-                    InferTy::Concrete(sig.result)
-                } else {
-                    self.diagnostics.error(
-                        "TYPE_UNKNOWN_ENUM_CTOR",
-                        "Unknown enum constructor",
-                        expr.span,
-                    );
-                    for field in fields {
-                        let _ = self.infer_expr(*field, env);
-                    }
-                    InferTy::Concrete(self.error_type)
-                }
-            }
+                variant, fields, ..
+            } => self.infer_ctor_expr(*variant, fields, env, expr.span, ENUM_CTOR_CODES),
             ExprKind::Error(_) => InferTy::Concrete(self.error_type),
         };
 
         self.record_expr_type(expr_id, inferred, expr.span)
+    }
+
+    fn infer_ctor_expr(
+        &mut self,
+        ctor_name: SymbolId,
+        fields: &[ExprId],
+        env: &Env,
+        span: Span,
+        codes: CtorCodes,
+    ) -> InferTy {
+        let Some(ctor) = self.ctors.get(&ctor_name).cloned() else {
+            self.diagnostics
+                .error(codes.unknown, codes.unknown_message, span);
+            for field in fields {
+                let _ = self.infer_expr(*field, env);
+            }
+            return InferTy::Concrete(self.error_type);
+        };
+
+        let (result, expected) = self.instantiate_ctor(&ctor);
+        if expected.len() != fields.len() {
+            self.diagnostics.error(
+                codes.arity,
+                format!(
+                    "{}: expected {}, got {}",
+                    codes.arity_message,
+                    expected.len(),
+                    fields.len()
+                ),
+                span,
+            );
+        }
+        for (field_expr, expected_ty) in fields.iter().zip(expected.iter()) {
+            let field_ty = self.infer_expr(*field_expr, env);
+            let _ = self.unify_with(
+                field_ty,
+                *expected_ty,
+                span,
+                codes.field,
+                codes.field_message,
+            );
+        }
+        result
     }
 
     fn record_expr_type(&mut self, expr_id: ExprId, inferred: InferTy, span: Span) -> InferTy {
@@ -1312,20 +1928,6 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn instantiate_template(
-        &mut self,
-        template: TypeTemplate,
-        generic_inst: &[InferTy],
-    ) -> InferTy {
-        match template {
-            TypeTemplate::Concrete(ty) => InferTy::Concrete(ty),
-            TypeTemplate::Generic(idx) => generic_inst
-                .get(idx as usize)
-                .copied()
-                .unwrap_or(InferTy::Concrete(self.error_type)),
-        }
-    }
-
     fn instantiate_scheme(&mut self, scheme: Scheme) -> InferTy {
         match scheme {
             Scheme::Concrete(ty) => InferTy::Concrete(ty),
@@ -1334,16 +1936,22 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// An open application cannot be held in a `Scheme`, so it is pinned to a
+    /// fresh variable: instantiating it again would lose the sharing.
     fn mono_scheme(&mut self, ty: InferTy) -> Scheme {
         match self.infer.resolve(ty) {
             InferTy::Concrete(ty) => Scheme::Concrete(ty),
             InferTy::Var(var) => Scheme::MonoVar(var),
+            InferTy::App(_) => {
+                let var = self.infer.fresh_var();
+                let _ = self.infer.unify(InferTy::Var(var), ty);
+                Scheme::MonoVar(var)
+            }
         }
     }
 
     fn generalize_let(&mut self, ty: InferTy, env: &Env) -> Scheme {
         match self.infer.resolve(ty) {
-            InferTy::Concrete(ty) => Scheme::Concrete(ty),
             InferTy::Var(var) => {
                 let env_vars = self.env_mono_vars(env);
                 if env_vars.contains(&var) {
@@ -1352,6 +1960,7 @@ impl<'a> TypeChecker<'a> {
                     Scheme::Generic
                 }
             }
+            resolved => self.mono_scheme(resolved),
         }
     }
 
@@ -1393,24 +2002,37 @@ impl<'a> TypeChecker<'a> {
         match self.infer.unify(left, right) {
             Ok(ty) => ty,
             Err(mismatch) => {
-                self.diagnostics.error(
-                    code,
-                    format!(
-                        "{}: {} vs {}",
-                        message,
-                        self.type_name(mismatch.left),
-                        self.type_name(mismatch.right)
-                    ),
-                    span,
-                );
+                let left = self.type_name(mismatch.left);
+                let right = self.type_name(mismatch.right);
+                self.diagnostics
+                    .error(code, format!("{message}: {left} vs {right}"), span);
                 InferTy::Concrete(self.error_type)
             }
         }
     }
 
+    /// Collapses a solver type to a stored `TypeId`. An application whose
+    /// arguments are all known becomes its interned instance; anything still
+    /// open becomes a `TypeParam` placeholder shared by that variable.
     fn materialize_ty(&mut self, ty: InferTy) -> TypeId {
         match self.infer.resolve(ty) {
             InferTy::Concrete(ty) => ty,
+            InferTy::App(app) => {
+                let pending = self.infer.apps[app.index()].clone();
+                let mut args = Vec::with_capacity(pending.args.len());
+                for arg in pending.args {
+                    args.push(self.materialize_ty(arg));
+                }
+                let span = self
+                    .adts
+                    .get(&pending.name)
+                    .map(|decl| decl.span)
+                    .unwrap_or_else(Span::synthetic);
+                match self.adt_instance(pending.name, args, span, 0) {
+                    Some(id) => id,
+                    None => self.error_type,
+                }
+            }
             InferTy::Var(var) => {
                 let root = self.infer.find(var);
                 if let Some(existing) = self.unresolved_type_params.get(&root).copied() {
@@ -1426,7 +2048,27 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn type_name(&self, ty: TypeId) -> String {
+    fn type_name(&mut self, ty: InferTy) -> String {
+        match self.infer.resolve(ty) {
+            InferTy::Var(var) => match self.infer.label_of(var) {
+                Some(name) => format!("type parameter #{}", name.as_u32()),
+                None => "?".to_owned(),
+            },
+            InferTy::App(app) => {
+                let pending = self.infer.apps[app.index()].clone();
+                let args = pending
+                    .args
+                    .into_iter()
+                    .map(|arg| self.type_name(arg))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("Adt#{}[{args}]", pending.name.as_u32())
+            }
+            InferTy::Concrete(ty) => self.stored_type_name(ty),
+        }
+    }
+
+    fn stored_type_name(&self, ty: TypeId) -> String {
         match self.store.get(ty) {
             Some(TypeKind::Primitive(PrimitiveType::Unit)) => "Unit".to_owned(),
             Some(TypeKind::Primitive(PrimitiveType::Bool)) => "Bool".to_owned(),
@@ -1434,9 +2076,18 @@ impl<'a> TypeChecker<'a> {
             Some(TypeKind::Primitive(PrimitiveType::Float)) => "Float".to_owned(),
             Some(TypeKind::Primitive(PrimitiveType::Char)) => "Char".to_owned(),
             Some(TypeKind::Primitive(PrimitiveType::String)) => "String".to_owned(),
-            Some(TypeKind::Struct { name, .. }) => format!("Struct#{}", name.as_u32()),
-            Some(TypeKind::Enum { name, .. }) => format!("Enum#{}", name.as_u32()),
-            Some(TypeKind::TypeParam(idx)) => format!("T{}", idx),
+            Some(TypeKind::Struct { name, args, .. }) | Some(TypeKind::Enum { name, args, .. }) => {
+                let rendered = args
+                    .iter()
+                    .map(|arg| self.stored_type_name(*arg))
+                    .collect::<Vec<_>>();
+                if rendered.is_empty() {
+                    format!("Adt#{}", name.as_u32())
+                } else {
+                    format!("Adt#{}[{}]", name.as_u32(), rendered.join(", "))
+                }
+            }
+            Some(TypeKind::TypeParam(idx)) => format!("T{idx}"),
             Some(TypeKind::Function(_)) => "Function".to_owned(),
             Some(TypeKind::Error) | None => format!("t{}", ty.as_u32()),
         }
@@ -1463,302 +2114,30 @@ enum EffectConformance {
     Skip,
 }
 
-fn build_function_templates(
-    program: &CoreProgram,
-    adt_types: &HashMap<SymbolId, TypeId>,
-    prim: PrimitiveTypeIds,
-    error_type: TypeId,
-    diagnostics: &mut DiagnosticBag,
-) -> Vec<FunctionTemplate> {
-    let mut templates = Vec::with_capacity(program.functions().len());
-
-    for function in program.functions() {
-        let mut generics = HashMap::<SymbolId, u16>::new();
-        let mut params = Vec::with_capacity(function.param_types.len());
-
-        for param_ty in &function.param_types {
-            match template_type_from_ref(param_ty, adt_types, prim, &mut generics) {
-                Some(template) => params.push(template),
-                None => {
-                    diagnostics.error(
-                        "TYPE_PARAM_TYPE_UNKNOWN",
-                        "Could not resolve parameter type annotation",
-                        function.span,
-                    );
-                    params.push(TypeTemplate::Concrete(error_type));
-                }
-            }
-        }
-
-        let ret = match function.return_type {
-            CoreTypeRef::Unknown => None,
-            _ => {
-                match template_type_from_ref(&function.return_type, adt_types, prim, &mut generics)
-                {
-                    Some(template) => Some(template),
-                    None => {
-                        diagnostics.error(
-                            "TYPE_RETURN_TYPE_UNKNOWN",
-                            "Could not resolve return type annotation",
-                            function.span,
-                        );
-                        Some(TypeTemplate::Concrete(error_type))
-                    }
-                }
-            }
-        };
-
-        templates.push(FunctionTemplate {
-            params,
-            ret,
-            generic_count: generics.len(),
-            inferred_ret_var: None,
-        });
-    }
-
-    templates
+fn param_substitution<T: Clone>(names: &[SymbolId], values: &[T]) -> HashMap<SymbolId, T> {
+    names
+        .iter()
+        .copied()
+        .zip(values.iter().cloned())
+        .collect::<HashMap<_, _>>()
 }
 
-fn template_type_from_ref(
-    ty: &CoreTypeRef,
-    adt_types: &HashMap<SymbolId, TypeId>,
-    prim: PrimitiveTypeIds,
-    generics: &mut HashMap<SymbolId, u16>,
-) -> Option<TypeTemplate> {
+fn collect_type_params(ty: &CoreTypeRef, out: &mut Vec<SymbolId>) {
     match ty {
-        CoreTypeRef::Unit => Some(TypeTemplate::Concrete(prim.unit)),
-        CoreTypeRef::Primitive(primitive) => Some(TypeTemplate::Concrete(match primitive {
-            PrimitiveTypeRef::Bool => prim.bool_,
-            PrimitiveTypeRef::Int => prim.int,
-            PrimitiveTypeRef::Float => prim.float,
-            PrimitiveTypeRef::Char => prim.char_,
-            PrimitiveTypeRef::String => prim.string,
-        })),
-        CoreTypeRef::Named(name) => {
-            if let Some(adt) = adt_types.get(name).copied() {
-                Some(TypeTemplate::Concrete(adt))
-            } else {
-                let idx = if let Some(existing) = generics.get(name).copied() {
-                    existing
-                } else {
-                    let next = generics.len();
-                    let next = (next.min(u16::MAX as usize)) as u16;
-                    generics.insert(*name, next);
-                    next
-                };
-                Some(TypeTemplate::Generic(idx))
+        CoreTypeRef::Param(name) => {
+            if !out.contains(name) {
+                out.push(*name);
             }
         }
-        CoreTypeRef::Unknown => None,
-    }
-}
-
-fn build_effect_signatures(
-    program: &CoreProgram,
-    adt_types: &HashMap<SymbolId, TypeId>,
-    prim: PrimitiveTypeIds,
-) -> EffectSignatureTable {
-    let mut table = EffectSignatureTable::new();
-    for effect in program.effects() {
-        for operation in &effect.operations {
-            table.insert(
-                (effect.label, operation.name),
-                EffectSignature {
-                    param_types: operation
-                        .param_types
-                        .iter()
-                        .map(|ty| resolve_concrete_type_ref(ty, adt_types, prim))
-                        .collect(),
-                    return_type: resolve_concrete_type_ref(&operation.return_type, adt_types, prim),
-                },
-            );
-        }
-    }
-    table
-}
-
-fn build_ctor_signatures(
-    program: &CoreProgram,
-    store: &TypeStore,
-    adt_types: &HashMap<SymbolId, TypeId>,
-) -> (
-    HashMap<SymbolId, StructCtorSig>,
-    HashMap<SymbolId, EnumCtorSig>,
-) {
-    let mut struct_ctors = HashMap::new();
-    let mut enum_ctors = HashMap::new();
-
-    for decl in program.structs() {
-        let Some(result) = adt_types.get(&decl.name).copied() else {
-            continue;
-        };
-        let Some(TypeKind::Struct { fields, .. }) = store.get(result) else {
-            continue;
-        };
-        struct_ctors.insert(
-            decl.name,
-            StructCtorSig {
-                result,
-                fields: fields.iter().map(|field| field.ty).collect(),
-            },
-        );
-    }
-
-    for decl in program.enums() {
-        let Some(result) = adt_types.get(&decl.name).copied() else {
-            continue;
-        };
-        let Some(TypeKind::Enum { variants, .. }) = store.get(result) else {
-            continue;
-        };
-        for variant in variants {
-            enum_ctors.insert(
-                variant.name,
-                EnumCtorSig {
-                    result,
-                    fields: variant.fields.clone(),
-                },
-            );
-        }
-    }
-
-    (struct_ctors, enum_ctors)
-}
-
-fn intern_program_adts(
-    program: &CoreProgram,
-    store: &mut TypeStore,
-    prim: PrimitiveTypeIds,
-    error_type: TypeId,
-    diagnostics: &mut DiagnosticBag,
-) -> HashMap<SymbolId, TypeId> {
-    let mut adt_types = HashMap::new();
-
-    for decl in program.structs() {
-        if adt_types.contains_key(&decl.name) {
-            continue;
-        }
-        let fields = decl
-            .fields
-            .iter()
-            .enumerate()
-            .map(|(index, _)| StructField {
-                name: decl
-                    .field_names
-                    .get(index)
-                    .copied()
-                    .unwrap_or(SymbolId::INVALID),
-                ty: TypeId::INVALID,
-            })
-            .collect();
-        let ty = store.intern(TypeKind::Struct {
-            name: decl.name,
-            fields,
-        });
-        adt_types.insert(decl.name, ty);
-    }
-
-    for decl in program.enums() {
-        if adt_types.contains_key(&decl.name) {
-            continue;
-        }
-        let variants = decl
-            .variants
-            .iter()
-            .map(|variant| EnumVariant {
-                name: variant.name,
-                fields: variant.fields.iter().map(|_| TypeId::INVALID).collect(),
-            })
-            .collect();
-        let ty = store.intern(TypeKind::Enum {
-            name: decl.name,
-            variants,
-        });
-        adt_types.insert(decl.name, ty);
-    }
-
-    for decl in program.structs() {
-        let Some(ty_id) = adt_types.get(&decl.name).copied() else {
-            continue;
-        };
-        let resolved_fields = decl
-            .fields
-            .iter()
-            .map(|field_ty| {
-                resolve_concrete_type_ref(field_ty, &adt_types, prim).unwrap_or_else(|| {
-                    diagnostics.error(
-                        "TYPE_UNKNOWN_ADT_FIELD_TYPE",
-                        "Could not resolve struct field type",
-                        decl.span,
-                    );
-                    error_type
-                })
-            })
-            .collect::<Vec<_>>();
-
-        if let Some(TypeKind::Struct { fields, .. }) = store.get_mut(ty_id) {
-            for (field, resolved_ty) in fields.iter_mut().zip(resolved_fields) {
-                field.ty = resolved_ty;
+        CoreTypeRef::Applied { args, .. } => {
+            for arg in args {
+                collect_type_params(arg, out);
             }
         }
-    }
-
-    for decl in program.enums() {
-        let Some(ty_id) = adt_types.get(&decl.name).copied() else {
-            continue;
-        };
-
-        let resolved_variants = decl
-            .variants
-            .iter()
-            .map(|variant| {
-                let fields = variant
-                    .fields
-                    .iter()
-                    .map(|field_ty| {
-                        resolve_concrete_type_ref(field_ty, &adt_types, prim).unwrap_or_else(|| {
-                            diagnostics.error(
-                                "TYPE_UNKNOWN_ADT_FIELD_TYPE",
-                                "Could not resolve enum variant field type",
-                                variant.span,
-                            );
-                            error_type
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                (variant.name, fields)
-            })
-            .collect::<Vec<_>>();
-
-        if let Some(TypeKind::Enum { variants, .. }) = store.get_mut(ty_id) {
-            for (variant_name, resolved_fields) in resolved_variants {
-                if let Some(variant) = variants.iter_mut().find(|entry| entry.name == variant_name)
-                {
-                    variant.fields = resolved_fields;
-                }
-            }
-        }
-    }
-
-    adt_types
-}
-
-fn resolve_concrete_type_ref(
-    ty: &CoreTypeRef,
-    adt_types: &HashMap<SymbolId, TypeId>,
-    prim: PrimitiveTypeIds,
-) -> Option<TypeId> {
-    match ty {
-        CoreTypeRef::Unit => Some(prim.unit),
-        CoreTypeRef::Primitive(primitive) => Some(match primitive {
-            PrimitiveTypeRef::Bool => prim.bool_,
-            PrimitiveTypeRef::Int => prim.int,
-            PrimitiveTypeRef::Float => prim.float,
-            PrimitiveTypeRef::Char => prim.char_,
-            PrimitiveTypeRef::String => prim.string,
-        }),
-        CoreTypeRef::Named(name) => adt_types.get(name).copied(),
-        CoreTypeRef::Unknown => None,
+        CoreTypeRef::Unit
+        | CoreTypeRef::Primitive(_)
+        | CoreTypeRef::Named(_)
+        | CoreTypeRef::Unknown => {}
     }
 }
 

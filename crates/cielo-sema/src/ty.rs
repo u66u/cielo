@@ -42,10 +42,15 @@ pub enum TypeKind {
     Primitive(PrimitiveType),
     Struct {
         name: SymbolId,
+        /// Instantiated type arguments, empty for a non-generic declaration.
+        /// `(name, args)` is the identity of the type; two instantiations of one
+        /// declaration are separate `TypeId`s.
+        args: Vec<TypeId>,
         fields: Vec<StructField>,
     },
     Enum {
         name: SymbolId,
+        args: Vec<TypeId>,
         variants: Vec<EnumVariant>,
     },
     Function(FunctionType),

@@ -668,7 +668,7 @@ fn main() -> Int {
 #[test]
 fn generic_function_signature_allows_distinct_call_instantiations() {
     let src = r#"
-fn id(x: A) -> A {
+fn id[A](x: A) -> A {
   x
 }
 fn main() -> Int {
@@ -695,7 +695,7 @@ fn main() -> Int {
 #[test]
 fn same_generic_parameter_rejects_mismatched_call_types() {
     let src = r#"
-fn pair_left(a: A, b: A) -> A {
+fn pair_left[A](a: A, b: A) -> A {
   a
 }
 fn main() -> Int {
@@ -720,7 +720,7 @@ fn main() -> Int {
 #[test]
 fn different_generic_parameters_do_not_unify_with_each_other() {
     let src = r#"
-fn first(a: A, b: B) -> A {
+fn first[A, B](a: A, b: B) -> A {
   a
 }
 fn main() -> Int {
@@ -807,5 +807,117 @@ fn main() -> Int {
             .iter()
             .any(|entry| entry.code == "TYPE_UNKNOWN_ADT_FIELD_TYPE"),
         "unknown ADT field types should be diagnosed"
+    );
+}
+
+fn diagnose(src: &str) -> DiagnosticBag {
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    diagnostics
+}
+
+fn has_code(diagnostics: &DiagnosticBag, code: &str) -> bool {
+    diagnostics.entries().iter().any(|entry| entry.code == code)
+}
+
+#[test]
+fn undeclared_type_name_is_an_error_not_an_implicit_type_variable() {
+    let diagnostics = diagnose(
+        r#"
+fn f(x: Itn) -> Int {
+  0
+}
+"#,
+    );
+    assert!(
+        has_code(&diagnostics, "TYPE_UNKNOWN_TYPE_NAME"),
+        "a capitalized name that is neither declared nor a type parameter must be rejected: {:?}",
+        diagnostics.entries()
+    );
+}
+
+#[test]
+fn generic_enum_instantiates_per_type_argument() {
+    let diagnostics = diagnose(
+        r#"
+enum Option[T] { Some(T), None }
+fn unwrap_or[T](opt: Option[T], fallback: T) -> T {
+  match opt {
+    | Some(v) => v
+    | None => fallback
+  }
+}
+fn main() -> Int {
+  unwrap_or(Some(7), 0)
+}
+"#,
+    );
+    assert!(
+        !diagnostics.has_errors(),
+        "a generic enum used at one type argument should typecheck: {:?}",
+        diagnostics.entries()
+    );
+}
+
+#[test]
+fn generic_enum_rejects_mismatched_type_arguments() {
+    let diagnostics = diagnose(
+        r#"
+enum Option[T] { Some(T), None }
+fn unwrap_or[T](opt: Option[T], fallback: T) -> T {
+  match opt {
+    | Some(v) => v
+    | None => fallback
+  }
+}
+fn main() -> Int {
+  unwrap_or(Some(true), 0)
+}
+"#,
+    );
+    assert!(
+        has_code(&diagnostics, "TYPE_CALL_ARG_MISMATCH"),
+        "Option[Bool] must not satisfy Option[Int]: {:?}",
+        diagnostics.entries()
+    );
+}
+
+#[test]
+fn generic_struct_field_access_resolves_through_the_instantiation() {
+    let diagnostics = diagnose(
+        r#"
+struct Pair[A, B] { first: A, second: B }
+fn left[A, B](p: Pair[A, B]) -> A {
+  p.first
+}
+fn main() -> Int {
+  left(Pair(3, true))
+}
+"#,
+    );
+    assert!(
+        !diagnostics.has_errors(),
+        "field access on a generic struct should resolve: {:?}",
+        diagnostics.entries()
+    );
+}
+
+#[test]
+fn wrong_type_argument_count_is_rejected() {
+    let diagnostics = diagnose(
+        r#"
+enum Option[T] { Some(T), None }
+fn f(opt: Option[Int, Bool]) -> Int {
+  0
+}
+"#,
+    );
+    assert!(
+        has_code(&diagnostics, "TYPE_BAD_TYPE_ARG_COUNT"),
+        "arity of a type application must be checked: {:?}",
+        diagnostics.entries()
     );
 }
