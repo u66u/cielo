@@ -895,6 +895,15 @@ impl Parser {
     fn parse_handler_decl(&mut self) -> HandlerDecl {
         let start = self.expect_keyword(Keyword::Handler).span;
         let name = self.expect_identifier("Expected handler name after `handler`");
+        if self.check_kind(TokenKind::LBracket) {
+            let span = self.current_span();
+            self.skip_bracket_group();
+            self.diagnostics.error(
+                "PARSE_GENERIC_HANDLER",
+                "Generic handler declarations are not supported; a handler's clauses are monomorphic",
+                span,
+            );
+        }
         self.expect_keyword(Keyword::With);
         let effect = self.expect_identifier("Expected effect name after `with`");
         self.reject_effect_type_args();
