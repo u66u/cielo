@@ -11,9 +11,9 @@ use cielo_base::symbols::Interner;
 use cielo_ir::builtins::Builtin;
 use cielo_ir::cfg::{
     CfgArcOp, CfgArcOpKind, CfgCallConvention, CfgExpr, CfgFunction, CfgInstruction, CfgProgram,
-    CfgProjectionMode, CfgTerminator,
+    CfgProjectionMode, CfgTerminator, ctor_literal_key,
 };
-use cielo_ir::constants::{ConstantTable, CtorFieldKey, CtorLiteralKey, ScalarLiteralKey};
+use cielo_ir::constants::{ConstantTable, ScalarLiteralKey};
 use cielo_ir::core::Literal;
 use cielo_ir::walk::{Walk, walk_exprs};
 
@@ -257,10 +257,10 @@ fn emit_terminator(
                 for (field, (binder, mode)) in
                     arm.binders.iter().zip(arm.projections.iter()).enumerate()
                 {
-                    let getter = if *mode == CfgProjectionMode::Move {
-                        "cielo_ctor_take_field"
-                    } else {
-                        "cielo_ctor_field"
+                    let getter = match mode {
+                        CfgProjectionMode::Move => "cielo_ctor_take_field",
+                        CfgProjectionMode::MoveUnique => "cielo_ctor_take_field_unique",
+                        CfgProjectionMode::Borrow | CfgProjectionMode::Copy => "cielo_ctor_field",
                     };
                     writeln!(
                         out,
@@ -456,7 +456,7 @@ fn emit_expr(expression: CfgExprId, cx: &mut EmitCx<'_>) -> String {
 }
 
 fn emit_ctor(ty: SymbolId, variant: SymbolId, fields: &[CfgExprId], cx: &mut EmitCx<'_>) -> String {
-    if let Some(key) = ctor_key(cx.program, ty, variant, fields)
+    if let Some(key) = ctor_literal_key(cx.program, ty, variant, fields)
         && let Some(symbol) = cx.pools.ctor(&key)
     {
         return symbol.to_owned();
@@ -509,43 +509,6 @@ fn emit_literal(literal: &Literal, pools: &CConstantPools) -> String {
             .string(value)
             .expect("string literal was pooled")
             .to_owned(),
-    }
-}
-
-fn ctor_key(
-    program: &CfgProgram,
-    ty: SymbolId,
-    variant: SymbolId,
-    fields: &[CfgExprId],
-) -> Option<CtorLiteralKey> {
-    let fields = fields
-        .iter()
-        .map(|field| ctor_field_key(program, *field))
-        .collect::<Option<Vec<_>>>()?;
-    Some(CtorLiteralKey {
-        ty,
-        variant,
-        fields,
-    })
-}
-
-fn ctor_field_key(program: &CfgProgram, expression: CfgExprId) -> Option<CtorFieldKey> {
-    match &program.expr(expression)?.kind {
-        CfgExpr::Literal(literal) => CtorFieldKey::from_literal(literal),
-        CfgExpr::MakeStruct { ty, fields } => Some(CtorFieldKey::Ctor(Box::new(ctor_key(
-            program,
-            *ty,
-            SymbolId::INVALID,
-            fields,
-        )?))),
-        CfgExpr::MakeEnum {
-            ty,
-            variant,
-            fields,
-        } => Some(CtorFieldKey::Ctor(Box::new(ctor_key(
-            program, *ty, *variant, fields,
-        )?))),
-        _ => None,
     }
 }
 

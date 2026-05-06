@@ -80,3 +80,15 @@ pub struct ConstantTable {
     pub unit_cap_bytes: usize,
     pub total_size_bytes: usize,
 }
+
+impl ConstantTable {
+    /// A pooled constructor is emitted as immortal static storage, so it is
+    /// never freshly allocated and never uniquely owned. Backends must agree
+    /// with this predicate or the memory analyses that consult it are wrong.
+    pub fn pools_ctor(&self, key: &CtorLiteralKey) -> bool {
+        self.entries.iter().any(|entry| {
+            entry.strategy == ConstantEmbedStrategy::Pooled
+                && matches!(&entry.key, ConstantKey::Ctor(pooled) if pooled == key)
+        })
+    }
+}

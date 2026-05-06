@@ -6,6 +6,7 @@
 //! are free to model continuations and cleanup paths.
 
 use crate::builtins::Builtin;
+use crate::constants::{CtorFieldKey, CtorLiteralKey};
 use crate::core::{BinaryOp, Literal, StageDirective, UnaryOp};
 use crate::ownership::OperandRole;
 use cielo_base::{
@@ -295,6 +296,53 @@ impl CfgExpr {
     }
 }
 
+/// The constant-pool key a constructor expression hashes to, or `None` when a
+/// field is not a literal. `None` is the interesting answer for memory
+/// analyses: the backend cannot pool such a constructor, so it must emit a
+/// fresh `cielo_make_ctor` allocation.
+pub fn ctor_literal_key(
+    program: &CfgProgram,
+    ty: SymbolId,
+    variant: SymbolId,
+    fields: &[CfgExprId],
+) -> Option<CtorLiteralKey> {
+    let fields = fields
+        .iter()
+        .map(|field| ctor_field_key(program, *field))
+        .collect::<Option<Vec<_>>>()?;
+    Some(CtorLiteralKey {
+        ty,
+        variant,
+        fields,
+    })
+}
+
+fn ctor_field_key(program: &CfgProgram, expression: CfgExprId) -> Option<CtorFieldKey> {
+    match &program.expr(expression)?.kind {
+        CfgExpr::Literal(literal) => CtorFieldKey::from_literal(literal),
+        CfgExpr::MakeStruct { ty, fields } => Some(CtorFieldKey::Ctor(Box::new(ctor_literal_key(
+            program,
+            *ty,
+            SymbolId::INVALID,
+            fields,
+        )?))),
+        CfgExpr::MakeEnum {
+            ty,
+            variant,
+            fields,
+        } => Some(CtorFieldKey::Ctor(Box::new(ctor_literal_key(
+            program, *ty, *variant, fields,
+        )?))),
+        CfgExpr::Value(_)
+        | CfgExpr::Unary { .. }
+        | CfgExpr::Binary { .. }
+        | CfgExpr::PureCall { .. }
+        | CfgExpr::BuiltinCall { .. }
+        | CfgExpr::Field { .. }
+        | CfgExpr::Error => None,
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CfgInstructionNode {
     pub id: CfgInstId,
@@ -395,7 +443,10 @@ pub struct CfgMatchArm {
 pub enum CfgProjectionMode {
     Borrow,
     Copy,
+    /// Destructive take gated on a runtime `rc == 1 && !immortal` test.
     Move,
+    /// Destructive take whose gate the uniqueness query discharged statically.
+    MoveUnique,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
