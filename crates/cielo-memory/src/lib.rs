@@ -8,6 +8,7 @@ pub mod refcount;
 pub mod unmanaged;
 
 pub use config::{ArcConfig, ArcFeatures, MemoryPreset, MemoryProfile, MemoryStrategy};
+pub use refcount::analysis::uniqueness::{Uniqueness, UniquenessQuery};
 pub use refcount::borrow_hazard::BorrowHazardReport;
 pub use refcount::verify::CfgArcVerifyStats;
 pub use refcount::{ArcStats, ReferenceCountingProgram, ReferenceCountingReport};
