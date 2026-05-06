@@ -21,6 +21,9 @@ pub struct ArcStats {
     pub removed_release_ops: u32,
     pub final_retain_ops: u32,
     pub final_release_ops: u32,
+    /// Destructive takes whose `rc == 1 && !immortal` gate the uniqueness
+    /// query discharged, so the emitted C never performs the test.
+    pub static_unique_takes: u32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -47,7 +50,7 @@ pub fn lower(input: MemoryInput<'_>, config: ArcConfig) -> ReferenceCountingProg
     if config.borrow_hazard_diagnostics_enabled() {
         borrow_hazard::emit_diagnostics(&input.runtime.sources, &borrow_hazards, &mut diagnostics);
     }
-    let arc = passes::cfg_arc::run(&mut cfg, &managed_values, &config);
+    let arc = passes::cfg_arc::run(&mut cfg, &managed_values, &input.runtime.constants, &config);
     verify_arc_stats(arc);
     let verifier = config
         .verify_enabled()

@@ -12,12 +12,14 @@ use cielo_base::ids::{CfgBlockId, CfgExprId, CfgInstId, CfgValueId};
 use cielo_ir::cfg::{
     CfgArcOp, CfgArcOpKind, CfgExpr, CfgInstruction, CfgProgram, CfgProjectionMode, CfgTerminator,
 };
+use cielo_ir::constants::ConstantTable;
 use cielo_ir::ownership::OperandRole;
 use cielo_ir::walk::walk_operands;
 
 use crate::ArcConfig;
 use crate::refcount::ArcStats;
 use crate::refcount::analysis::cfg_liveness::{CfgLiveness, CfgUseSite};
+use crate::refcount::analysis::uniqueness::{Uniqueness, UniquenessQuery};
 
 #[derive(Clone, Copy, Default)]
 struct UseCount {
@@ -25,13 +27,21 @@ struct UseCount {
     consumes: u32,
 }
 
-pub fn run(cfg: &mut CfgProgram, managed: &[bool], config: &ArcConfig) -> ArcStats {
+pub fn run(
+    cfg: &mut CfgProgram,
+    managed: &[bool],
+    constants: &ConstantTable,
+    config: &ArcConfig,
+) -> ArcStats {
     clear_annotations(cfg);
     if !config.insertion_enabled() {
         return ArcStats::default();
     }
 
     let liveness = CfgLiveness::analyze(cfg);
+    // Both analyses read the CFG as `clear_annotations` left it, before any
+    // edge block or planned retain exists.
+    let uniqueness = UniquenessQuery::analyze(cfg, constants);
     let mut borrowed_binders = HashSet::new();
     let mut stats = ArcStats::default();
     let optimize_moves = config.optimization_enabled();
@@ -39,6 +49,7 @@ pub fn run(cfg: &mut CfgProgram, managed: &[bool], config: &ArcConfig) -> ArcSta
     plan_match_projections(
         cfg,
         &liveness,
+        &uniqueness,
         managed,
         optimize_moves,
         &mut borrowed_binders,
@@ -134,6 +145,7 @@ fn clear_annotations(cfg: &mut CfgProgram) {
 fn plan_match_projections(
     cfg: &mut CfgProgram,
     liveness: &CfgLiveness,
+    uniqueness: &UniquenessQuery,
     managed: &[bool],
     optimize_moves: bool,
     borrowed_binders: &mut HashSet<CfgValueId>,
@@ -147,12 +159,19 @@ fn plan_match_projections(
         else {
             continue;
         };
+        let site = CfgUseSite::Terminator(block.id);
         let parent = direct_value(cfg, *scrutinee);
         let parent_dead = parent.is_none_or(|value| {
             !liveness
-                .live_after(CfgUseSite::Terminator(block.id))
+                .live_after(site)
                 .is_some_and(|live| live.contains(&value))
         });
+        // Taking one field neither retains nor releases the parent, so every
+        // binder of the arm sees the same answer.
+        let take_mode = match parent.map(|value| uniqueness.at(value, site)) {
+            Some(Uniqueness::Unique) => CfgProjectionMode::MoveUnique,
+            Some(Uniqueness::Shared | Uniqueness::Unknown) | None => CfgProjectionMode::Move,
+        };
         let mut planned = arms.clone();
         for arm in &mut planned {
             let used = liveness
@@ -165,7 +184,10 @@ fn plan_match_projections(
                     CfgProjectionMode::Borrow
                 } else if parent_dead && optimize_moves {
                     record_move(stats);
-                    CfgProjectionMode::Move
+                    if take_mode == CfgProjectionMode::MoveUnique {
+                        stats.static_unique_takes = stats.static_unique_takes.saturating_add(1);
+                    }
+                    take_mode
                 } else {
                     stats.planned_retain_ops = stats.planned_retain_ops.saturating_add(1);
                     stats.final_retain_ops = stats.final_retain_ops.saturating_add(1);

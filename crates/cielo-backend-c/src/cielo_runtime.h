@@ -334,10 +334,38 @@ static inline CieloValue cielo_ctor_field_copy(CieloValue value, size_t index) {
   return field;
 }
 
-/* Move a field out of a constructor. Clearing the slot is Nim's `wasMoved`:
- * destroying the parent no longer decrements the transferred field.
- *
- * The ARC pass picks Move from intraprocedural liveness, which proves the
+/* A wrong compile-time uniqueness answer corrupts another holder's field and
+ * shows up nowhere near the mistake. The stats build is the test build, so it
+ * re-checks the proof it was handed. */
+#ifdef CIELO_ARC_STATS
+#define CIELO_ARC_ASSERT_UNIQUE(CTOR)                                          \
+  do {                                                                         \
+    if (((CTOR)->arc.flags & CIELO_ARC_FLAG_IMMORTAL) != 0u ||                 \
+        (CTOR)->arc.refcount != 1u)                                            \
+      cielo_trap("statically unique take on a shared constructor");            \
+  } while (0)
+#else
+#define CIELO_ARC_ASSERT_UNIQUE(CTOR) ((void)0)
+#endif
+
+/* Move a field out of a constructor the caller is the sole owner of. Clearing
+ * the slot is Nim's `wasMoved`: destroying the parent no longer decrements the
+ * transferred field. Emitted only for `CfgProjectionMode::MoveUnique`, where
+ * the uniqueness query proved the ownership the runtime otherwise tests for. */
+static inline CieloValue cielo_ctor_take_field_unique(CieloValue value,
+                                                      size_t index) {
+  if (value.tag != CV_CTOR || value.as.ctor == NULL)
+    return cv_unit();
+  CieloCtor *ctor = value.as.ctor;
+  if (index >= ctor->argc || ctor->fields == NULL)
+    return cv_unit();
+  CIELO_ARC_ASSERT_UNIQUE(ctor);
+  CieloValue result = ctor->fields[index];
+  ctor->fields[index] = cv_unit();
+  return result;
+}
+
+/* The ARC pass picks Move from intraprocedural liveness, which proves the
  * parent is dead here, not that it is unique. Clearing a shared or pooled
  * parent would corrupt the other holders, so check uniqueness first and fall
  * back to a borrow. */
@@ -347,13 +375,12 @@ static inline CieloValue cielo_ctor_take_field(CieloValue value, size_t index) {
   CieloCtor *ctor = value.as.ctor;
   if (index >= ctor->argc || ctor->fields == NULL)
     return cv_unit();
-  CieloValue result = ctor->fields[index];
   if (cielo_arc_is_immortal(value) || ctor->arc.refcount != 1u) {
+    CieloValue result = ctor->fields[index];
     cielo_arc_retain(result);
     return result;
   }
-  ctor->fields[index] = cv_unit();
-  return result;
+  return cielo_ctor_take_field_unique(value, index);
 }
 
 static inline uint32_t cielo_handler_push(uint32_t effect) {

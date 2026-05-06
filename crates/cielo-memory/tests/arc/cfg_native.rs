@@ -50,6 +50,15 @@ fn compile_without_normalize(source: &str) -> cielo_test_support::CompiledC {
     }
 }
 
+/// The runtime header defines these helpers and calls them itself, so counting
+/// over the whole file measures the header, not the program.
+fn emitted_bodies(c_source: &str) -> &str {
+    let start = c_source
+        .find("\nstatic CieloValue cielo_fn_")
+        .expect("emitted C must define at least one function");
+    &c_source[start..]
+}
+
 fn arc_op_count(compiled: &cielo_test_support::CompiledC, kind: CfgArcOpKind) -> usize {
     let mut count = 0;
     for block in compiled.cfg.blocks() {
@@ -184,6 +193,76 @@ fn main() -> Int {
     assert!(compiled.c_source.contains("cielo_ctor_take_field"));
 }
 
+/// `one` is a block parameter joined from two fresh allocations and read only
+/// by the match, so the uniqueness query discharges the runtime `rc == 1` test
+/// the take would otherwise perform.
+#[test]
+fn cfg_match_takes_a_statically_unique_parent_without_a_runtime_check() {
+    let compiled = compile(
+        r#"
+enum Leaf { N(Int) }
+enum Boxed { Wrap(Leaf), Empty(Int) }
+fn peel(l: Leaf) -> Int { match l { | N(v) => v | _ => 0 } }
+fn main() -> Int {
+  let seed = @runtime { 1 + 2 };
+  let one = if seed > 2 { Wrap(N(seed)) } else { Wrap(N(0)) };
+  match one { | Wrap(leaf) => peel(leaf) | _ => 0 }
+}
+"#,
+    );
+    let stats = compiled
+        .memory
+        .reference_counting()
+        .expect("ARC test must select reference counting")
+        .arc;
+    assert!(
+        stats.static_unique_takes > 0,
+        "expected a statically unique take, got {stats:?}"
+    );
+    assert!(compiled.cfg.blocks().iter().any(
+        |block| matches!(&block.terminator, CfgTerminator::Match { arms, .. }
+                if arms.iter().any(|arm| arm.projections.contains(&CfgProjectionMode::MoveUnique)))
+    ),);
+    let bodies = emitted_bodies(compiled.c_source.as_str());
+    assert_eq!(
+        bodies.matches("cielo_ctor_take_field_unique(").count(),
+        stats.static_unique_takes as usize,
+        "unchecked takes in the emitted bodies must match the plan: {bodies}"
+    );
+}
+
+/// `leaf` comes back from a call, so nothing local bounds its reference count
+/// and the runtime test has to stay. `Wrap(N(42))` is also all-literal, which
+/// is exactly the pooled-immortal parent the check exists for.
+#[test]
+fn cfg_match_keeps_the_runtime_check_for_a_call_result() {
+    let compiled = compile_without_normalize(
+        r#"
+enum Leaf { N(Int) }
+enum Boxed { Wrap(Leaf) }
+fn unbox(value: Boxed) -> Leaf {
+  match value { | Wrap(leaf) => leaf | _ => N(0) }
+}
+fn main() -> Int {
+  let leaf = unbox(Wrap(N(42)));
+  match leaf { | N(value) => value | _ => 0 }
+}
+"#,
+    );
+    assert_eq!(
+        compiled
+            .memory
+            .reference_counting()
+            .expect("ARC test must select reference counting")
+            .arc
+            .static_unique_takes,
+        0
+    );
+    let bodies = emitted_bodies(compiled.c_source.as_str());
+    assert!(bodies.contains("cielo_ctor_take_field("));
+    assert!(!bodies.contains("cielo_ctor_take_field_unique("));
+}
+
 #[test]
 fn cfg_arc_verifier_accepts_generated_plan() {
     let compiled = compile(
@@ -300,7 +379,12 @@ fn cfg_arc_drops_on_dead_switch_edges() {
     let config = ArcConfig {
         features: ArcFeatures::INSERTION | ArcFeatures::OPTIMIZATION,
     };
-    cielo_memory::refcount::passes::cfg_arc::run(&mut cfg, &[true, false], &config);
+    cielo_memory::refcount::passes::cfg_arc::run(
+        &mut cfg,
+        &[true, false],
+        &Default::default(),
+        &config,
+    );
     assert_eq!(cfg.validate(), Ok(()));
 
     let CfgTerminator::Switch {
