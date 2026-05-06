@@ -18,7 +18,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 //   and two instances of one template classify the same source var differently
 //
 // Diagnostics:
-// - MONO_GENERIC_ENTRYPOINT, MONO_MISSING_TYPE_ARGS, MONO_POLYMORPHIC_RECURSION
+// - MONO_GENERIC_ENTRYPOINT, MONO_MISSING_TYPE_ARGS, MONO_POLYMORPHIC_RECURSION,
+//   MONO_INSTANCE_LIMIT, MONO_UNSPECIALIZED_FUNCTION
 //
 // Complexity:
 // - O(instances * body size)
@@ -121,7 +122,7 @@ struct Specializer<'a> {
     queue: VecDeque<Job>,
     walked_in_place: HashSet<FuncId>,
     next_var: u32,
-    recursion_reported: HashSet<FuncId>,
+    limit_reported: HashSet<FuncId>,
 }
 
 impl<'a> Specializer<'a> {
@@ -134,7 +135,7 @@ impl<'a> Specializer<'a> {
             queue: VecDeque::new(),
             walked_in_place: HashSet::new(),
             next_var: 0,
-            recursion_reported: HashSet::new(),
+            limit_reported: HashSet::new(),
         }
     }
 
@@ -232,14 +233,24 @@ impl<'a> Specializer<'a> {
             return Some(existing);
         }
 
-        let too_deep = bindings
+        if bindings
             .iter()
-            .any(|(_, ty)| ty.depth() > MAX_TYPE_ARG_DEPTH);
-        if too_deep || self.instances.len() >= MAX_INSTANCES {
-            if self.recursion_reported.insert(callee) {
+            .any(|(_, ty)| ty.depth() > MAX_TYPE_ARG_DEPTH)
+        {
+            if self.limit_reported.insert(callee) {
                 self.diagnostics.error(
                     "MONO_POLYMORPHIC_RECURSION",
                     "Generic function instantiates itself at an ever larger type, so it has no finite set of specializations",
+                    span,
+                );
+            }
+            return None;
+        }
+        if self.instances.len() >= MAX_INSTANCES {
+            if self.limit_reported.insert(callee) {
+                self.diagnostics.error(
+                    "MONO_INSTANCE_LIMIT",
+                    format!("Program needs more than {MAX_INSTANCES} generic specializations"),
                     span,
                 );
             }

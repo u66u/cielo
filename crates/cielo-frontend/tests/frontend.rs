@@ -261,6 +261,23 @@ fn f(x: Int) -> Int with State[Int] { x }
 }
 
 #[test]
+fn reject_generic_handler_declarations() {
+    let src = r#"
+effect Console { fn print(s: String) -> () }
+handler quiet[T] with Console { | print(s) => 0 }
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    assert!(
+        parsed
+            .diagnostics
+            .entries()
+            .iter()
+            .any(|entry| entry.code == "PARSE_GENERIC_HANDLER")
+    );
+}
+
+#[test]
 fn reject_type_arguments_in_expression_position() {
     let src = r#"
 fn identity[T](x: T) -> T { x }

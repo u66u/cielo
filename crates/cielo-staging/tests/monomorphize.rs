@@ -322,6 +322,29 @@ fn main() -> Int {
 }
 
 #[test]
+fn drops_generic_functions_that_are_never_called() {
+    let src = r#"
+enum Option[T] { Some(T), None }
+
+fn unused[T](x: T) -> Option[T] {
+  Some(x)
+}
+
+fn main() -> Int {
+  1
+}
+"#;
+    let mut interner = Interner::new();
+    let mono = monomorphize_source(src, &mut interner);
+    assert!(
+        !mono.diagnostics().has_errors(),
+        "{:?}",
+        diagnostic_codes(&mono)
+    );
+    assert_eq!(instances_named(&mono, &interner, "unused"), 0);
+}
+
+#[test]
 fn rejects_a_generic_entrypoint() {
     let src = r#"
 fn main[T](x: T) -> T {

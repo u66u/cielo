@@ -483,13 +483,25 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Non-generic declarations are interned up front so their `TypeId`s exist
-    /// even when nothing in the program mentions them.
+    /// even when nothing in the program mentions them. Declaration order, not
+    /// map order: `TypeId`s must not vary between runs.
     fn intern_non_generic_adts(&mut self) {
         let names = self
-            .adts
+            .program
+            .structs()
             .iter()
-            .filter(|(_, decl)| decl.type_params.is_empty())
-            .map(|(name, decl)| (*name, decl.span))
+            .map(|decl| (decl.name, decl.span))
+            .chain(
+                self.program
+                    .enums()
+                    .iter()
+                    .map(|decl| (decl.name, decl.span)),
+            )
+            .filter(|(name, _)| {
+                self.adts
+                    .get(name)
+                    .is_some_and(|decl| decl.type_params.is_empty())
+            })
             .collect::<Vec<_>>();
         for (name, span) in names {
             let _ = self.adt_instance(name, Vec::new(), span, 0);
