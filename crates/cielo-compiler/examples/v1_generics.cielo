@@ -1,0 +1,26 @@
+enum Option[T] { Some(T), None }
+
+struct Pair[A, B] { first: A, second: B }
+
+fn identity[T](x: T) -> T {
+  x
+}
+
+fn unwrap_or[T](opt: Option[T], fallback: T) -> T {
+  match opt {
+    | Some(v) => v
+    | None => fallback
+  }
+}
+
+fn first[A, B](p: Pair[A, B]) -> A {
+  p.first
+}
+
+fn main() -> Int {
+  let present = unwrap_or(Some(30), 0);
+  let missing = unwrap_or(None(), 4);
+  let flag = unwrap_or(Some(true), false);
+  let left = first(Pair(8, flag));
+  identity(present) + missing + left
+}
