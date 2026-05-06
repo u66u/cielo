@@ -424,7 +424,11 @@ fn collect_expr_call_sites(
             collect_expr_call_sites(program, *lhs, seen, out);
             collect_expr_call_sites(program, *rhs, seen, out);
         }
-        ExprKind::MakeStruct { fields, .. } | ExprKind::MakeEnum { fields, .. } => {
+        // A builtin is not a user function, so it is never specialized; its
+        // arguments still can be.
+        ExprKind::BuiltinCall { args: fields, .. }
+        | ExprKind::MakeStruct { fields, .. }
+        | ExprKind::MakeEnum { fields, .. } => {
             for field in fields {
                 collect_expr_call_sites(program, *field, seen, out);
             }
@@ -651,6 +655,10 @@ impl BodyCloner<'_> {
                     .get(&CallSite::Expr(source))
                     .copied()
                     .unwrap_or(callee),
+                args: self.clone_exprs(args),
+            },
+            ExprKind::BuiltinCall { builtin, args } => ExprKind::BuiltinCall {
+                builtin,
                 args: self.clone_exprs(args),
             },
             ExprKind::MakeStruct { ty, fields } => ExprKind::MakeStruct {
