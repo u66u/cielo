@@ -1,15 +1,18 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use cielo_base::diagnostics::DiagnosticBag;
 use cielo_base::ids::CfgValueId;
 use cielo_base::span::Span;
-use cielo_ir::cfg::{CfgArcOp, CfgArcOpKind, CfgProgram, CfgProjectionMode, CfgTerminator};
+use cielo_ir::cfg::{
+    CfgArcOp, CfgArcOpKind, CfgExpr, CfgProgram, CfgProjectionMode, CfgTerminator,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct CfgArcVerifyStats {
     pub checked_blocks: u32,
     pub checked_ops: u32,
     pub checked_moves: u32,
+    pub checked_unique_moves: u32,
     pub errors: u32,
 }
 
@@ -20,6 +23,7 @@ pub fn verify(cfg: &CfgProgram, diagnostics: &mut DiagnosticBag) -> CfgArcVerify
             report(diagnostics, &mut stats, "CFG_VERIFY_INVALID_GRAPH", error);
         }
     }
+    verify_unique_moves(cfg, diagnostics, &mut stats);
     for block in cfg.blocks() {
         stats.checked_blocks = stats.checked_blocks.saturating_add(1);
         let mut block_releases: HashSet<CfgValueId> = HashSet::new();
@@ -81,14 +85,111 @@ pub fn verify(cfg: &CfgProgram, diagnostics: &mut DiagnosticBag) -> CfgArcVerify
         if let CfgTerminator::Match { arms, .. } = &block.terminator {
             for arm in arms {
                 for mode in &arm.projections {
-                    if *mode == CfgProjectionMode::Move {
-                        stats.checked_moves = stats.checked_moves.saturating_add(1);
+                    match mode {
+                        CfgProjectionMode::Move => {
+                            stats.checked_moves = stats.checked_moves.saturating_add(1)
+                        }
+                        CfgProjectionMode::MoveUnique => {
+                            stats.checked_unique_moves =
+                                stats.checked_unique_moves.saturating_add(1)
+                        }
+                        CfgProjectionMode::Borrow | CfgProjectionMode::Copy => {}
                     }
                 }
             }
         }
     }
     stats
+}
+
+/// `MoveUnique` drops the runtime gate, so this checks the finished plan rather
+/// than re-running the planner's predicate: a parent claimed unique must never
+/// be retained anywhere, and must be scrutinised at exactly one site. Both are
+/// properties of the emitted ARC ops, so a planner that reasoned from the wrong
+/// liveness still trips them.
+fn verify_unique_moves(
+    cfg: &CfgProgram,
+    diagnostics: &mut DiagnosticBag,
+    stats: &mut CfgArcVerifyStats,
+) {
+    let mut retained = HashSet::new();
+    for block in cfg.blocks() {
+        let sites = block
+            .entry_arc
+            .iter()
+            .chain(&block.terminator_arc.pre)
+            .chain(&block.terminator_arc.post)
+            .chain(block.instructions.iter().flat_map(|instruction| {
+                cfg.instruction(*instruction)
+                    .into_iter()
+                    .flat_map(|node| node.arc.pre.iter().chain(&node.arc.post))
+            }));
+        for op in sites {
+            if op.kind == CfgArcOpKind::Retain {
+                retained.insert(op.value);
+            }
+        }
+    }
+
+    let mut scrutinised: HashMap<CfgValueId, u32> = HashMap::new();
+    for block in cfg.blocks() {
+        if let CfgTerminator::Match { scrutinee, .. } = &block.terminator
+            && let Some(CfgExpr::Value(value)) = cfg.expr(*scrutinee).map(|node| &node.kind)
+        {
+            *scrutinised.entry(*value).or_default() += 1;
+        }
+    }
+
+    for block in cfg.blocks() {
+        let CfgTerminator::Match {
+            scrutinee, arms, ..
+        } = &block.terminator
+        else {
+            continue;
+        };
+        if !arms
+            .iter()
+            .any(|arm| arm.projections.contains(&CfgProjectionMode::MoveUnique))
+        {
+            continue;
+        }
+        let Some(CfgExpr::Value(parent)) = cfg.expr(*scrutinee).map(|node| &node.kind) else {
+            report(
+                diagnostics,
+                stats,
+                "CFG_ARC_VERIFY_UNIQUE_MOVE_TEMPORARY",
+                format!(
+                    "b{} takes a field as statically unique from a scrutinee that is not a value",
+                    block.id.as_u32()
+                ),
+            );
+            continue;
+        };
+        if retained.contains(parent) {
+            report(
+                diagnostics,
+                stats,
+                "CFG_ARC_VERIFY_UNIQUE_MOVE_RETAINED",
+                format!(
+                    "v{} is retained somewhere yet b{} takes a field from it as statically unique",
+                    parent.as_u32(),
+                    block.id.as_u32()
+                ),
+            );
+        }
+        if scrutinised.get(parent).copied().unwrap_or(0) > 1 {
+            report(
+                diagnostics,
+                stats,
+                "CFG_ARC_VERIFY_UNIQUE_MOVE_SHARED",
+                format!(
+                    "v{} is matched at more than one site yet b{} takes a field from it as statically unique",
+                    parent.as_u32(),
+                    block.id.as_u32()
+                ),
+            );
+        }
+    }
 }
 
 /// Releases are accumulated across every site in a block, so a value released
