@@ -496,6 +496,43 @@ fn main() -> Int {
 "#,
         ),
         (
+            // `boxed` joins two fresh allocations and is read once, so the ARC
+            // pass emits `cielo_ctor_take_field_unique` and skips the runtime
+            // `rc == 1` gate. `-DCIELO_ARC_STATS` arms the assertion inside
+            // that helper, so an unsound Unique answer traps here.
+            "statically_unique_take",
+            r#"
+enum Leaf { N(Int) }
+enum Boxed { Wrap(Leaf), Empty(Int) }
+fn peel(l: Leaf) -> Int {
+  match l { | N(v) => v | _ => 0 }
+}
+fn main() -> Int {
+  let seed = @runtime { 1 + 2 };
+  let boxed = if seed > 2 { Wrap(N(seed)) } else { Wrap(N(0)) };
+  match boxed { | Wrap(leaf) => peel(leaf) | _ => 0 }
+}
+"#,
+        ),
+        (
+            // Same shape, but the parent is read twice, so the take must keep
+            // its runtime gate. This is the CIELO-3 regression in the presence
+            // of the new unchecked path.
+            "shared_parent_keeps_its_gate",
+            r#"
+enum Leaf { N(Int) }
+enum Boxed { Wrap(Leaf), Empty(Int) }
+fn peel(b: Boxed) -> Int {
+  match b { | Wrap(l) => match l { | N(v) => v | _ => 0 } | _ => 0 }
+}
+fn main() -> Int {
+  let seed = @runtime { 1 + 2 };
+  let boxed = if seed > 2 { Wrap(N(seed)) } else { Wrap(N(0)) };
+  peel(boxed) + peel(boxed)
+}
+"#,
+        ),
+        (
             "ctor_through_handler",
             r#"
 effect St { fn note(n: Int) -> Int }
