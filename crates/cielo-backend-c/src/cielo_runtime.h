@@ -406,7 +406,14 @@ typedef struct {
 
 enum { CIELO_REGION_CHUNK_MIN = 512 };
 
-static inline void cielo_region_open(CieloRegion *region) { region->head = NULL; }
+static inline void cielo_region_close(CieloRegion *region);
+
+/* Reclaims first rather than just clearing the head: a region opened inside a
+ * loop re-enters this with the previous generation's chunks still attached, and
+ * dropping the pointer there would leak them. */
+static inline void cielo_region_open(CieloRegion *region) {
+  cielo_region_close(region);
+}
 
 static inline void *cielo_region_alloc(CieloRegion *region, size_t size) {
   size_t aligned = (size + (_Alignof(max_align_t) - 1u)) &
