@@ -481,6 +481,14 @@ static inline void cielo_handler_pop(uint32_t capability_id) {
   while (depth > 0) {
     depth--;
     if (g_cielo_handlers[depth].capability_id == capability_id) {
+      /* Evidence can live in a region that is freed right after this pop.
+       * Leaving the pointer behind would keep a dangling address in a global,
+       * which is both a hazard and enough to make LeakSanitizer treat a leaked
+       * region chunk as still reachable. */
+      for (size_t i = depth; i < g_cielo_handler_depth; i++) {
+        g_cielo_handlers[i].evidence = NULL;
+        g_cielo_handlers[i].capability_id = 0;
+      }
       g_cielo_handler_depth = depth;
       return;
     }
