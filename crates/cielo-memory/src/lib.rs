@@ -5,6 +5,7 @@ use cielo_ir::runtime::RuntimeProgram;
 
 pub mod config;
 pub mod refcount;
+pub mod region;
 pub mod unmanaged;
 
 pub use config::{ArcConfig, ArcFeatures, MemoryPreset, MemoryProfile, MemoryStrategy};
@@ -12,6 +13,7 @@ pub use refcount::analysis::uniqueness::{Uniqueness, UniquenessQuery};
 pub use refcount::borrow_hazard::BorrowHazardReport;
 pub use refcount::verify::CfgArcVerifyStats;
 pub use refcount::{ArcStats, ReferenceCountingProgram, ReferenceCountingReport};
+pub use region::RegionPlacementStats;
 pub use unmanaged::UnmanagedProgram;
 
 #[derive(Clone, Copy)]
@@ -67,6 +69,15 @@ impl MemoryProgram {
         match self {
             Self::Unmanaged(_) => false,
             Self::ReferenceCounting(program) => program.emit_trace_comments,
+        }
+    }
+
+    /// Reported outside [`MemoryReport`] because both strategies compute it:
+    /// region placement is storage layout, not a refcounting result.
+    pub fn regions(&self) -> RegionPlacementStats {
+        match self {
+            Self::Unmanaged(program) => program.regions,
+            Self::ReferenceCounting(program) => program.report.regions,
         }
     }
 

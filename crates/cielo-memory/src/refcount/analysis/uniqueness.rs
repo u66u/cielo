@@ -23,9 +23,22 @@
 //!   does not pool is a fresh `cielo_make_ctor` with refcount 1. Both halves
 //!   read the same `ConstantTable` the C backend reads, so they cannot drift.
 //!
-//! Regions (CIELO-38) make many values provably non-escaping, which is stronger
-//! than unique. That is another way to reach `Origin::Fresh`, not a second
-//! query beside this one — call sites keep asking `at`.
+//! Regions (CIELO-38) landed without changing anything here, and the reason is
+//! worth recording. Non-escape on its own is *not* stronger than unique: a
+//! value can be confined to a scope and still be aliased twice inside it, so
+//! seeding `Origin::Fresh` from an escape verdict would be unsound. What is
+//! stronger is *region-allocated and non-escaping* -- storage the region owns
+//! outright, whose refcount no one can observe after the region closes. That
+//! combination is a genuine route to `Fresh`, and it needs a definition this
+//! analysis can see it through.
+//!
+//! `crate::region` deliberately gives region slots no `CfgValueId` (evidence is
+//! a `CieloEvidence`, not a `CieloValue`), so today no definition is
+//! region-allocated and the route has nothing to fire on. CIELO-19 changes that
+//! the moment a continuation environment becomes a value: `collect_definitions`
+//! grows an arm for it, and `solve_origins` answers `Fresh` when
+//! `region::place` proved its region confined. Call sites keep asking `at`
+//! either way.
 
 use std::collections::HashMap;
 
@@ -122,6 +135,8 @@ fn collect_uses(cfg: &CfgProgram) -> Vec<ValueUses> {
                 }
                 CfgInstruction::HandlerEnter { .. }
                 | CfgInstruction::HandlerExit { .. }
+                | CfgInstruction::RegionEnter { .. }
+                | CfgInstruction::RegionExit { .. }
                 | CfgInstruction::StageEnter { .. }
                 | CfgInstruction::StageExit { .. }
                 | CfgInstruction::Hole
@@ -218,6 +233,8 @@ fn collect_definitions(cfg: &CfgProgram) -> HashMap<CfgValueId, Vec<Definition>>
                 }
                 CfgInstruction::HandlerEnter { .. }
                 | CfgInstruction::HandlerExit { .. }
+                | CfgInstruction::RegionEnter { .. }
+                | CfgInstruction::RegionExit { .. }
                 | CfgInstruction::StageEnter { .. }
                 | CfgInstruction::StageExit { .. }
                 | CfgInstruction::Hole
