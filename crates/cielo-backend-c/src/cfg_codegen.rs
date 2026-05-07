@@ -5,7 +5,8 @@ use std::fmt::Write;
 
 use crate::c_constants::CConstantPools;
 use cielo_base::ids::{
-    CfgBlockId, CfgExprId, CfgFuncId, CfgHandlerId, CfgValueId, EffectLabelId, SymbolId,
+    CfgBlockId, CfgExprId, CfgFuncId, CfgHandlerId, CfgRegionId, CfgValueId, EffectLabelId,
+    SymbolId,
 };
 use cielo_base::symbols::Interner;
 use cielo_ir::builtins::Builtin;
@@ -15,6 +16,7 @@ use cielo_ir::cfg::{
 };
 use cielo_ir::constants::{ConstantTable, ScalarLiteralKey};
 use cielo_ir::core::Literal;
+use cielo_ir::region::{Placement, RegionOwner, RegionSlotKind};
 use cielo_ir::walk::{Walk, walk_exprs};
 
 const C_RUNTIME_HEADER: &str = include_str!("cielo_runtime.h");
@@ -110,9 +112,29 @@ fn emit_function(
     }
     let handlers = reachable_handlers(program, function.entry);
     let active_handlers = active_handler_states(program, function.entry);
+    let placements = evidence_placements(program);
     for handler in handlers {
         writeln!(out, "    uint32_t hcap{} = 0;", handler.as_u32()).expect("in-memory write");
-        writeln!(out, "    CieloEvidence hev{};", handler.as_u32()).expect("in-memory write");
+        match placements.get(&handler).copied().unwrap_or_default() {
+            Placement::Stack => {
+                writeln!(out, "    CieloEvidence hev{};", handler.as_u32())
+                    .expect("in-memory write");
+            }
+            Placement::Arena => {
+                writeln!(out, "    CieloEvidence *hev{} = NULL;", handler.as_u32())
+                    .expect("in-memory write");
+            }
+        }
+    }
+    for region in reachable_regions(program, function.entry) {
+        if program
+            .region(region)
+            .is_none_or(cielo_ir::region::CfgRegion::is_fully_stack)
+        {
+            continue;
+        }
+        writeln!(out, "    CieloRegion reg{} = {{ NULL }};", region.as_u32())
+            .expect("in-memory write");
     }
     writeln!(out, "    goto b{};", function.entry.as_u32()).expect("in-memory write");
 
@@ -123,6 +145,7 @@ fn emit_function(
         interner,
         pools,
         active_handlers,
+        placements,
         arc_trace,
         temp: 0,
     };
@@ -149,25 +172,46 @@ fn emit_function(
                         .expect("in-memory write");
                 }
                 CfgInstruction::HandlerEnter { handler, effect } => {
+                    let placement = cx.placements.get(handler).copied().unwrap_or_default();
+                    let (slot, address) = match placement {
+                        Placement::Stack => (
+                            format!("hev{}", handler.as_u32()),
+                            format!("&hev{}", handler.as_u32()),
+                        ),
+                        Placement::Arena => (
+                            format!("(*hev{})", handler.as_u32()),
+                            format!("hev{}", handler.as_u32()),
+                        ),
+                    };
                     writeln!(
                         out,
-                        "    hev{} = (CieloEvidence){{ .abi_version = cielo_runtime_abi_version(), .effect = {}, .capability_id = 0, .clause_count = 0, .clauses = NULL, .captures = NULL, .reserved0 = NULL, .reserved1 = NULL }};",
-                        handler.as_u32(),
+                        "    {slot} = (CieloEvidence){{ .abi_version = cielo_runtime_abi_version(), .effect = {}, .capability_id = 0, .clause_count = 0, .clauses = NULL, .captures = NULL, .reserved0 = NULL, .reserved1 = NULL }};",
                         effect.as_u32()
                     )
                     .expect("in-memory write");
                     writeln!(
                         out,
-                        "    hcap{} = cielo_handler_push_with_evidence({}, &hev{});",
+                        "    hcap{} = cielo_handler_push_with_evidence({}, {address});",
                         handler.as_u32(),
                         effect.as_u32(),
-                        handler.as_u32()
                     )
                     .expect("in-memory write");
                 }
                 CfgInstruction::HandlerExit { handler, .. } => {
                     writeln!(out, "    cielo_handler_pop(hcap{});", handler.as_u32())
                         .expect("in-memory write");
+                }
+                CfgInstruction::RegionEnter { region } => {
+                    emit_region_open(out, program, *region, &cx.placements);
+                }
+                CfgInstruction::RegionExit { region } => {
+                    if program
+                        .region(*region)
+                        .is_some_and(|region| !region.is_fully_stack())
+                    {
+                        writeln!(out, "    cielo_region_close(&reg{});", region.as_u32())
+                            .expect("in-memory write");
+                    }
                 }
                 CfgInstruction::StageEnter { stage } => {
                     writeln!(out, "    /* stage {:?} enter */", stage).expect("in-memory write");
@@ -585,6 +629,70 @@ fn reachable_handlers(program: &CfgProgram, entry: CfgBlockId) -> Vec<CfgHandler
     handlers
 }
 
+/// A region whose every slot is stack-placed has no arena, so opening it would
+/// emit a `CieloRegion` local that nothing ever allocates from.
+fn emit_region_open(
+    out: &mut String,
+    program: &CfgProgram,
+    region: CfgRegionId,
+    placements: &HashMap<CfgHandlerId, Placement>,
+) {
+    let Some(node) = program.region(region) else {
+        return;
+    };
+    if node.is_fully_stack() {
+        return;
+    }
+    writeln!(out, "    cielo_region_open(&reg{});", region.as_u32()).expect("in-memory write");
+    let RegionOwner::Handler(handler) = node.owner;
+    for slot in &node.slots {
+        let RegionSlotKind::HandlerEvidence { .. } = slot.kind;
+        if placements.get(&handler).copied().unwrap_or_default() == Placement::Stack {
+            continue;
+        }
+        writeln!(
+            out,
+            "    hev{} = (CieloEvidence *)cielo_region_alloc(&reg{}, sizeof(CieloEvidence));",
+            handler.as_u32(),
+            region.as_u32()
+        )
+        .expect("in-memory write");
+    }
+}
+
+fn reachable_regions(program: &CfgProgram, entry: CfgBlockId) -> Vec<CfgRegionId> {
+    let mut regions = HashSet::new();
+    for block in reachable_blocks(program, entry) {
+        for instruction in &program.block(block).expect("known block").instructions {
+            match program.instruction(*instruction).map(|node| &node.kind) {
+                Some(CfgInstruction::RegionEnter { region })
+                | Some(CfgInstruction::RegionExit { region }) => {
+                    regions.insert(*region);
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut regions = regions.into_iter().collect::<Vec<_>>();
+    regions.sort_by_key(|region| region.index());
+    regions
+}
+
+/// Placement per handler, resolved through the region the handler owns. A
+/// handler with no region predates the region substrate or came from a
+/// hand-built CFG, and gets the safe answer rather than a stack slot.
+fn evidence_placements(program: &CfgProgram) -> HashMap<CfgHandlerId, Placement> {
+    let mut placements = HashMap::new();
+    for region in program.regions() {
+        let RegionOwner::Handler(handler) = region.owner;
+        for slot in &region.slots {
+            let RegionSlotKind::HandlerEvidence { .. } = slot.kind;
+            placements.insert(handler, slot.placement);
+        }
+    }
+    placements
+}
+
 fn reachable_values(program: &CfgProgram, entry: CfgBlockId) -> Vec<CfgValueId> {
     let mut values = HashSet::new();
     for block_id in reachable_blocks(program, entry) {
@@ -783,6 +891,7 @@ struct EmitCx<'a> {
     interner: &'a Interner,
     pools: &'a CConstantPools,
     active_handlers: HashMap<CfgBlockId, Vec<(CfgHandlerId, EffectLabelId)>>,
+    placements: HashMap<CfgHandlerId, Placement>,
     arc_trace: bool,
     temp: u32,
 }

@@ -383,6 +383,64 @@ static inline CieloValue cielo_ctor_take_field(CieloValue value, size_t index) {
   return cielo_ctor_take_field_unique(value, index);
 }
 
+/* One allocation substrate for everything a lexical scope owns: handler
+ * evidence today, continuation and closure environments later. A region is a
+ * bump arena freed whole at close, so a slot needs no individual free and no
+ * refcount -- nothing can observe it after the close.
+ *
+ * The escape analysis places slots it proves confined directly in the C frame
+ * and never opens a region for them at all; this path exists for the slots it
+ * cannot prove, where a plain automatic would dangle. */
+typedef struct CieloRegionChunk {
+  struct CieloRegionChunk *next;
+  size_t used;
+  size_t capacity;
+  /* Over-aligned so a chunk can back any slot type without the bump pointer
+   * having to know what will land in it. */
+  _Alignas(max_align_t) unsigned char data[];
+} CieloRegionChunk;
+
+typedef struct {
+  CieloRegionChunk *head;
+} CieloRegion;
+
+enum { CIELO_REGION_CHUNK_MIN = 512 };
+
+static inline void cielo_region_open(CieloRegion *region) { region->head = NULL; }
+
+static inline void *cielo_region_alloc(CieloRegion *region, size_t size) {
+  size_t aligned = (size + (_Alignof(max_align_t) - 1u)) &
+                   ~(size_t)(_Alignof(max_align_t) - 1u);
+  if (region->head == NULL ||
+      region->head->capacity - region->head->used < aligned) {
+    size_t capacity = aligned > CIELO_REGION_CHUNK_MIN ? aligned
+                                                       : CIELO_REGION_CHUNK_MIN;
+    CieloRegionChunk *chunk =
+        (CieloRegionChunk *)malloc(sizeof(CieloRegionChunk) + capacity);
+    if (chunk == NULL)
+      cielo_trap("out of memory allocating a region chunk");
+    chunk->next = region->head;
+    chunk->used = 0;
+    chunk->capacity = capacity;
+    region->head = chunk;
+  }
+  void *slot = region->head->data + region->head->used;
+  region->head->used += aligned;
+  return slot;
+}
+
+/* Idempotent: a close on an already-closed region is a no-op, so a region left
+ * open on a path the analysis rejected still frees exactly once. */
+static inline void cielo_region_close(CieloRegion *region) {
+  CieloRegionChunk *chunk = region->head;
+  region->head = NULL;
+  while (chunk != NULL) {
+    CieloRegionChunk *next = chunk->next;
+    free(chunk);
+    chunk = next;
+  }
+}
+
 static inline uint32_t cielo_handler_push(uint32_t effect) {
   if (g_cielo_handler_depth >= CIELO_HANDLER_STACK_MAX)
     cielo_trap("handler stack overflow");
