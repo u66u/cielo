@@ -4,8 +4,15 @@
 //! before its `next` graph, and handler/stage cleanup blocks run between their
 //! bodies and continuations. Treating those nodes as ordinary sibling edges is
 //! the source of the old last-use/ARC ordering bugs.
+//!
+//! Linear IR is not alpha-renamed: handler inlining re-lowers a Core subtree
+//! once per resume site per perform, so one `VarId` is the binding of many
+//! statements. Values are therefore keyed by scope rather than by `VarId`, and
+//! the block memo carries that scope, so each re-lowering gets its own values
+//! and its own blocks (CIELO-47).
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use cielo_base::ids::{
     CfgBlockId, CfgExprId, CfgFuncId, CfgHandlerId, CfgValueId, LinearExprId, LinearFuncId,
@@ -43,15 +50,66 @@ enum Exit {
     Discard(CfgBlockId),
 }
 
+/// A binding chain, innermost first. Persistent so extending it in one branch
+/// leaves every other branch's view untouched.
+#[derive(Clone, Default)]
+struct Scope(Option<Rc<Binding>>);
+
+struct Binding {
+    var: VarId,
+    value: CfgValueId,
+    outer: Scope,
+}
+
+impl Scope {
+    fn bind(&self, var: VarId, value: CfgValueId) -> Self {
+        Self(Some(Rc::new(Binding {
+            var,
+            value,
+            outer: self.clone(),
+        })))
+    }
+
+    fn get(&self, var: VarId) -> Option<CfgValueId> {
+        let mut cursor = self;
+        while let Some(binding) = &cursor.0 {
+            if binding.var == var {
+                return Some(binding.value);
+            }
+            cursor = &binding.outer;
+        }
+        None
+    }
+
+    /// The part of the chain a statement can observe. `vars` is sorted, so the
+    /// result is a canonical key.
+    fn restrict(&self, vars: &[VarId]) -> ScopeKey {
+        vars.iter()
+            .filter_map(|var| self.get(*var).map(|value| (*var, value)))
+            .collect()
+    }
+}
+
+type ScopeKey = Box<[(VarId, CfgValueId)]>;
+
 struct Lowerer<'a> {
     linear: &'a LinearProgram,
     cfg: CfgProgram,
-    values: HashMap<VarId, CfgValueId>,
+    /// Free variables of each linear statement, indexed by arena position.
+    free_vars: Vec<Vec<VarId>>,
+    /// Values for variables no enclosing binder introduced. Only malformed
+    /// input reaches this; `validate` then reports the read as undefined.
+    unbound: HashMap<VarId, CfgValueId>,
     /// Keyed by block because `lower_borrowed` binds producers in the block
     /// that reads them. A hit from another block would hand back a value that
     /// this block has no path to a definition of.
     expressions: HashMap<(LinearExprId, CfgBlockId), CfgExprId>,
-    statements: HashMap<(LinearStmtId, Exit), CfgBlockId>,
+    /// The scope is part of the key, restricted to what the statement reads:
+    /// two lowerings share a block exactly when they agree on every value in
+    /// it. Restricting matters — an unrelated binding still in scope would
+    /// otherwise split blocks that must stay shared, and `If` would duplicate
+    /// its whole continuation into both branches.
+    statements: HashMap<(LinearStmtId, Exit, ScopeKey), CfgBlockId>,
     functions: HashMap<LinearFuncId, CfgFuncId>,
     unit: Option<CfgExprId>,
     next_handler: usize,
@@ -62,7 +120,8 @@ impl<'a> Lowerer<'a> {
         Self {
             linear,
             cfg: CfgProgram::default(),
-            values: HashMap::new(),
+            free_vars: free_vars(linear),
+            unbound: HashMap::new(),
             expressions: HashMap::new(),
             statements: HashMap::new(),
             functions: HashMap::new(),
@@ -83,12 +142,14 @@ impl<'a> Lowerer<'a> {
             // cache function-local also prevents accidental cross-function
             // block ownership if an input arena shares a root node.
             self.statements.clear();
-            let body = self.lower_stmt(function.body, Exit::Return);
-            let params = function
-                .params
-                .iter()
-                .map(|var| self.value_for_var(*var))
-                .collect::<Vec<_>>();
+            let mut scope = Scope::default();
+            let mut params = Vec::with_capacity(function.params.len());
+            for var in &function.params {
+                let value = self.cfg.push_value(Some(*var));
+                scope = scope.bind(*var, value);
+                params.push(value);
+            }
+            let body = self.lower_stmt(function.body, Exit::Return, &scope);
             let entry = self.cfg.push_block(params.clone(), Some(function.body));
             self.cfg.set_terminator(
                 entry,
@@ -117,12 +178,15 @@ impl<'a> Lowerer<'a> {
         self.cfg
     }
 
-    fn value_for_var(&mut self, var: VarId) -> CfgValueId {
-        if let Some(value) = self.values.get(&var) {
+    fn value_for_var(&mut self, scope: &Scope, var: VarId) -> CfgValueId {
+        if let Some(value) = scope.get(var) {
+            return value;
+        }
+        if let Some(value) = self.unbound.get(&var) {
             return *value;
         }
         let value = self.cfg.push_value(Some(var));
-        self.values.insert(var, value);
+        self.unbound.insert(var, value);
         value
     }
 
@@ -144,24 +208,24 @@ impl<'a> Lowerer<'a> {
     /// builtin argument, a block argument, a return. Each of those has a
     /// consumer that eventually releases the reference, so the outermost node
     /// needs no name of its own.
-    fn lower_owned(&mut self, block: CfgBlockId, id: LinearExprId) -> CfgExprId {
+    fn lower_owned(&mut self, block: CfgBlockId, id: LinearExprId, scope: &Scope) -> CfgExprId {
         if let Some(lowered) = self.expressions.get(&(id, block)) {
             return *lowered;
         }
         let kind = match self.linear.expr(id).map(|node| node.kind.clone()) {
-            Some(LinearExpr::Var(var)) => CfgExpr::Value(self.value_for_var(var)),
+            Some(LinearExpr::Var(var)) => CfgExpr::Value(self.value_for_var(scope, var)),
             Some(LinearExpr::Literal(literal)) => CfgExpr::Literal(literal),
             Some(LinearExpr::Unary { op, expr }) => CfgExpr::Unary {
                 op,
-                expr: self.lower_borrowed(block, expr),
+                expr: self.lower_borrowed(block, expr, scope),
             },
             Some(LinearExpr::Binary { op, lhs, rhs }) => CfgExpr::Binary {
                 op,
-                lhs: self.lower_borrowed(block, lhs),
-                rhs: self.lower_borrowed(block, rhs),
+                lhs: self.lower_borrowed(block, lhs, scope),
+                rhs: self.lower_borrowed(block, rhs, scope),
             },
             Some(LinearExpr::Field { base, index }) => CfgExpr::Field {
-                base: self.lower_borrowed(block, base),
+                base: self.lower_borrowed(block, base, scope),
                 index,
             },
             Some(LinearExpr::PureCall {
@@ -173,21 +237,21 @@ impl<'a> Lowerer<'a> {
                 callee_fn: self.cfg_func_id(callee_fn),
                 args: args
                     .into_iter()
-                    .map(|arg| self.lower_owned(block, arg))
+                    .map(|arg| self.lower_owned(block, arg, scope))
                     .collect(),
             },
             Some(LinearExpr::BuiltinCall { builtin, args }) => CfgExpr::BuiltinCall {
                 builtin,
                 args: args
                     .into_iter()
-                    .map(|arg| self.lower_owned(block, arg))
+                    .map(|arg| self.lower_owned(block, arg, scope))
                     .collect(),
             },
             Some(LinearExpr::MakeStruct { ty, fields }) => CfgExpr::MakeStruct {
                 ty,
                 fields: fields
                     .into_iter()
-                    .map(|field| self.lower_owned(block, field))
+                    .map(|field| self.lower_owned(block, field, scope))
                     .collect(),
             },
             Some(LinearExpr::MakeEnum {
@@ -199,7 +263,7 @@ impl<'a> Lowerer<'a> {
                 variant,
                 fields: fields
                     .into_iter()
-                    .map(|field| self.lower_owned(block, field))
+                    .map(|field| self.lower_owned(block, field, scope))
                     .collect(),
             },
             Some(LinearExpr::Error) | None => CfgExpr::Error,
@@ -217,8 +281,8 @@ impl<'a> Lowerer<'a> {
     ///
     /// Operands are lowered before their parent, so the bindings land innermost
     /// first and each one only mentions values already bound above it.
-    fn lower_borrowed(&mut self, block: CfgBlockId, id: LinearExprId) -> CfgExprId {
-        let lowered = self.lower_owned(block, id);
+    fn lower_borrowed(&mut self, block: CfgBlockId, id: LinearExprId, scope: &Scope) -> CfgExprId {
+        let lowered = self.lower_owned(block, id, scope);
         let Some(node) = self.cfg.expr(lowered) else {
             return lowered;
         };
@@ -239,8 +303,9 @@ impl<'a> Lowerer<'a> {
         self.cfg.push_expr(CfgExpr::Value(result), source)
     }
 
-    fn lower_stmt(&mut self, id: LinearStmtId, exit: Exit) -> CfgBlockId {
-        if let Some(lowered) = self.statements.get(&(id, exit)) {
+    fn lower_stmt(&mut self, id: LinearStmtId, exit: Exit, scope: &Scope) -> CfgBlockId {
+        let key = (id, exit, scope.restrict(self.free_vars_of(id)));
+        if let Some(lowered) = self.statements.get(&key) {
             return *lowered;
         }
 
@@ -252,7 +317,7 @@ impl<'a> Lowerer<'a> {
         let entry = match kind {
             LinearStmt::Return(value) => {
                 let block = self.cfg.push_block(Vec::new(), Some(id));
-                let value = self.lower_owned(block, value);
+                let value = self.lower_owned(block, value, scope);
                 self.set_exit(block, value, exit);
                 block
             }
@@ -261,10 +326,10 @@ impl<'a> Lowerer<'a> {
                 value,
                 next,
             } => {
-                let next = self.lower_stmt(next, exit);
+                let result = self.cfg.push_value(Some(binding));
+                let next = self.lower_stmt(next, exit, &scope.bind(binding, result));
                 let block = self.cfg.push_block(Vec::new(), Some(id));
-                let value = self.lower_owned(block, value);
-                let result = self.value_for_var(binding);
+                let value = self.lower_owned(block, value, scope);
                 self.cfg
                     .push_instruction(block, CfgInstruction::Let { result, value }, Some(id));
                 self.cfg.set_terminator(
@@ -281,8 +346,8 @@ impl<'a> Lowerer<'a> {
                 value,
                 next,
             } => {
-                let next = self.lower_stmt(next, exit);
-                let result = self.value_for_var(binding);
+                let result = self.cfg.push_value(Some(binding));
+                let next = self.lower_stmt(next, exit, &scope.bind(binding, result));
                 let continuation = self.cfg.push_block(vec![result], Some(id));
                 self.cfg.set_terminator(
                     continuation,
@@ -291,7 +356,7 @@ impl<'a> Lowerer<'a> {
                         args: Vec::new(),
                     },
                 );
-                self.lower_stmt(value, Exit::Yield(continuation))
+                self.lower_stmt(value, Exit::Yield(continuation), scope)
             }
             LinearStmt::PureCall {
                 result,
@@ -307,6 +372,7 @@ impl<'a> Lowerer<'a> {
                 args,
                 next,
                 exit,
+                scope,
                 CfgCallConvention::Pure,
             ),
             LinearStmt::DirectCall {
@@ -323,6 +389,7 @@ impl<'a> Lowerer<'a> {
                 args,
                 next,
                 exit,
+                scope,
                 CfgCallConvention::Direct,
             ),
             LinearStmt::ControlCall {
@@ -339,6 +406,7 @@ impl<'a> Lowerer<'a> {
                 args,
                 next,
                 exit,
+                scope,
                 CfgCallConvention::Control,
             ),
             LinearStmt::If {
@@ -346,10 +414,10 @@ impl<'a> Lowerer<'a> {
                 then_branch,
                 else_branch,
             } => {
-                let then_target = self.lower_stmt(then_branch, exit);
-                let else_target = self.lower_stmt(else_branch, exit);
+                let then_target = self.lower_stmt(then_branch, exit, scope);
+                let else_target = self.lower_stmt(else_branch, exit, scope);
                 let block = self.cfg.push_block(Vec::new(), Some(id));
-                let cond = self.lower_borrowed(block, cond);
+                let cond = self.lower_borrowed(block, cond, scope);
                 self.cfg.set_terminator(
                     block,
                     CfgTerminator::Branch {
@@ -367,12 +435,17 @@ impl<'a> Lowerer<'a> {
             } => {
                 let mut lowered_arms = Vec::with_capacity(arms.len());
                 for arm in arms {
-                    let target = self.lower_stmt(arm.body, exit);
-                    let binders = arm
-                        .binders
-                        .into_iter()
-                        .map(|binder| self.value_for_var(binder))
-                        .collect::<Vec<_>>();
+                    let mut arm_scope = scope.clone();
+                    let mut binders = Vec::with_capacity(arm.binders.len());
+                    for binder in arm.binders {
+                        let value = self.cfg.push_value(Some(binder));
+                        arm_scope = arm_scope.bind(binder, value);
+                        binders.push(value);
+                    }
+                    let target = self.lower_stmt(arm.body, exit, &arm_scope);
+                    // Codegen assigns these by name at the match site, so the
+                    // wrapper's parameters have to be the arm's binders
+                    // themselves, not fresh values (CIELO-48).
                     let wrapper = self.cfg.push_block(binders.clone(), Some(id));
                     self.cfg.set_terminator(
                         wrapper,
@@ -389,11 +462,11 @@ impl<'a> Lowerer<'a> {
                     });
                 }
                 let default = match default {
-                    Some(default) => self.lower_stmt(default, exit),
+                    Some(default) => self.lower_stmt(default, exit, scope),
                     None => self.unit_exit_block(id, exit),
                 };
                 let block = self.cfg.push_block(Vec::new(), Some(id));
-                let scrutinee = self.lower_borrowed(block, scrutinee);
+                let scrutinee = self.lower_borrowed(block, scrutinee, scope);
                 self.cfg.set_terminator(
                     block,
                     CfgTerminator::Match {
@@ -411,8 +484,13 @@ impl<'a> Lowerer<'a> {
                 args,
                 next,
             } => {
-                let next = self.lower_stmt(next, exit);
-                let result = result.map(|var| self.value_for_var(var));
+                let mut next_scope = scope.clone();
+                let result = result.map(|var| {
+                    let value = self.cfg.push_value(Some(var));
+                    next_scope = next_scope.bind(var, value);
+                    value
+                });
+                let next = self.lower_stmt(next, exit, &next_scope);
                 let continuation = self
                     .cfg
                     .push_block(result.into_iter().collect::<Vec<_>>(), Some(id));
@@ -426,7 +504,7 @@ impl<'a> Lowerer<'a> {
                 let block = self.cfg.push_block(Vec::new(), Some(id));
                 let args = args
                     .into_iter()
-                    .map(|arg| self.lower_owned(block, arg))
+                    .map(|arg| self.lower_owned(block, arg, scope))
                     .collect();
                 self.cfg.set_terminator(
                     block,
@@ -456,7 +534,7 @@ impl<'a> Lowerer<'a> {
                 );
                 let after = match next {
                     Some(next) => {
-                        let next = self.lower_stmt(next, exit);
+                        let next = self.lower_stmt(next, exit, scope);
                         let after = self.cfg.push_block(Vec::new(), Some(id));
                         self.cfg.push_instruction(
                             after,
@@ -495,7 +573,7 @@ impl<'a> Lowerer<'a> {
                         (after, Exit::Yield(after))
                     }
                 };
-                let body = self.lower_stmt(body, after.1);
+                let body = self.lower_stmt(body, after.1, scope);
                 let block = self.cfg.push_block(Vec::new(), Some(id));
                 // Region open precedes handler push so the evidence storage
                 // exists before its address reaches the handler stack.
@@ -518,7 +596,7 @@ impl<'a> Lowerer<'a> {
             LinearStmt::Stage { stage, body, next } => {
                 let after = match next {
                     Some(next) => {
-                        let next = self.lower_stmt(next, exit);
+                        let next = self.lower_stmt(next, exit, scope);
                         let after = self.cfg.push_block(Vec::new(), Some(id));
                         self.cfg.push_instruction(
                             after,
@@ -547,7 +625,7 @@ impl<'a> Lowerer<'a> {
                         (after, Exit::Yield(after))
                     }
                 };
-                let body = self.lower_stmt(body, after.1);
+                let body = self.lower_stmt(body, after.1, scope);
                 let block = self.cfg.push_block(Vec::new(), Some(id));
                 self.cfg
                     .push_instruction(block, CfgInstruction::StageEnter { stage }, Some(id));
@@ -578,8 +656,14 @@ impl<'a> Lowerer<'a> {
             }
         };
 
-        self.statements.insert((id, exit), entry);
+        self.statements.insert(key, entry);
         entry
+    }
+
+    fn free_vars_of(&self, id: LinearStmtId) -> &[VarId] {
+        self.free_vars
+            .get(id.index())
+            .map_or(&[][..], Vec::as_slice)
     }
 
     fn cfg_func_id(&self, callee: LinearFuncId) -> CfgFuncId {
@@ -593,16 +677,17 @@ impl<'a> Lowerer<'a> {
     fn lower_call(
         &mut self,
         id: LinearStmtId,
-        result: VarId,
+        binding: VarId,
         callee: cielo_base::ids::SymbolId,
         callee_fn: LinearFuncId,
         args: Vec<LinearExprId>,
         next: LinearStmtId,
         exit: Exit,
+        scope: &Scope,
         convention: CfgCallConvention,
     ) -> CfgBlockId {
-        let next = self.lower_stmt(next, exit);
-        let result = self.value_for_var(result);
+        let result = self.cfg.push_value(Some(binding));
+        let next = self.lower_stmt(next, exit, &scope.bind(binding, result));
         let continuation = self.cfg.push_block(vec![result], Some(id));
         self.cfg.set_terminator(
             continuation,
@@ -614,7 +699,7 @@ impl<'a> Lowerer<'a> {
         let block = self.cfg.push_block(Vec::new(), Some(id));
         let args = args
             .into_iter()
-            .map(|arg| self.lower_owned(block, arg))
+            .map(|arg| self.lower_owned(block, arg, scope))
             .collect();
         self.cfg.set_terminator(
             block,
@@ -657,4 +742,130 @@ impl<'a> Lowerer<'a> {
         };
         self.cfg.set_terminator(block, terminator);
     }
+}
+
+/// Free variables of every linear statement, indexed by arena position, sorted.
+///
+/// Both arenas are built children-first, so a single forward pass suffices and
+/// a forward reference panics rather than silently under-approximating: too
+/// small a set here would let two lowerings that disagree on a value share a
+/// block.
+fn free_vars(linear: &LinearProgram) -> Vec<Vec<VarId>> {
+    let mut exprs: Vec<Vec<VarId>> = Vec::with_capacity(linear.exprs().len());
+    for node in linear.exprs() {
+        let mut vars = match node.kind {
+            LinearExpr::Var(var) => vec![var],
+            _ => Vec::new(),
+        };
+        for child in node.kind.child_exprs() {
+            vars.extend_from_slice(&exprs[child.index()]);
+        }
+        exprs.push(sorted(vars));
+    }
+
+    let mut stmts: Vec<Vec<VarId>> = Vec::with_capacity(linear.stmts().len());
+    for node in linear.stmts() {
+        let mut vars = Vec::new();
+        let read_expr = |vars: &mut Vec<VarId>, expr: &LinearExprId| {
+            vars.extend_from_slice(&exprs[expr.index()]);
+        };
+        match &node.kind {
+            LinearStmt::Return(value) => read_expr(&mut vars, value),
+            LinearStmt::Let {
+                binding,
+                value,
+                next,
+            } => {
+                read_expr(&mut vars, value);
+                extend_unbound(
+                    &mut vars,
+                    &stmts[next.index()],
+                    std::slice::from_ref(binding),
+                );
+            }
+            LinearStmt::Val {
+                binding,
+                value,
+                next,
+            } => {
+                vars.extend_from_slice(&stmts[value.index()]);
+                extend_unbound(
+                    &mut vars,
+                    &stmts[next.index()],
+                    std::slice::from_ref(binding),
+                );
+            }
+            LinearStmt::PureCall {
+                result, args, next, ..
+            }
+            | LinearStmt::DirectCall {
+                result, args, next, ..
+            }
+            | LinearStmt::ControlCall {
+                result, args, next, ..
+            } => {
+                for arg in args {
+                    read_expr(&mut vars, arg);
+                }
+                extend_unbound(
+                    &mut vars,
+                    &stmts[next.index()],
+                    std::slice::from_ref(result),
+                );
+            }
+            LinearStmt::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                read_expr(&mut vars, cond);
+                vars.extend_from_slice(&stmts[then_branch.index()]);
+                vars.extend_from_slice(&stmts[else_branch.index()]);
+            }
+            LinearStmt::Match {
+                scrutinee,
+                arms,
+                default,
+            } => {
+                read_expr(&mut vars, scrutinee);
+                for arm in arms {
+                    extend_unbound(&mut vars, &stmts[arm.body.index()], &arm.binders);
+                }
+                if let Some(default) = default {
+                    vars.extend_from_slice(&stmts[default.index()]);
+                }
+            }
+            LinearStmt::Perform {
+                result, args, next, ..
+            } => {
+                for arg in args {
+                    read_expr(&mut vars, arg);
+                }
+                let bound = result
+                    .as_ref()
+                    .map(std::slice::from_ref)
+                    .unwrap_or_default();
+                extend_unbound(&mut vars, &stmts[next.index()], bound);
+            }
+            LinearStmt::Handle { body, next, .. } | LinearStmt::Stage { body, next, .. } => {
+                vars.extend_from_slice(&stmts[body.index()]);
+                if let Some(next) = next {
+                    vars.extend_from_slice(&stmts[next.index()]);
+                }
+            }
+            LinearStmt::Hole | LinearStmt::Error => {}
+        }
+        stmts.push(sorted(vars));
+    }
+    stmts
+}
+
+fn extend_unbound(vars: &mut Vec<VarId>, inner: &[VarId], bound: &[VarId]) {
+    vars.extend(inner.iter().copied().filter(|var| !bound.contains(var)));
+}
+
+fn sorted(mut vars: Vec<VarId>) -> Vec<VarId> {
+    vars.sort_unstable_by_key(|var| var.as_u32());
+    vars.dedup();
+    vars
 }

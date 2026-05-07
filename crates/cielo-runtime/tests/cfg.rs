@@ -1,9 +1,12 @@
-use cielo_base::{LinearFuncId, SymbolId, VarId};
+use std::collections::HashMap;
+
+use cielo_base::{Interner, LinearFuncId, SourceId, SymbolId, VarId};
 use cielo_ir::cfg::{CfgExpr, CfgFunction, CfgInstruction, CfgProgram, CfgTerminator};
 use cielo_ir::core::Literal;
 use cielo_ir::linear::{LinearExpr, LinearFunction, LinearProgram, LinearStmt};
 use cielo_memory::refcount::analysis::cfg_liveness::{CfgLiveness, CfgUseSite};
 use cielo_runtime::cfg_lower;
+use cielo_test_support::{PassConfig, PassHarness};
 
 fn source_value(cfg: &cielo_ir::cfg::CfgProgram, source: VarId) -> cielo_base::CfgValueId {
     cfg.values()
@@ -270,5 +273,109 @@ fn validate_rejects_a_value_left_undefined_on_one_path() {
     assert!(
         errors.iter().any(|error| error.contains("undefined")),
         "expected an undefined-read diagnostic, got {errors:?}"
+    );
+}
+
+#[test]
+fn validate_rejects_a_value_two_instructions_assign() {
+    let mut cfg = CfgProgram::default();
+    let bound = cfg.push_value(None);
+    let literal = cfg.push_expr(CfgExpr::Literal(Literal::Int(1)), None);
+    let read = cfg.push_expr(CfgExpr::Value(bound), None);
+
+    let entry = cfg.push_block(Vec::new(), None);
+    cfg.push_instruction(
+        entry,
+        CfgInstruction::Let {
+            result: bound,
+            value: literal,
+        },
+        None,
+    );
+    cfg.set_terminator(entry, CfgTerminator::Return(read));
+    cfg.functions.push(CfgFunction {
+        id: cielo_base::CfgFuncId::from_u32(0),
+        name: SymbolId::from_u32(0),
+        params: Vec::new(),
+        entry,
+    });
+    cfg.validate().expect("one assignment is the invariant");
+
+    cfg.push_instruction(
+        entry,
+        CfgInstruction::Let {
+            result: bound,
+            value: literal,
+        },
+        None,
+    );
+    let errors = cfg
+        .validate()
+        .expect_err("a second assignment to the same value must be rejected");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("assigned by both")),
+        "expected a single-assignment diagnostic, got {errors:?}"
+    );
+}
+
+/// Two `St.tick` sites under a clause that resumes twice, all under an outer
+/// `Log` handler: the clause body is re-lowered once per resume site per
+/// perform. Until CIELO-47 every copy of a Core variable collapsed onto one
+/// `CfgValueId` — nineteen `Let`s writing `v2` here — so nothing downstream
+/// could tell one definition from another.
+#[test]
+fn each_re_lowering_of_an_inlined_clause_gets_its_own_values() {
+    let source = r#"
+effect St { fn tick(n: Int) -> Int }
+effect Log { fn emit(n: Int) -> Int }
+
+fn main() -> Int {
+  let r = handle {
+    let inner = handle {
+      do St.tick(1);
+      do St.tick(2);
+      7
+    } with St {
+      | tick(n, resume) => if n > 0 { let e = do Log.emit(n); resume(e) } else { resume(2) }
+    };
+    inner
+  } with Log {
+    | emit(m, resume) => resume(m)
+  };
+  r
+}
+"#;
+    let harness = PassHarness::new(PassConfig::default());
+    let mut interner = Interner::new();
+    let compiled = harness.compile_source_to_c(source, SourceId::from_u32(0), &mut interner);
+    assert!(
+        !compiled.residual.diagnostics().has_errors(),
+        "the repro must compile: {:?}",
+        compiled
+            .residual
+            .diagnostics()
+            .entries()
+            .iter()
+            .map(|entry| entry.code.to_owned())
+            .collect::<Vec<_>>()
+    );
+    compiled
+        .cfg
+        .validate()
+        .expect("no value may be assigned twice");
+
+    // Without this the test would pass just as well on a program the inliner
+    // never duplicated.
+    let mut values_per_var: HashMap<VarId, usize> = HashMap::new();
+    for value in compiled.cfg.values() {
+        if let Some(var) = value.source_var {
+            *values_per_var.entry(var).or_default() += 1;
+        }
+    }
+    assert!(
+        values_per_var.values().any(|count| *count > 4),
+        "the clause body must still be re-lowered many times: {values_per_var:?}"
     );
 }

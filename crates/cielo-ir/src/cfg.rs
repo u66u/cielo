@@ -1,9 +1,16 @@
 //! Block-form control-flow IR.
 //!
 //! This IR is deliberately separate from `linear`: CFG node identifiers cannot
-//! accidentally be used to index a linear arena. Values are SSA-like. Source
-//! variables are preserved as optional provenance while synthetic block values
-//! are free to model continuations and cleanup paths.
+//! accidentally be used to index a linear arena. Source variables are preserved
+//! as optional provenance while synthetic block values are free to model
+//! continuations and cleanup paths.
+//!
+//! Values are single-assignment: `validate` rejects a value two instructions
+//! write. They are not in strict SSA form, and dominance is the wrong question
+//! to ask of them — a value can be the parameter of several sibling
+//! continuations that share a successor, defined on every path in without any
+//! one definition dominating the read. `validate` checks definedness on every
+//! path instead.
 
 use std::collections::{HashMap, HashSet};
 
@@ -140,10 +147,12 @@ impl CfgProgram {
         &self.blocks
     }
 
-    /// Checks arena references, successor references, continuation arity, and
-    /// that every value an expression reads is defined on the way in.
+    /// Checks arena references, successor references, continuation arity, that
+    /// no value is assigned by two instructions, and that every value an
+    /// expression reads is defined on the way in.
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
+        self.check_single_assignment(&mut errors);
         self.check_value_definitions(&mut errors);
         for block in &self.blocks {
             for param in &block.params {
@@ -210,6 +219,37 @@ impl CfgProgram {
             Ok(())
         } else {
             Err(errors)
+        }
+    }
+
+    /// Reports a value that two instructions assign.
+    ///
+    /// Handler inlining re-lowers a Core subtree once per resume site per
+    /// perform, and every copy of a Core variable used to collapse onto one
+    /// `CfgValueId`: nineteen `Let`s writing one value on a two-site handler.
+    /// Every analysis that reasons per definition — `UniquenessQuery`, retain
+    /// counts derived from use counts — silently merged them (CIELO-47).
+    ///
+    /// Instruction results only. A parameter is assigned by predecessors, and
+    /// the ARC pass deliberately gives an edge block its successor's parameters
+    /// (CIELO-48), so a value parameterising two blocks is one definition.
+    fn check_single_assignment(&self, errors: &mut Vec<String>) {
+        let mut assigned_by: HashMap<CfgValueId, CfgInstId> = HashMap::new();
+        for block in &self.blocks {
+            for instruction in &block.instructions {
+                let Some(node) = self.instruction(*instruction) else {
+                    continue;
+                };
+                let Some(result) = node.kind.result() else {
+                    continue;
+                };
+                if let Some(previous) = assigned_by.insert(result, node.id) {
+                    errors.push(format!(
+                        "value {result} is assigned by both instruction {previous} and {}",
+                        node.id
+                    ));
+                }
+            }
         }
     }
 
