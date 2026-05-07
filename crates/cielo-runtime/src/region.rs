@@ -43,7 +43,7 @@ use std::collections::HashSet;
 
 use cielo_base::{CfgBlockId, CfgRegionId};
 use cielo_ir::cfg::{CfgCallConvention, CfgInstruction, CfgProgram, CfgTerminator};
-use cielo_ir::region::{Placement, RegionSlotKind};
+use cielo_ir::region::{Placement, RegionOwner, RegionSlotKind};
 
 /// How many slots ended up where, for reporting the non-escape rate the design
 /// doc estimates at ~95%. Read back off a placed CFG rather than returned from
@@ -103,10 +103,8 @@ fn escapes(cfg: &CfgProgram, region: CfgRegionId) -> bool {
     let Some(extent) = region_extent(cfg, region) else {
         return true;
     };
-    let own_effect = cfg.region(region).and_then(|region| {
-        region.slots.iter().find_map(|slot| match slot.kind {
-            RegionSlotKind::HandlerEvidence { effect } => Some(effect),
-        })
+    let own_effect = cfg.region(region).map(|region| match region.owner {
+        RegionOwner::Handler { effect, .. } => effect,
     });
     extent.iter().any(|block| {
         let Some(block) = cfg.block(*block) else {
@@ -169,10 +167,7 @@ fn region_extent(cfg: &CfgProgram, region: CfgRegionId) -> Option<HashSet<CfgBlo
         if !extent.insert(block_id) {
             continue;
         }
-        let Some(block) = cfg.block(block_id) else {
-            return None;
-        };
-        stack.extend(block.terminator.successors());
+        stack.extend(cfg.block(block_id)?.terminator.successors());
     }
     saw_exit.then_some(extent)
 }

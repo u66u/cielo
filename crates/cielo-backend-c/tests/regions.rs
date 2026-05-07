@@ -4,7 +4,7 @@
 //! backend already did unconditionally, so only the arena path is new code, and
 //! a leak there is invisible to substring assertions.
 
-use cielo_base::{EffectLabelId, Interner, LinearFuncId, SymbolId, VarId};
+use cielo_base::{EffectLabelId, Interner, LinearFuncId, VarId};
 use cielo_ir::core::Literal;
 use cielo_ir::linear::{LinearExpr, LinearFunction, LinearProgram, LinearStmt};
 use std::ffi::OsString;

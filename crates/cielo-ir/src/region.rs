@@ -19,9 +19,16 @@ use cielo_base::{CfgHandlerId, CfgRegionId, EffectLabelId};
 
 /// What opened the region. The owner is what makes the scope observable to the
 /// backend; a region with no owner would have no place to emit open and close.
+///
+/// A handler owner carries the effect it discharges. Reading that off a slot
+/// instead would tie the answer to slot order, which stops being one slot as
+/// soon as continuation environments join the region.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RegionOwner {
-    Handler(CfgHandlerId),
+    Handler {
+        handler: CfgHandlerId,
+        effect: EffectLabelId,
+    },
 }
 
 /// What a slot holds. One arm per kind of record that lives and dies with a

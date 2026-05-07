@@ -448,7 +448,7 @@ impl<'a> Lowerer<'a> {
                 // else the handler owns (continuation environments, closure
                 // environments) joins it rather than getting its own lifetime.
                 let region = self.cfg.push_region(
-                    RegionOwner::Handler(handler),
+                    RegionOwner::Handler { handler, effect },
                     vec![RegionSlot {
                         kind: RegionSlotKind::HandlerEvidence { effect },
                         placement: Placement::default(),

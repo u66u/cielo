@@ -51,7 +51,7 @@ fn confined_handler() -> LinearProgram {
 fn a_handle_brackets_its_body_with_region_operations() {
     let cfg = lower(&confined_handler());
     let region = cfg.regions().first().expect("handle opens a region");
-    let RegionOwner::Handler(owner) = region.owner;
+    let RegionOwner::Handler { handler: owner, .. } = region.owner;
 
     let mut enters = 0;
     let mut exits = 0;

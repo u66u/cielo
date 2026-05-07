@@ -644,7 +644,7 @@ fn emit_region_open(
         return;
     }
     writeln!(out, "    cielo_region_open(&reg{});", region.as_u32()).expect("in-memory write");
-    let RegionOwner::Handler(handler) = node.owner;
+    let RegionOwner::Handler { handler, .. } = node.owner;
     for slot in &node.slots {
         let RegionSlotKind::HandlerEvidence { .. } = slot.kind;
         if placements.get(&handler).copied().unwrap_or_default() == Placement::Stack {
@@ -684,7 +684,7 @@ fn reachable_regions(program: &CfgProgram, entry: CfgBlockId) -> Vec<CfgRegionId
 fn evidence_placements(program: &CfgProgram) -> HashMap<CfgHandlerId, Placement> {
     let mut placements = HashMap::new();
     for region in program.regions() {
-        let RegionOwner::Handler(handler) = region.owner;
+        let RegionOwner::Handler { handler, .. } = region.owner;
         for slot in &region.slots {
             let RegionSlotKind::HandlerEvidence { .. } = slot.kind;
             placements.insert(handler, slot.placement);
