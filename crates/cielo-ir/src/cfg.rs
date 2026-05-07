@@ -11,9 +11,10 @@ use crate::builtins::Builtin;
 use crate::constants::{CtorFieldKey, CtorLiteralKey};
 use crate::core::{BinaryOp, Literal, StageDirective, UnaryOp};
 use crate::ownership::OperandRole;
+use crate::region::{CfgRegion, RegionOwner, RegionSlot};
 use cielo_base::{
-    CfgBlockId, CfgExprId, CfgFuncId, CfgHandlerId, CfgInstId, CfgValueId, EffectLabelId,
-    LinearExprId, LinearStmtId, SymbolId, VarId,
+    CfgBlockId, CfgExprId, CfgFuncId, CfgHandlerId, CfgInstId, CfgRegionId, CfgValueId,
+    EffectLabelId, LinearExprId, LinearStmtId, SymbolId, VarId,
 };
 use smallvec::{SmallVec, smallvec};
 use std::hash::{Hash, Hasher};
@@ -26,9 +27,28 @@ pub struct CfgProgram {
     exprs: Vec<CfgExprNode>,
     instructions: Vec<CfgInstructionNode>,
     blocks: Vec<CfgBlock>,
+    regions: Vec<CfgRegion>,
 }
 
 impl CfgProgram {
+    pub fn push_region(&mut self, owner: RegionOwner, slots: Vec<RegionSlot>) -> CfgRegionId {
+        let id = CfgRegionId::new(self.regions.len());
+        self.regions.push(CfgRegion { id, owner, slots });
+        id
+    }
+
+    pub fn region(&self, id: CfgRegionId) -> Option<&CfgRegion> {
+        self.regions.get(id.index())
+    }
+
+    pub fn region_mut(&mut self, id: CfgRegionId) -> Option<&mut CfgRegion> {
+        self.regions.get_mut(id.index())
+    }
+
+    pub fn regions(&self) -> &[CfgRegion] {
+        &self.regions
+    }
+
     pub fn push_value(&mut self, source_var: Option<VarId>) -> CfgValueId {
         let id = CfgValueId::new(self.values.len());
         self.values.push(CfgValue { id, source_var });
@@ -135,10 +155,22 @@ impl CfgProgram {
                 }
             }
             for instruction in &block.instructions {
-                if self.instruction(*instruction).is_none() {
+                let Some(node) = self.instruction(*instruction) else {
                     errors.push(format!(
                         "block {} has invalid instruction {}",
                         block.id, instruction
+                    ));
+                    continue;
+                };
+                // A dangling region id would make the escape analysis skip the
+                // region and the backend emit a slot with no scope to free it.
+                if let CfgInstruction::RegionEnter { region }
+                | CfgInstruction::RegionExit { region } = node.kind
+                    && self.region(region).is_none()
+                {
+                    errors.push(format!(
+                        "block {} references unknown region {}",
+                        block.id, region
                     ));
                 }
             }
@@ -559,6 +591,15 @@ pub enum CfgInstruction {
         handler: CfgHandlerId,
         effect: EffectLabelId,
     },
+    /// Opens the allocation scope its slots live in. Separate from
+    /// `HandlerEnter` because a continuation or closure environment opens a
+    /// region with no handler to enter.
+    RegionEnter {
+        region: CfgRegionId,
+    },
+    RegionExit {
+        region: CfgRegionId,
+    },
     StageEnter {
         stage: StageDirective,
     },
@@ -578,6 +619,8 @@ impl CfgInstruction {
             Self::Eval { value, .. } => smallvec![(*value, OperandRole::Read)],
             Self::HandlerEnter { .. }
             | Self::HandlerExit { .. }
+            | Self::RegionEnter { .. }
+            | Self::RegionExit { .. }
             | Self::StageEnter { .. }
             | Self::StageExit { .. }
             | Self::Hole
@@ -595,6 +638,8 @@ impl CfgInstruction {
             Self::Let { result, .. } | Self::Eval { result, .. } => Some(*result),
             Self::HandlerEnter { .. }
             | Self::HandlerExit { .. }
+            | Self::RegionEnter { .. }
+            | Self::RegionExit { .. }
             | Self::StageEnter { .. }
             | Self::StageExit { .. }
             | Self::Hole

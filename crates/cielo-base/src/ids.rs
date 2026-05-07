@@ -70,6 +70,7 @@ define_id!(CfgBlockId);
 define_id!(CfgValueId);
 define_id!(CfgFuncId);
 define_id!(CfgHandlerId);
+define_id!(CfgRegionId);
 define_id!(FuncId);
 define_id!(StructId);
 define_id!(EnumId);

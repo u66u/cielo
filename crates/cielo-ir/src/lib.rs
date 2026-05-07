@@ -8,6 +8,7 @@ pub mod effect;
 pub mod function_graph;
 pub mod linear;
 pub mod ownership;
+pub mod region;
 pub mod runtime;
 pub mod target;
 pub mod walk;

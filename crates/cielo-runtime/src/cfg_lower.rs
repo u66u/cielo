@@ -17,6 +17,7 @@ use cielo_ir::cfg::{
 };
 use cielo_ir::core::Literal;
 use cielo_ir::linear::{LinearExpr, LinearProgram, LinearStmt};
+use cielo_ir::region::{Placement, RegionOwner, RegionSlot, RegionSlotKind};
 
 pub fn run(linear: &LinearProgram) -> CfgProgram {
     let cfg = lower_program(linear);
@@ -439,6 +440,17 @@ impl<'a> Lowerer<'a> {
             LinearStmt::Handle { effect, body, next } => {
                 let handler = CfgHandlerId::new(self.next_handler);
                 self.next_handler += 1;
+                // The capability scope and the allocation scope are one scope:
+                // the evidence record is the region's first slot, and anything
+                // else the handler owns (continuation environments, closure
+                // environments) joins it rather than getting its own lifetime.
+                let region = self.cfg.push_region(
+                    RegionOwner::Handler(handler),
+                    vec![RegionSlot {
+                        kind: RegionSlotKind::HandlerEvidence { effect },
+                        placement: Placement::default(),
+                    }],
+                );
                 let after = match next {
                     Some(next) => {
                         let next = self.lower_stmt(next, exit);
@@ -446,6 +458,11 @@ impl<'a> Lowerer<'a> {
                         self.cfg.push_instruction(
                             after,
                             CfgInstruction::HandlerExit { handler, effect },
+                            Some(id),
+                        );
+                        self.cfg.push_instruction(
+                            after,
+                            CfgInstruction::RegionExit { region },
                             Some(id),
                         );
                         self.cfg.set_terminator(
@@ -465,6 +482,11 @@ impl<'a> Lowerer<'a> {
                             CfgInstruction::HandlerExit { handler, effect },
                             Some(id),
                         );
+                        self.cfg.push_instruction(
+                            after,
+                            CfgInstruction::RegionExit { region },
+                            Some(id),
+                        );
                         let forwarded_expr = self.cfg.push_expr(CfgExpr::Value(forwarded), None);
                         self.set_exit(after, forwarded_expr, exit);
                         (after, Exit::Yield(after))
@@ -472,6 +494,10 @@ impl<'a> Lowerer<'a> {
                 };
                 let body = self.lower_stmt(body, after.1);
                 let block = self.cfg.push_block(Vec::new(), Some(id));
+                // Region open precedes handler push so the evidence storage
+                // exists before its address reaches the handler stack.
+                self.cfg
+                    .push_instruction(block, CfgInstruction::RegionEnter { region }, Some(id));
                 self.cfg.push_instruction(
                     block,
                     CfgInstruction::HandlerEnter { handler, effect },
