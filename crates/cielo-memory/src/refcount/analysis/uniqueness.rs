@@ -32,7 +32,7 @@
 //! combination is a genuine route to `Fresh`, and it needs a definition this
 //! analysis can see it through.
 //!
-//! `crate::region` deliberately gives region slots no `CfgValueId` (evidence is
+//! `cielo_runtime::region` deliberately gives region slots no `CfgValueId` (evidence is
 //! a `CieloEvidence`, not a `CieloValue`), so today no definition is
 //! region-allocated and the route has nothing to fire on. CIELO-19 changes that
 //! the moment a continuation environment becomes a value: `collect_definitions`

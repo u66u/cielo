@@ -20,7 +20,10 @@ use cielo_ir::linear::{LinearExpr, LinearProgram, LinearStmt};
 use cielo_ir::region::{Placement, RegionOwner, RegionSlot, RegionSlotKind};
 
 pub fn run(linear: &LinearProgram) -> CfgProgram {
-    let cfg = lower_program(linear);
+    let mut cfg = lower_program(linear);
+    // Placement lives here rather than in a memory strategy so that no strategy
+    // can forget it: an unplaced region is silently pessimal, never wrong.
+    crate::region::place(&mut cfg);
     debug_assert!(
         cfg.validate().is_ok(),
         "cfg_lower produced an invalid control-flow graph: {:?}",

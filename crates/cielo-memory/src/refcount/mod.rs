@@ -3,7 +3,6 @@
 use cielo_base::DiagnosticBag;
 use cielo_ir::cfg::CfgProgram;
 
-use crate::region::{self, RegionPlacementStats};
 use crate::{ArcConfig, BorrowHazardReport, MemoryInput};
 
 pub mod analysis;
@@ -32,7 +31,6 @@ pub struct ReferenceCountingReport {
     pub arc: ArcStats,
     pub verifier: Option<CfgArcVerifyStats>,
     pub borrow_hazards: BorrowHazardReport,
-    pub regions: RegionPlacementStats,
 }
 
 #[derive(Clone, Debug)]
@@ -52,10 +50,6 @@ pub fn lower(input: MemoryInput<'_>, config: ArcConfig) -> ReferenceCountingProg
     if config.borrow_hazard_diagnostics_enabled() {
         borrow_hazard::emit_diagnostics(&input.runtime.sources, &borrow_hazards, &mut diagnostics);
     }
-    // Placement runs before ARC planning so a later pass can consult a slot's
-    // placement; region slots hold no `CfgValueId`, so nothing ARC plans
-    // depends on it yet.
-    let regions = region::place(&mut cfg);
     let arc = passes::cfg_arc::run(&mut cfg, &managed_values, &input.runtime.constants, &config);
     verify_arc_stats(arc);
     let verifier = config
@@ -69,7 +63,6 @@ pub fn lower(input: MemoryInput<'_>, config: ArcConfig) -> ReferenceCountingProg
             arc,
             verifier,
             borrow_hazards,
-            regions,
         },
         emit_trace_comments: config.emit_trace_enabled(),
     }

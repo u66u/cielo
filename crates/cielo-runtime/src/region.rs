@@ -45,8 +45,10 @@ use cielo_base::{CfgBlockId, CfgRegionId};
 use cielo_ir::cfg::{CfgCallConvention, CfgInstruction, CfgProgram, CfgTerminator};
 use cielo_ir::region::{Placement, RegionSlotKind};
 
-/// How many slots the analysis placed where, for reporting the rate the design
-/// doc estimates at ~95%.
+/// How many slots ended up where, for reporting the non-escape rate the design
+/// doc estimates at ~95%. Read back off a placed CFG rather than returned from
+/// [`place`], so a consumer that did not run the pass cannot mistake a
+/// zero-filled struct for a measurement.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RegionPlacementStats {
     pub stack_slots: u32,
@@ -54,17 +56,29 @@ pub struct RegionPlacementStats {
 }
 
 impl RegionPlacementStats {
+    pub fn of(cfg: &CfgProgram) -> Self {
+        let mut stats = Self::default();
+        for region in cfg.regions() {
+            for slot in &region.slots {
+                match slot.placement {
+                    Placement::Stack => stats.stack_slots = stats.stack_slots.saturating_add(1),
+                    Placement::Arena => stats.arena_slots = stats.arena_slots.saturating_add(1),
+                }
+            }
+        }
+        stats
+    }
+
     pub fn total(self) -> u32 {
         self.stack_slots.saturating_add(self.arena_slots)
     }
 }
 
 /// Replaces every slot's placement with the strongest one this analysis can
-/// justify. Runs under every memory strategy: placement is a storage-layout
-/// decision, not a refcounting one, and an unmanaged build still has to free
-/// its arenas.
-pub fn place(cfg: &mut CfgProgram) -> RegionPlacementStats {
-    let mut stats = RegionPlacementStats::default();
+/// justify. Called from `cfg_lower::run`, not from a memory strategy: an
+/// unmanaged build still has to free its arenas, and a strategy that forgot to
+/// ask would silently get [`Placement::Arena`] everywhere.
+pub fn place(cfg: &mut CfgProgram) {
     let ids = cfg
         .regions()
         .iter()
@@ -80,13 +94,8 @@ pub fn place(cfg: &mut CfgProgram) -> RegionPlacementStats {
                 RegionSlotKind::HandlerEvidence { .. } if confined => Placement::Stack,
                 RegionSlotKind::HandlerEvidence { .. } => Placement::Arena,
             };
-            match slot.placement {
-                Placement::Stack => stats.stack_slots = stats.stack_slots.saturating_add(1),
-                Placement::Arena => stats.arena_slots = stats.arena_slots.saturating_add(1),
-            }
         }
     }
-    stats
 }
 
 /// True when something inside `region` can hold a slot address past the close.
