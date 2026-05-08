@@ -569,6 +569,84 @@ fn main() -> Int {
 }
 
 #[test]
+fn an_unknown_inline_handler_effect_emits_no_handler() {
+    let src = r#"
+fn main() -> Int {
+  let out = handle { 1 } with Bogus {
+    | note(n) => 2
+  };
+  out
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    assert!(
+        lowered
+            .diagnostics
+            .entries()
+            .iter()
+            .any(|d| d.code == "LOWER_UNKNOWN_HANDLER_EFFECT")
+    );
+    assert!(
+        lowered.program.handlers().is_empty(),
+        "a handler over an unresolved effect would trip the pre-staging assertion"
+    );
+}
+
+#[test]
+fn an_unknown_handler_declaration_effect_emits_no_handler() {
+    let src = r#"
+handler h with Bogus {
+  | note(n) => 2
+}
+fn main() -> Int {
+  let out = handle { 1 } with h;
+  out
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    assert!(
+        lowered
+            .diagnostics
+            .entries()
+            .iter()
+            .any(|d| d.code == "LOWER_UNKNOWN_HANDLER_EFFECT")
+    );
+    assert!(lowered.program.handlers().is_empty());
+}
+
+#[test]
+fn an_unknown_do_effect_emits_no_perform() {
+    let src = r#"
+fn main() -> Int {
+  let x = do Bogus.note(1);
+  0
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    assert!(
+        lowered
+            .diagnostics
+            .entries()
+            .iter()
+            .any(|d| d.code == "LOWER_UNKNOWN_EFFECT")
+    );
+    assert!(
+        !lowered
+            .program
+            .stmts()
+            .iter()
+            .any(|stmt| matches!(stmt.kind, StmtKind::Perform { .. })),
+        "a perform over an unresolved effect would trip the pre-staging assertion"
+    );
+}
+
+#[test]
 fn reports_a_duplicate_handler_declaration() {
     let src = r#"
 effect LocalState { fn tick() -> Int }

@@ -384,37 +384,54 @@ impl Lowerer {
                     args,
                     span,
                 } => {
-                    let effect_label =
-                        self.effect_labels.get(effect).copied().unwrap_or_else(|| {
+                    // A `Perform` over an unresolved effect would trip the
+                    // pre-staging effect assertion before this diagnostic is
+                    // read, so the statement degrades to an error binding.
+                    let Some(effect_label) = self.effect_labels.get(effect).copied() else {
+                        let error = self.diagnostics.error_node(
+                            "LOWER_UNKNOWN_EFFECT",
+                            "Unknown effect in `do` statement during AST->Core lowering",
+                            *span,
+                        );
+                        for arg in args {
+                            let _ = self.lower_expr(arg, &locals);
+                        }
+                        let value = self.push_expr(ExprKind::Error(error), *span);
+                        let binding = match *binding {
+                            Some(name) => {
+                                let var = self.fresh_var();
+                                locals.insert(name, var);
+                                var
+                            }
+                            None => self.fresh_var(),
+                        };
+                        actions.push(Action::Let {
+                            span: *span,
+                            binding,
+                            value,
+                        });
+                        continue;
+                    };
+
+                    match self.effect_ops.get(&(effect_label, *operation)) {
+                        Some(expected) if *expected != args.len() => {
                             self.diagnostics.error(
-                                "LOWER_UNKNOWN_EFFECT",
-                                "Unknown effect in `do` statement during AST->Core lowering",
+                                "LOWER_BAD_EFFECT_OP_ARITY",
+                                format!(
+                                    "Effect operation argument count mismatch: expected {}, got {}",
+                                    expected,
+                                    args.len()
+                                ),
                                 *span,
                             );
-                            EffectLabelId::INVALID
-                        });
-
-                    if effect_label.is_valid() {
-                        match self.effect_ops.get(&(effect_label, *operation)) {
-                            Some(expected) if *expected != args.len() => {
-                                self.diagnostics.error(
-                                    "LOWER_BAD_EFFECT_OP_ARITY",
-                                    format!(
-                                        "Effect operation argument count mismatch: expected {}, got {}",
-                                        expected,
-                                        args.len()
-                                    ),
-                                    *span,
-                                );
-                            }
-                            Some(_) => {}
-                            None => {
-                                self.diagnostics.error(
-                                    "LOWER_UNKNOWN_EFFECT_OP",
-                                    "Unknown operation for this effect in `do` statement",
-                                    *span,
-                                );
-                            }
+                        }
+                        Some(_) => {}
+                        None => {
+                            self.diagnostics.error(
+                                "LOWER_UNKNOWN_EFFECT_OP",
+                                "Unknown operation for this effect in `do` statement",
+                                *span,
+                            );
                         }
                     }
 
@@ -682,27 +699,31 @@ impl Lowerer {
         };
 
         let handler_id = match handler {
-            ast::HandlerRef::Inline { effect, clauses } => {
-                let effect_label = self.resolve_handler_effect(*effect, expr.span);
-                self.lower_handler_def(effect_label, clauses, locals, expr.span)
-            }
+            ast::HandlerRef::Inline { effect, clauses } => self
+                .resolve_handler_effect(*effect, expr.span)
+                .map(|label| self.lower_handler_def(label, clauses, locals, expr.span)),
             ast::HandlerRef::Named(name) => match self.handler_decls.get(name).cloned() {
                 // Module scope binds nothing, so clauses lower under empty locals.
-                Some(decl) => {
-                    let effect_label = self.resolve_handler_effect(decl.effect, decl.span);
-                    self.lower_handler_def(effect_label, &decl.clauses, &HashMap::new(), decl.span)
-                }
+                Some(decl) => self
+                    .resolve_handler_effect(decl.effect, decl.span)
+                    .map(|label| {
+                        self.lower_handler_def(label, &decl.clauses, &HashMap::new(), decl.span)
+                    }),
                 None => {
                     self.diagnostics.error(
                         "LOWER_UNKNOWN_HANDLER",
                         "Unknown handler name in `handle` expression",
                         expr.span,
                     );
-                    // Emitting a handler over an unresolved effect would trip the
-                    // pre-staging effect assertion before this diagnostic is read.
-                    return Some(self.lower_handle_body(body, locals));
+                    None
                 }
             },
+        };
+
+        // Emitting a handler over an unresolved effect would trip the
+        // pre-staging effect assertion before these diagnostics are read.
+        let Some(handler_id) = handler_id else {
+            return Some(self.lower_handle_body(body, locals));
         };
 
         let body_stmt = self.lower_handle_body(body, locals);
@@ -737,15 +758,16 @@ impl Lowerer {
         }
     }
 
-    fn resolve_handler_effect(&mut self, effect: SymbolId, span: Span) -> EffectLabelId {
-        self.effect_labels.get(&effect).copied().unwrap_or_else(|| {
+    fn resolve_handler_effect(&mut self, effect: SymbolId, span: Span) -> Option<EffectLabelId> {
+        let label = self.effect_labels.get(&effect).copied();
+        if label.is_none() {
             self.diagnostics.error(
                 "LOWER_UNKNOWN_HANDLER_EFFECT",
                 "Unknown effect in `handle` expression during AST->Core lowering",
                 span,
             );
-            EffectLabelId::INVALID
-        })
+        }
+        label
     }
 
     /// Builds a `HandlerDef` from clause syntax. A named handler lowers once per
@@ -777,31 +799,29 @@ impl Lowerer {
                 );
             }
 
-            if effect_label.is_valid() {
-                match self.effect_ops.get(&(effect_label, clause.operation)) {
-                    Some(expected) => {
-                        if clause_param_symbols.len() == expected + 1 {
-                            resume_symbol = clause_param_symbols.pop();
-                        } else if clause_param_symbols.len() != *expected {
-                            self.diagnostics.error(
-                                "LOWER_BAD_HANDLER_CLAUSE_ARITY",
-                                format!(
-                                    "Handler clause parameter count mismatch: expected {} or {} (with resume), got {}",
-                                    expected,
-                                    expected + 1,
-                                    clause.params.len()
-                                ),
-                                clause.span,
-                            );
-                        }
-                    }
-                    None => {
+            match self.effect_ops.get(&(effect_label, clause.operation)) {
+                Some(expected) => {
+                    if clause_param_symbols.len() == expected + 1 {
+                        resume_symbol = clause_param_symbols.pop();
+                    } else if clause_param_symbols.len() != *expected {
                         self.diagnostics.error(
-                            "LOWER_UNKNOWN_HANDLER_OP",
-                            "Unknown operation in handler clause for this effect",
+                            "LOWER_BAD_HANDLER_CLAUSE_ARITY",
+                            format!(
+                                "Handler clause parameter count mismatch: expected {} or {} (with resume), got {}",
+                                expected,
+                                expected + 1,
+                                clause.params.len()
+                            ),
                             clause.span,
                         );
                     }
+                }
+                None => {
+                    self.diagnostics.error(
+                        "LOWER_UNKNOWN_HANDLER_OP",
+                        "Unknown operation in handler clause for this effect",
+                        clause.span,
+                    );
                 }
             }
 

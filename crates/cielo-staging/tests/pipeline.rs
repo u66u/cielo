@@ -85,6 +85,44 @@ fn staging_boundary_rejects_non_concrete_effect_rows() {
 }
 
 #[test]
+fn an_unknown_effect_name_reaches_staging_as_a_diagnostic_not_a_panic() {
+    let cases = [
+        r#"
+fn main() -> Int {
+  let out = handle { 1 } with Bogus {
+    | note(n) => 2
+  };
+  out
+}
+"#,
+        r#"
+handler h with Bogus {
+  | note(n) => 2
+}
+fn main() -> Int {
+  let out = handle { 1 } with h;
+  out
+}
+"#,
+        r#"
+fn main() -> Int {
+  do Bogus.note(1);
+  0
+}
+"#,
+    ];
+    let compiler = PassHarness::new(PassConfig::default());
+    for (idx, src) in cases.iter().enumerate() {
+        let mut interner = Interner::new();
+        let residual = compiler.compile_source(src, SourceId::from_u32(idx as u32), &mut interner);
+        assert!(
+            residual.diagnostics().has_errors(),
+            "case {idx} should report the unknown effect"
+        );
+    }
+}
+
+#[test]
 fn compiles_handle_flow_and_keeps_root_stmt_effects_discharged() {
     let src = r#"
 effect Console { fn print(s: String) -> () }

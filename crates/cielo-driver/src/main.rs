@@ -142,6 +142,7 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
     };
 
     let source_id = SourceId::from_u32(0);
+    let source_name = path.display().to_string();
     let db_source = compiler.source_at(path.to_string_lossy().as_ref(), &source, source_id);
     let parsed = compiler.parsed(db_source);
     let core = compiler.core(db_source);
@@ -159,6 +160,16 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
         dump_functions_from_core(core.core.program(), &core.interner);
     }
 
+    // Lowering degrades a rejected construct to an error node rather than a
+    // well-formed one, so anything past here would be typechecking a program
+    // the user did not write.
+    let core_diagnostics = core.core.diagnostics();
+    if core_diagnostics.has_errors() {
+        report_diagnostics(&source_name, &source, core_diagnostics);
+        eprintln!("stopping after lowering because diagnostics contain errors");
+        std::process::exit(1);
+    }
+
     let staged = compiler.staged(db_source);
     let residual = &staged.staged;
     if should_dump(cli, DumpKind::Sema) {
@@ -167,7 +178,6 @@ fn run_input_case(compiler: &Compiler, cli: &Cli, path: &Path) {
     if cli.staging_diff {
         emit_staging_diff(cli.staging_snapshot.as_path(), residual);
     }
-    let source_name = path.display().to_string();
     print_case_summary("file", &source_name, &source, residual);
 
     if should_dump(cli, DumpKind::StagingReport) {
