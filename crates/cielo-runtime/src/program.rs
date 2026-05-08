@@ -1,8 +1,11 @@
 //! Assembly of the self-contained runtime artifact.
 
-use cielo_base::{DiagnosticBag, Span};
-use cielo_ir::cfg::CfgProgram;
+use std::collections::HashMap;
+
+use cielo_base::{CfgValueId, DiagnosticBag, Span};
+use cielo_ir::cfg::{CfgExpr, CfgInstruction, CfgProgram};
 use cielo_ir::constants::ConstantTable;
+use cielo_ir::core::Literal;
 use cielo_ir::linear::LinearProgram;
 use cielo_ir::ownership::OwnershipClass;
 use cielo_ir::runtime::{RuntimeProgram, RuntimeSourceMap, RuntimeValueFacts};
@@ -15,6 +18,7 @@ pub fn assemble_program(
     constants: ConstantTable,
     diagnostics: DiagnosticBag,
 ) -> RuntimeProgram {
+    let synthetic = synthetic_scalars(&cfg);
     let ownership = cfg
         .values()
         .iter()
@@ -22,6 +26,7 @@ pub fn assemble_program(
             value
                 .source_var
                 .and_then(|var| sema.ownership_of_var.get(&var).copied())
+                .or_else(|| synthetic.get(&value.id).copied())
                 .unwrap_or(OwnershipClass::Managed)
         })
         .collect();
@@ -44,6 +49,38 @@ pub fn assemble_program(
         constants,
         diagnostics,
     )
+}
+
+/// Values with no source variable default to `Managed`, which is the safe
+/// direction but costs a no-op release on every scalar temporary lowering
+/// introduces. Narrow only where the defining expression's type is statically
+/// known, and leave everything else alone.
+fn synthetic_scalars(cfg: &CfgProgram) -> HashMap<CfgValueId, OwnershipClass> {
+    let mut scalars = HashMap::new();
+    for instruction in cfg.instructions() {
+        let (CfgInstruction::Let { result, value } | CfgInstruction::Eval { result, value }) =
+            instruction.kind
+        else {
+            continue;
+        };
+        let Some(expression) = cfg.expr(value) else {
+            continue;
+        };
+        let trivial = match &expression.kind {
+            // `cv_*` arithmetic and comparison helpers all yield scalars.
+            CfgExpr::Unary { .. } | CfgExpr::Binary { .. } => true,
+            CfgExpr::Literal(literal) => !matches!(literal, Literal::String(_)),
+            CfgExpr::BuiltinCall { builtin, .. } => {
+                cielo_sema::ownership::classify_core_type_ref(&builtin.return_type())
+                    == OwnershipClass::Trivial
+            }
+            _ => false,
+        };
+        if trivial {
+            scalars.insert(result, OwnershipClass::Trivial);
+        }
+    }
+    scalars
 }
 
 fn source_span(linear: &LinearProgram, source: Option<cielo_base::LinearStmtId>) -> Span {
