@@ -405,6 +405,10 @@ struct TypeChecker<'a> {
     unresolved_type_params: HashMap<InferVarId, TypeId>,
     field_indices: HashMap<ExprId, u32>,
     pending_call_type_args: Vec<PendingCallTypeArgs>,
+    /// Instantiation variables of the function currently being inferred, so a
+    /// `let` annotation naming one of its type parameters resolves to the same
+    /// variable its signature uses.
+    generic_inst: HashMap<SymbolId, InferTy>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -429,6 +433,7 @@ impl<'a> TypeChecker<'a> {
             unresolved_type_params: HashMap::new(),
             field_indices: HashMap::new(),
             pending_call_type_args: Vec::new(),
+            generic_inst: HashMap::new(),
         };
         checker.register_adts();
         checker.intern_non_generic_adts();
@@ -967,6 +972,7 @@ impl<'a> TypeChecker<'a> {
         };
 
         let generic_inst = self.instantiate_generics(&template.generic_names);
+        self.generic_inst.clone_from(&generic_inst);
 
         let mut env = Env::new();
         for (idx, param_var) in params.iter().copied().enumerate() {
@@ -996,6 +1002,25 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
+    /// A `let x: T` annotation is a constraint, not a coercion: it unifies with
+    /// the inferred type, which is what lets an explicit type argument reach a
+    /// generic call that nothing else constrains.
+    fn check_declared_binding(&mut self, binding: VarId, value_ty: InferTy, span: Span) -> InferTy {
+        let Some(declared) = self.program.declared_var_type(binding).cloned() else {
+            return value_ty;
+        };
+        self.check_signature_type(&declared, span);
+        let inst = self.generic_inst.clone();
+        let declared_ty = self.infer_type_ref(&declared, &inst);
+        self.unify_with(
+            value_ty,
+            declared_ty,
+            span,
+            "TYPE_LET_ANNOTATION_MISMATCH",
+            "`let` binding does not match its declared type",
+        )
+    }
+
     fn infer_stmt(
         &mut self,
         stmt_id: StmtId,
@@ -1014,6 +1039,7 @@ impl<'a> TypeChecker<'a> {
                 next,
             } => {
                 let value_ty = self.infer_expr(*value, env);
+                let value_ty = self.check_declared_binding(*binding, value_ty, stmt.span);
                 let scheme = self.generalize_let(value_ty, env);
                 env.insert(*binding, scheme);
                 self.infer_stmt(*next, env, resume_ctx)
@@ -1026,6 +1052,7 @@ impl<'a> TypeChecker<'a> {
                 let mut value_env = env.clone();
                 let mut value_resume = resume_ctx.clone();
                 let value_ty = self.infer_stmt(*value, &mut value_env, &mut value_resume);
+                let value_ty = self.check_declared_binding(*binding, value_ty, stmt.span);
                 env.insert(*binding, self.mono_scheme(value_ty));
                 self.infer_stmt(*next, env, resume_ctx)
             }

@@ -6,7 +6,7 @@ use cielo_base::diagnostics::ErrorNode;
 use cielo_base::{EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, TypeId, VarId};
 use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -561,6 +561,10 @@ pub struct CoreProgram {
     structs: Vec<AdtStructDecl>,
     enums: Vec<AdtEnumDecl>,
     entrypoints: Vec<FuncId>,
+    /// Source-written `let x: T` annotations. Typecheck is the only reader and
+    /// runs before any pass introduces new bindings, so later passes neither
+    /// extend nor consult this.
+    declared_var_types: HashMap<VarId, CoreTypeRef>,
 }
 
 impl CoreProgram {
@@ -613,6 +617,14 @@ impl CoreProgram {
     pub fn set_entrypoints(&mut self, entrypoints: impl IntoIterator<Item = FuncId>) {
         self.entrypoints.clear();
         self.entrypoints.extend(entrypoints);
+    }
+
+    pub fn set_declared_var_type(&mut self, binding: VarId, ty: CoreTypeRef) {
+        self.declared_var_types.insert(binding, ty);
+    }
+
+    pub fn declared_var_type(&self, binding: VarId) -> Option<&CoreTypeRef> {
+        self.declared_var_types.get(&binding)
     }
 
     pub fn exprs(&self) -> &[ExprNode] {

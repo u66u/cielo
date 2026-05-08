@@ -906,6 +906,81 @@ fn main() -> Int {
 }
 
 #[test]
+fn a_let_annotation_supplies_an_otherwise_undetermined_type_argument() {
+    let diagnostics = diagnose(
+        r#"
+enum Option[T] { Some(T), None }
+fn none[T]() -> Option[T] {
+  None()
+}
+fn main() -> Int {
+  let x: Option[Int] = none();
+  0
+}
+"#,
+    );
+    assert!(
+        !diagnostics.has_errors(),
+        "the annotation is the only thing that determines T: {:?}",
+        diagnostics.entries()
+    );
+}
+
+#[test]
+fn a_let_annotation_that_contradicts_the_value_is_rejected() {
+    let diagnostics = diagnose(
+        r#"
+fn main() -> Int {
+  let x: Bool = 1;
+  0
+}
+"#,
+    );
+    assert!(
+        has_code(&diagnostics, "TYPE_LET_ANNOTATION_MISMATCH"),
+        "declared and inferred types must agree: {:?}",
+        diagnostics.entries()
+    );
+}
+
+#[test]
+fn a_let_annotation_naming_an_enclosing_type_parameter_resolves() {
+    let diagnostics = diagnose(
+        r#"
+fn identity[T](x: T) -> T {
+  let y: T = x;
+  y
+}
+fn main() -> Int {
+  identity(3)
+}
+"#,
+    );
+    assert!(
+        !diagnostics.has_errors(),
+        "`T` in a body annotation is the function's own parameter: {:?}",
+        diagnostics.entries()
+    );
+}
+
+#[test]
+fn an_unknown_let_annotation_type_name_is_rejected() {
+    let diagnostics = diagnose(
+        r#"
+fn main() -> Int {
+  let x: Itn = 1;
+  0
+}
+"#,
+    );
+    assert!(
+        has_code(&diagnostics, "TYPE_UNKNOWN_TYPE_NAME"),
+        "an annotation names a type that must exist: {:?}",
+        diagnostics.entries()
+    );
+}
+
+#[test]
 fn wrong_type_argument_count_is_rejected() {
     let diagnostics = diagnose(
         r#"

@@ -448,6 +448,80 @@ fn main() -> Int {
     assert!(has_ctor);
 }
 
+#[test]
+fn lowers_a_bare_nullary_enum_variant() {
+    let src = r#"
+enum OptInt { SomeI(Int), NoneI }
+fn main() -> Int {
+  let a = NoneI;
+  0
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    assert!(!lowered.diagnostics.has_errors());
+
+    let variant = interner.intern("NoneI");
+    assert!(lowered.program.exprs().iter().any(|expr| matches!(
+        &expr.kind,
+        cielo_ir::core::ExprKind::MakeEnum { variant: v, fields, .. }
+            if *v == variant && fields.is_empty()
+    )));
+}
+
+#[test]
+fn a_local_binding_shadows_a_nullary_variant_name() {
+    let src = r#"
+enum OptInt { SomeI(Int), NoneI }
+fn main() -> Int {
+  let NoneI = 7;
+  NoneI
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    assert!(!lowered.diagnostics.has_errors());
+    assert!(
+        !lowered
+            .program
+            .exprs()
+            .iter()
+            .any(|expr| matches!(expr.kind, cielo_ir::core::ExprKind::MakeEnum { .. })),
+        "the local binding must win over the variant of the same name"
+    );
+}
+
+#[test]
+fn records_declared_let_types() {
+    let src = r#"
+fn wrap[T](x: T) -> T {
+  let named: Int = 1;
+  let param: T = x;
+  x
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+
+    let declared = lowered
+        .program
+        .stmts()
+        .iter()
+        .filter_map(|stmt| match &stmt.kind {
+            StmtKind::Let { binding, .. } => lowered.program.declared_var_type(*binding).cloned(),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(declared.len(), 2);
+    assert!(declared.contains(&CoreTypeRef::Primitive(
+        cielo_ir::core::PrimitiveTypeRef::Int
+    )));
+    assert!(declared.contains(&CoreTypeRef::Param(interner.intern("T"))));
+}
+
 type ClauseShape = (
     cielo_base::SymbolId,
     Vec<cielo_base::VarId>,

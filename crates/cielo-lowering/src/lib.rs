@@ -135,6 +135,9 @@ struct Lowerer {
     enum_ctors: HashMap<SymbolId, (SymbolId, usize)>,
     handler_decls: HashMap<SymbolId, ast::HandlerDecl>,
     active_resume_vars: HashSet<VarId>,
+    /// Type parameters of the function whose body is being lowered, so a `let`
+    /// annotation naming one lowers to `Param` rather than `Named`.
+    type_params: Vec<SymbolId>,
     config: LowerConfig,
 }
 
@@ -156,6 +159,7 @@ impl Lowerer {
             enum_ctors: HashMap::new(),
             handler_decls: HashMap::new(),
             active_resume_vars: HashSet::new(),
+            type_params: Vec::new(),
             config,
         }
     }
@@ -292,6 +296,7 @@ impl Lowerer {
                 locals.insert(param.name, var_id);
             }
 
+            self.type_params.clone_from(&function.type_params);
             let body = self.lower_block(&function.body, &mut locals);
             if let Some(core_fn) = self.program.function_mut(func_id) {
                 core_fn.body = body;
@@ -344,10 +349,17 @@ impl Lowerer {
         for stmt in &block.statements {
             match stmt {
                 AstStmt::Let {
-                    name, value, span, ..
+                    name,
+                    ty,
+                    value,
+                    span,
                 } => {
                     let binding = self.fresh_var();
                     let lowered = self.lower_binding_value(value, &locals);
+                    if let Some(ty) = ty {
+                        let declared = lower_type_ref(ty, &self.type_params);
+                        self.program.set_declared_var_type(binding, declared);
+                    }
                     locals.insert(*name, binding);
                     match lowered {
                         LoweredValue::Expr(value) => actions.push(Action::Let {
@@ -876,6 +888,7 @@ impl Lowerer {
             AstExprKind::Int(value) => ExprKind::Literal(Literal::Int(*value)),
             AstExprKind::Bool(value) => ExprKind::Literal(Literal::Bool(*value)),
             AstExprKind::String(value) => ExprKind::Literal(Literal::String(value.clone())),
+            // Locals win over constructors, so a binding may shadow a variant name.
             AstExprKind::Var(name) => {
                 if let Some(var_id) = locals.get(name) {
                     if self.active_resume_vars.contains(var_id) {
@@ -887,6 +900,12 @@ impl Lowerer {
                         ExprKind::Error(error)
                     } else {
                         ExprKind::Var(*var_id)
+                    }
+                } else if let Some(&(enum_name, 0)) = self.enum_ctors.get(name) {
+                    ExprKind::MakeEnum {
+                        ty: enum_name,
+                        variant: *name,
+                        fields: Vec::new(),
                     }
                 } else {
                     let error = self.diagnostics.error_node(
