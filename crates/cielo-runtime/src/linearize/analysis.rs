@@ -205,6 +205,120 @@ pub(super) fn resume_convention_reason(
     }
 }
 
+/// Why a clause cannot be left to the runtime dispatcher.
+///
+/// Deliberately a predicate over the whole clause rather than a match on
+/// [`ResumeQualifier`]: `docs/v2/plan_notes.md` carries Effekt's caveat that a
+/// clause containing a mutable definition is not tail-resumptive however many
+/// times it resumes, so `Stmt::Var`/`Get`/`Put` will add an arm here rather
+/// than change the qualifier's meaning.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum ResidualBlocker {
+    /// Abortive. Discarding the continuation means unwinding out of the frames
+    /// between the perform and the handle, and nothing here can do that
+    /// without longjmp or a status return on every call.
+    Abortive,
+    /// The clause's value is not the resumption's value, so the dispatcher
+    /// would have to return twice. Needs a real `CieloContinuation`.
+    NotTailResumptive,
+    /// Replaying the continuation needs a cloned environment (CIELO-42).
+    MultiShot,
+    /// The clause reads a variable bound outside it. A dispatched clause runs
+    /// in its own frame, so that read needs an environment (CIELO-25).
+    CapturesEnvironment,
+}
+
+impl ResidualBlocker {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::Abortive => {
+                "clause discards the continuation, which cannot unwind out of a callee"
+            }
+            Self::NotTailResumptive => "clause does not resume in tail position",
+            Self::MultiShot => "clause may resume more than once",
+            Self::CapturesEnvironment => "clause reads a variable bound outside it",
+        }
+    }
+}
+
+/// Whether `clause` can run as a dispatched function instead of being inlined.
+pub(super) fn residual_clause_blocker(
+    program: &CoreProgram,
+    clause: &HandlerClause,
+    resume: ClauseResumeAnalysis,
+) -> Option<ResidualBlocker> {
+    if clause.resume_param.is_none() {
+        return Some(ResidualBlocker::Abortive);
+    }
+    match resume.qualifier {
+        ResumeQualifier::Multi => return Some(ResidualBlocker::MultiShot),
+        ResumeQualifier::Abortive => return Some(ResidualBlocker::Abortive),
+        ResumeQualifier::Affine | ResumeQualifier::Linear => {}
+    }
+    if !resume.tail_resumptive {
+        return Some(ResidualBlocker::NotTailResumptive);
+    }
+    clause_captures_environment(program, clause).then_some(ResidualBlocker::CapturesEnvironment)
+}
+
+/// True when the clause body reads a variable it does not itself bind.
+///
+/// The binder arms must stay exhaustive over the binding statement forms: a
+/// missed binder makes a bound variable look free, which is merely pessimal,
+/// but a binder credited to the clause that it does not actually bind would
+/// let a capture through.
+fn clause_captures_environment(program: &CoreProgram, clause: &HandlerClause) -> bool {
+    let mut bound = clause.params.iter().copied().collect::<HashSet<_>>();
+    bound.extend(clause.resume_param);
+    let mut reachable = Vec::new();
+    let mut stack = vec![clause.body];
+    let mut seen = HashSet::new();
+    while let Some(stmt_id) = stack.pop() {
+        if !seen.insert(stmt_id) {
+            continue;
+        }
+        let Some(stmt) = program.stmt(stmt_id) else {
+            continue;
+        };
+        match &stmt.kind {
+            StmtKind::Let { binding, .. } | StmtKind::Val { binding, .. } => {
+                bound.insert(*binding);
+            }
+            StmtKind::Call { result, .. } => {
+                bound.insert(*result);
+            }
+            StmtKind::Perform { result, .. } => bound.extend(*result),
+            StmtKind::Resume { result, .. } => {
+                bound.insert(*result);
+            }
+            StmtKind::Match { arms, .. } => {
+                bound.extend(arms.iter().flat_map(|arm| arm.binders.iter().copied()));
+            }
+            _ => {}
+        }
+        reachable.push(stmt_id);
+        stack.extend(stmt.child_stmts());
+    }
+
+    reachable.into_iter().any(|stmt_id| {
+        let Some(stmt) = program.stmt(stmt_id) else {
+            return false;
+        };
+        stmt.child_exprs()
+            .into_iter()
+            .any(|expr| reads_var_outside(program, expr, &bound))
+            || matches!(stmt.kind, StmtKind::Resume { resume, .. } if !bound.contains(&resume))
+    })
+}
+
+fn reads_var_outside(program: &CoreProgram, root: ExprId, bound: &HashSet<VarId>) -> bool {
+    any_expr(
+        program,
+        root,
+        &mut |_, expr| matches!(&expr.kind, ExprKind::Var(var) if !bound.contains(var)),
+    )
+}
+
 /// this is like 85-90% of cases
 fn is_tail_resumptive_clause(program: &CoreProgram, stmt_id: StmtId, resume_var: VarId) -> bool {
     let mut memo = HashMap::new();

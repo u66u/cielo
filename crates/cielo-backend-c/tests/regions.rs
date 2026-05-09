@@ -34,6 +34,7 @@ fn a_confined_handler_keeps_its_evidence_in_the_c_frame() {
     let body = linear.push_stmt(LinearStmt::Return(zero));
     let handle = linear.push_stmt(LinearStmt::Handle {
         effect: HANDLED,
+        clauses: Vec::new(),
         body,
         next: None,
     });
@@ -87,6 +88,7 @@ fn escaping_handler(interner: &mut Interner) -> LinearProgram {
     });
     let handle = linear.push_stmt(LinearStmt::Handle {
         effect: HANDLED,
+        clauses: Vec::new(),
         body: call,
         next: None,
     });

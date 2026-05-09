@@ -19,11 +19,11 @@ use cielo_base::ids::{
     LinearStmtId, VarId,
 };
 use cielo_ir::cfg::{
-    CfgCallConvention, CfgExpr, CfgFunction, CfgInstruction, CfgMatchArm, CfgProgram,
-    CfgProjectionMode, CfgTerminator,
+    CfgCallConvention, CfgExpr, CfgFunction, CfgHandlerClause, CfgInstruction, CfgMatchArm,
+    CfgProgram, CfgProjectionMode, CfgTerminator,
 };
 use cielo_ir::core::Literal;
-use cielo_ir::linear::{LinearExpr, LinearProgram, LinearStmt};
+use cielo_ir::linear::{LinearExpr, LinearHandlerClause, LinearProgram, LinearStmt};
 use cielo_ir::region::{Placement, RegionOwner, RegionSlot, RegionSlotKind};
 
 pub fn run(linear: &LinearProgram) -> CfgProgram {
@@ -92,6 +92,16 @@ impl Scope {
 
 type ScopeKey = Box<[(VarId, CfgValueId)]>;
 
+/// A residual clause whose blocks are lowered but whose `CfgFuncId` is not
+/// assigned yet: [`Lowerer::lower`] indexes functions by position, so nothing
+/// may be appended to `cfg.functions` while it is still walking them.
+struct PendingClause {
+    handler: CfgHandlerId,
+    operation: cielo_base::ids::SymbolId,
+    params: Vec<CfgValueId>,
+    entry: CfgBlockId,
+}
+
 struct Lowerer<'a> {
     linear: &'a LinearProgram,
     cfg: CfgProgram,
@@ -113,6 +123,7 @@ struct Lowerer<'a> {
     functions: HashMap<LinearFuncId, CfgFuncId>,
     unit: Option<CfgExprId>,
     next_handler: usize,
+    pending_clauses: Vec<PendingClause>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -127,6 +138,7 @@ impl<'a> Lowerer<'a> {
             functions: HashMap::new(),
             unit: None,
             next_handler: 0,
+            pending_clauses: Vec::new(),
         }
     }
 
@@ -169,6 +181,7 @@ impl<'a> Lowerer<'a> {
             });
         }
 
+        self.emit_pending_clauses();
         self.cfg.entrypoints = self
             .linear
             .entrypoints
@@ -176,6 +189,69 @@ impl<'a> Lowerer<'a> {
             .filter_map(|id| self.functions.get(id).copied())
             .collect();
         self.cfg
+    }
+
+    /// Appends one function per residual clause and records the handler's
+    /// dispatch table. Grouped by handler so the emitted table is one array.
+    fn emit_pending_clauses(&mut self) {
+        let mut tables: Vec<(CfgHandlerId, Vec<CfgHandlerClause>)> = Vec::new();
+        for pending in std::mem::take(&mut self.pending_clauses) {
+            let id = CfgFuncId::new(self.cfg.functions.len());
+            self.cfg.functions.push(CfgFunction {
+                id,
+                name: pending.operation,
+                params: pending.params,
+                entry: pending.entry,
+            });
+            let clause = CfgHandlerClause {
+                operation: pending.operation,
+                function: id,
+            };
+            match tables
+                .iter_mut()
+                .find(|(handler, _)| *handler == pending.handler)
+            {
+                Some((_, clauses)) => clauses.push(clause),
+                None => tables.push((pending.handler, vec![clause])),
+            }
+        }
+        for (handler, clauses) in tables {
+            self.cfg.push_clause_table(handler, clauses);
+        }
+    }
+
+    /// Lowers a residual clause into its own function body.
+    ///
+    /// The statement cache is function-local, so it is swapped out here for
+    /// the same reason [`Lowerer::lower`] clears it per function: a block
+    /// reused across the boundary would belong to the wrong function.
+    fn lower_clause(&mut self, handler: CfgHandlerId, clause: &LinearHandlerClause) {
+        let outer = std::mem::take(&mut self.statements);
+        // A clause body is its own function, so it starts from an empty scope
+        // carrying only its parameters -- never the enclosing body's bindings.
+        let mut scope = Scope::default();
+        let mut params = Vec::with_capacity(clause.params.len());
+        for var in &clause.params {
+            let value = self.cfg.push_value(Some(*var));
+            scope = scope.bind(*var, value);
+            params.push(value);
+        }
+        let body = self.lower_stmt(clause.body, Exit::Return, &scope);
+        let entry = self.cfg.push_block(params.clone(), Some(clause.body));
+        self.cfg.set_terminator(
+            entry,
+            CfgTerminator::Goto {
+                target: body,
+                args: Vec::new(),
+            },
+        );
+        self.statements = outer;
+        self.pending_clauses.push(PendingClause {
+            handler,
+            operation: clause.operation,
+            params,
+            entry,
+        });
     }
 
     fn value_for_var(&mut self, scope: &Scope, var: VarId) -> CfgValueId {
@@ -518,9 +594,17 @@ impl<'a> Lowerer<'a> {
                 );
                 block
             }
-            LinearStmt::Handle { effect, body, next } => {
+            LinearStmt::Handle {
+                effect,
+                clauses,
+                body,
+                next,
+            } => {
                 let handler = CfgHandlerId::new(self.next_handler);
                 self.next_handler += 1;
+                for clause in &clauses {
+                    self.lower_clause(handler, clause);
+                }
                 // The capability scope and the allocation scope are one scope:
                 // the evidence record is the region's first slot, and anything
                 // else the handler owns (continuation environments, closure

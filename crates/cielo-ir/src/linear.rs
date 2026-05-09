@@ -23,12 +23,16 @@ pub struct LinearProgram {
 }
 
 /// Outcome of trying to compile a `handle` site away. Only `Inlined` and
-/// `Dead` leave no handler behind at runtime; the rest are failures that used
-/// to be indistinguishable from success in the emitted C.
+/// `Dead` leave no handler behind at runtime; `Residual` leaves a working
+/// runtime dispatcher, and the rest are failures that used to be
+/// indistinguishable from success in the emitted C.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum HandlerOutcome {
     Inlined,
     Dead,
+    /// Erasure did not reach every perform, so the site kept a clause table.
+    /// Not a failure: the program still runs, just through a dispatch.
+    Residual,
     EscapedThroughCall,
     LeakedAfterInlining,
     UnresolvedHandler,
@@ -43,6 +47,7 @@ impl HandlerOutcome {
         match self {
             Self::Inlined => "inlined",
             Self::Dead => "dead, eliminated",
+            Self::Residual => "not erased: runtime clause table",
             Self::EscapedThroughCall => "not erased: effect performed in a callee",
             Self::LeakedAfterInlining => "not erased: perform survived inlining",
             Self::UnresolvedHandler => "not erased: handler could not be resolved",
@@ -125,11 +130,24 @@ impl LinearStmtNode {
                 }
                 children
             }
-            LinearStmt::Handle { body, next, .. } | LinearStmt::Stage { body, next, .. } => {
+            LinearStmt::Stage { body, next, .. } => {
                 let mut children = smallvec![*body];
                 if let Some(next_stmt) = next {
                     children.push(*next_stmt);
                 }
+                children
+            }
+            LinearStmt::Handle {
+                clauses,
+                body,
+                next,
+                ..
+            } => {
+                let mut children = smallvec![*body];
+                if let Some(next_stmt) = next {
+                    children.push(*next_stmt);
+                }
+                children.extend(clauses.iter().map(|clause| clause.body));
                 children
             }
         }
@@ -278,6 +296,19 @@ pub struct LinearMatchArm {
     pub body: LinearStmtId,
 }
 
+/// A handler clause that survives erasure and runs at dispatch time.
+///
+/// `body` yields the *resumption argument*, not the clause's own value: the
+/// dispatcher returns it to the perform site, which is what lets a residual
+/// clause exist without reifying a continuation. Only tail-resumptive clauses
+/// can be expressed this way, so linearize admits no others.
+#[derive(Clone, Debug)]
+pub struct LinearHandlerClause {
+    pub operation: SymbolId,
+    pub params: Vec<VarId>,
+    pub body: LinearStmtId,
+}
+
 #[derive(Clone, Debug)]
 pub enum LinearStmt {
     Return(LinearExprId),
@@ -331,6 +362,9 @@ pub enum LinearStmt {
     },
     Handle {
         effect: EffectLabelId,
+        /// Empty when inlining discharged every perform, which is the whole
+        /// point of the erasure path: no table, no dispatch.
+        clauses: Vec<LinearHandlerClause>,
         body: LinearStmtId,
         next: Option<LinearStmtId>,
     },

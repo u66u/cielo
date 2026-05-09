@@ -823,11 +823,13 @@ fn c_emitter_binds_distinct_capabilities_per_handler_installation() {
     let ret = program.push_stmt(LinearStmt::Return(zero));
     let inner_handle = program.push_stmt(LinearStmt::Handle {
         effect: EffectLabelId::from_u32(0),
+        clauses: Vec::new(),
         body: ret,
         next: None,
     });
     let outer_handle = program.push_stmt(LinearStmt::Handle {
         effect: EffectLabelId::from_u32(0),
+        clauses: Vec::new(),
         body: inner_handle,
         next: None,
     });
@@ -874,6 +876,7 @@ fn c_emitter_materializes_handler_evidence_records() {
     let ret = program.push_stmt(LinearStmt::Return(zero));
     let handle = program.push_stmt(LinearStmt::Handle {
         effect: EffectLabelId::from_u32(0),
+        clauses: Vec::new(),
         body: ret,
         next: None,
     });
@@ -915,6 +918,7 @@ fn c_emitter_threads_capability_into_scoped_perform_calls() {
     });
     let handle = program.push_stmt(LinearStmt::Handle {
         effect: EffectLabelId::from_u32(0),
+        clauses: Vec::new(),
         body: perform,
         next: None,
     });
@@ -975,11 +979,13 @@ fn c_emitter_uses_nearest_capability_for_nested_same_effect_handlers() {
     });
     let inner_handle = program.push_stmt(LinearStmt::Handle {
         effect: EffectLabelId::from_u32(0),
+        clauses: Vec::new(),
         body: inner_perform,
         next: Some(outer_perform_after_inner),
     });
     let outer_handle = program.push_stmt(LinearStmt::Handle {
         effect: EffectLabelId::from_u32(0),
+        clauses: Vec::new(),
         body: inner_handle,
         next: None,
     });

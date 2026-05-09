@@ -40,6 +40,7 @@ fn confined_handler() -> LinearProgram {
     let body = linear.push_stmt(LinearStmt::Return(zero));
     let handle = linear.push_stmt(LinearStmt::Handle {
         effect: HANDLED,
+        clauses: Vec::new(),
         body,
         next: None,
     });
@@ -115,6 +116,7 @@ fn performing_the_handled_effect_stays_confined() {
     });
     let handle = linear.push_stmt(LinearStmt::Handle {
         effect: HANDLED,
+        clauses: Vec::new(),
         body: perform,
         next: None,
     });
@@ -140,6 +142,7 @@ fn performing_an_unhandled_effect_forces_the_arena() {
     });
     let handle = linear.push_stmt(LinearStmt::Handle {
         effect: HANDLED,
+        clauses: Vec::new(),
         body: perform,
         next: None,
     });
@@ -167,6 +170,7 @@ fn a_control_call_inside_the_region_forces_the_arena() {
     });
     let handle = linear.push_stmt(LinearStmt::Handle {
         effect: HANDLED,
+        clauses: Vec::new(),
         body: call,
         next: None,
     });

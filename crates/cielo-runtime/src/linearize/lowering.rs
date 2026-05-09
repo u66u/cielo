@@ -10,16 +10,16 @@ use cielo_ir::core::{CoreProgram, ExprKind, HandlerClause, HandlerDef, StmtKind}
 use cielo_ir::effect::{SortedEffectRow, is_thunkable};
 use cielo_ir::function_graph::collect_reachable_functions;
 use cielo_ir::linear::{
-    CallConvention, HandlerOutcome, HandlerSite, LinearExpr, LinearFunction, LinearMatchArm,
-    LinearProgram, LinearStmt,
+    CallConvention, HandlerOutcome, HandlerSite, LinearExpr, LinearFunction, LinearHandlerClause,
+    LinearMatchArm, LinearProgram, LinearStmt,
 };
 use cielo_sema::SemanticTables;
 
 use super::analysis::{
-    analyze_clause_resume, classify_clause_convention, core_stmt_calls_performing_effect,
-    fresh_var_base, is_identity_handler_return_clause, is_identity_return_of_var,
-    linear_stmt_contains_perform_effect, resume_convention_reason, resume_strategy,
-    stmt_effect_row_contains,
+    ResidualBlocker, analyze_clause_resume, classify_clause_convention,
+    core_stmt_calls_performing_effect, fresh_var_base, is_identity_handler_return_clause,
+    is_identity_return_of_var, linear_stmt_contains_perform_effect, residual_clause_blocker,
+    resume_convention_reason, resume_strategy, stmt_effect_row_contains,
 };
 use super::types::{ClauseConvention, ResumeContext, ResumeQualifier, ResumeStrategy};
 
@@ -300,28 +300,49 @@ fn lower_stmt(
                     return lowered_body;
                 }
 
-                let mut outcome = HandlerOutcome::Inlined;
-                if core_stmt_calls_performing_effect(input.program, *body, handler_def.effect) {
-                    state.diagnostics.error(
-                        "LINEARIZE_HANDLED_EFFECT_LEAK",
-                        "Handled effect is performed inside a callee, which handler inlining cannot discharge",
-                        stmt.span,
-                    );
-                    outcome = HandlerOutcome::EscapedThroughCall;
-                }
-                let lowered_body =
+                let escaped =
+                    core_stmt_calls_performing_effect(input.program, *body, handler_def.effect);
+                let mut lowered_body =
                     lower_stmt_under_handlers(input, *body, &[handler_def], state, None);
-                if linear_stmt_contains_perform_effect(
+                let leaked = linear_stmt_contains_perform_effect(
                     state.linear,
                     lowered_body,
                     handler_def.effect,
-                ) {
-                    state.diagnostics.error(
-                        "LINEARIZE_HANDLED_EFFECT_LEAK",
-                        "Handled effect perform leaked across linearize boundary",
-                        stmt.span,
-                    );
-                    outcome = HandlerOutcome::LeakedAfterInlining;
+                );
+
+                let mut outcome = HandlerOutcome::Inlined;
+                if escaped || leaked {
+                    outcome = if escaped {
+                        HandlerOutcome::EscapedThroughCall
+                    } else {
+                        HandlerOutcome::LeakedAfterInlining
+                    };
+                    // Erasure is the optimization; the clause table is the
+                    // fallback that keeps the program compiling when it misses.
+                    match residual_clauses(input, handler_def, state) {
+                        Ok(clauses) => {
+                            outcome = HandlerOutcome::Residual;
+                            lowered_body = state.linear.push_stmt_at(
+                                LinearStmt::Handle {
+                                    effect: handler_def.effect,
+                                    clauses,
+                                    body: lowered_body,
+                                    next: None,
+                                },
+                                stmt.span,
+                            );
+                        }
+                        Err(blocked) => {
+                            state.diagnostics.error(
+                                "LINEARIZE_HANDLED_EFFECT_LEAK",
+                                format!(
+                                    "Handled effect is performed where inlining cannot discharge it, and no runtime clause can stand in: {}",
+                                    blocked.as_str()
+                                ),
+                                stmt.span,
+                            );
+                        }
+                    }
                 }
                 state.record_handler(handler_def.effect, stmt.span, outcome);
                 if let Some(next_stmt) = next {
@@ -346,6 +367,7 @@ fn lower_stmt(
                 state.record_handler(effect, stmt.span, HandlerOutcome::UnresolvedHandler);
                 LinearStmt::Handle {
                     effect,
+                    clauses: Vec::new(),
                     body: lower_stmt(input, *body, state),
                     next: next.map(|next_stmt| lower_stmt(input, next_stmt, state)),
                 }
@@ -697,6 +719,110 @@ fn lower_stmt_under_handlers(
         StmtKind::Hole { .. } => state.linear.push_stmt(LinearStmt::Hole),
         StmtKind::Error(_) => state.linear.push_stmt(LinearStmt::Error),
     }
+}
+
+/// The clause table for a handle site erasure could not fully discharge.
+///
+/// All or nothing: `cielo_perform` traps when the innermost frame for an
+/// effect has no clause for the operation, so a partial table would trade a
+/// compile error for a runtime one.
+fn residual_clauses(
+    input: &LoweringInput<'_>,
+    handler: &HandlerDef,
+    state: &mut LoweringState<'_>,
+) -> Result<Vec<LinearHandlerClause>, ResidualBlocker> {
+    let mut lowered = Vec::with_capacity(handler.clauses.len());
+    for clause in &handler.clauses {
+        let resume = analyze_clause_resume(input.program, clause);
+        if let Some(blocker) = residual_clause_blocker(input.program, clause, resume) {
+            return Err(blocker);
+        }
+        let resume_var = clause
+            .resume_param
+            .expect("a clause with no resume parameter is blocked as abortive");
+        let body = lower_tail_resume_body(input, clause.body, resume_var, state);
+        lowered.push(LinearHandlerClause {
+            operation: clause.operation,
+            params: clause.params.clone(),
+            body,
+        });
+    }
+    Ok(lowered)
+}
+
+/// Lowers a tail-resumptive clause body into one that *returns* the resumption
+/// argument. The dispatcher hands that value back to the perform site, so the
+/// clause needs no continuation and its own value is never materialised.
+///
+/// Unmemoized on purpose: the same core clause body can also be inlined at a
+/// lexical perform, and the two lowerings are not interchangeable.
+fn lower_tail_resume_body(
+    input: &LoweringInput<'_>,
+    stmt_id: StmtId,
+    resume_var: VarId,
+    state: &mut LoweringState<'_>,
+) -> LinearStmtId {
+    let Some(stmt) = input.program.stmt(stmt_id) else {
+        return state.linear.push_stmt(LinearStmt::Error);
+    };
+    let kind = match &stmt.kind {
+        StmtKind::Resume { resume, arg, .. } if *resume == resume_var => {
+            LinearStmt::Return(lower_expr(input, *arg, state))
+        }
+        StmtKind::Let {
+            binding,
+            value,
+            next,
+        } => LinearStmt::Let {
+            binding: *binding,
+            value: lower_expr(input, *value, state),
+            next: lower_tail_resume_body(input, *next, resume_var, state),
+        },
+        StmtKind::Val {
+            binding,
+            value,
+            next,
+        } => {
+            if is_identity_return_of_var(input.program, *next, *binding) {
+                return lower_tail_resume_body(input, *value, resume_var, state);
+            }
+            LinearStmt::Val {
+                binding: *binding,
+                value: lower_stmt(input, *value, state),
+                next: lower_tail_resume_body(input, *next, resume_var, state),
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => LinearStmt::If {
+            cond: lower_expr(input, *cond, state),
+            then_branch: lower_tail_resume_body(input, *then_branch, resume_var, state),
+            else_branch: lower_tail_resume_body(input, *else_branch, resume_var, state),
+        },
+        StmtKind::Match {
+            scrutinee,
+            arms,
+            default,
+        } => LinearStmt::Match {
+            scrutinee: lower_expr(input, *scrutinee, state),
+            arms: arms
+                .iter()
+                .map(|arm| LinearMatchArm {
+                    tag: arm.tag,
+                    binders: arm.binders.clone(),
+                    body: lower_tail_resume_body(input, arm.body, resume_var, state),
+                })
+                .collect(),
+            default: default
+                .map(|default| lower_tail_resume_body(input, default, resume_var, state)),
+        },
+        // Tail-resumption analysis admits nothing else on a path to `resume`,
+        // so anything here is below one and lowers as ordinary code.
+        _ => return lower_stmt(input, stmt_id, state),
+    };
+    state.linear.push_stmt_at(kind, stmt.span)
 }
 
 fn lower_matching_clause(

@@ -52,6 +52,7 @@ pub fn emit(
         out.push_str(";\n");
     }
     out.push('\n');
+    emit_clause_tables(&mut out, program, &names);
     for function in &program.functions {
         emit_function(
             &mut out, program, function, &names, interner, &pools, arc_trace,
@@ -79,6 +80,66 @@ fn function_names(program: &CfgProgram, interner: &Interner) -> HashMap<CfgFuncI
             )
         })
         .collect()
+}
+
+/// One adapter per residual clause plus the `CieloClauseEntry` array the
+/// evidence points at.
+///
+/// The adapter exists only to unpack the dispatcher's flat argument array into
+/// the clause function's parameters. It takes ownership of those arguments,
+/// matching the sink convention every other call site uses, and returns the
+/// resumption argument, which `cielo_dispatch_with_evidence` hands back to the
+/// perform site.
+fn emit_clause_tables(out: &mut String, program: &CfgProgram, names: &HashMap<CfgFuncId, String>) {
+    for table in program.clause_tables() {
+        if table.clauses.is_empty() {
+            continue;
+        }
+        for (index, clause) in table.clauses.iter().enumerate() {
+            let arity = program
+                .functions
+                .get(clause.function.index())
+                .map(|function| function.params.len())
+                .unwrap_or(0);
+            let callee = names
+                .get(&clause.function)
+                .cloned()
+                .unwrap_or_else(|| format!("cielo_missing_fn_{}", clause.function.as_u32()));
+            writeln!(
+                out,
+                "static CieloValue cielo_clause_h{}_{index}(CieloEvidence *evidence, CieloContinuation *continuation, size_t argc, const CieloValue *args) {{",
+                table.handler.as_u32()
+            )
+            .expect("in-memory write");
+            out.push_str("    (void)evidence;\n    (void)continuation;\n");
+            writeln!(
+                out,
+                "    if (argc != {arity}u) cielo_trap(\"handler clause arity mismatch\");"
+            )
+            .expect("in-memory write");
+            let args = (0..arity)
+                .map(|index| format!("args[{index}]"))
+                .collect::<Vec<_>>();
+            writeln!(out, "    return {callee}({});\n}}", args.join(", "))
+                .expect("in-memory write");
+        }
+        writeln!(
+            out,
+            "static const CieloClauseEntry cielo_clauses_h{}[] = {{",
+            table.handler.as_u32()
+        )
+        .expect("in-memory write");
+        for (index, clause) in table.clauses.iter().enumerate() {
+            writeln!(
+                out,
+                "    {{ {}u, cielo_clause_h{}_{index} }},",
+                clause.operation.as_u32(),
+                table.handler.as_u32()
+            )
+            .expect("in-memory write");
+        }
+        out.push_str("};\n\n");
+    }
 }
 
 fn emit_signature(out: &mut String, function: &CfgFunction, name: &str) {
@@ -183,10 +244,17 @@ fn emit_function(
                             format!("hev{}", handler.as_u32()),
                         ),
                     };
+                    let clauses = program.clauses_of(*handler);
+                    let table = if clauses.is_empty() {
+                        "NULL".to_owned()
+                    } else {
+                        format!("cielo_clauses_h{}", handler.as_u32())
+                    };
                     writeln!(
                         out,
-                        "    {slot} = (CieloEvidence){{ .abi_version = cielo_runtime_abi_version(), .effect = {}, .capability_id = 0, .clause_count = 0, .clauses = NULL, .captures = NULL, .reserved0 = NULL, .reserved1 = NULL }};",
-                        effect.as_u32()
+                        "    {slot} = (CieloEvidence){{ .abi_version = cielo_runtime_abi_version(), .effect = {}, .capability_id = 0, .clause_count = {}, .clauses = {table}, .captures = NULL, .reserved0 = NULL, .reserved1 = NULL }};",
+                        effect.as_u32(),
+                        clauses.len()
                     )
                     .expect("in-memory write");
                     writeln!(

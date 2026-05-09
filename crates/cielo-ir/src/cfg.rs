@@ -35,9 +35,28 @@ pub struct CfgProgram {
     instructions: Vec<CfgInstructionNode>,
     blocks: Vec<CfgBlock>,
     regions: Vec<CfgRegion>,
+    clause_tables: Vec<CfgClauseTable>,
 }
 
 impl CfgProgram {
+    /// Records the clauses a handler could not erase. Ordered by handler, so
+    /// the emitted tables are stable across runs.
+    pub fn push_clause_table(&mut self, handler: CfgHandlerId, clauses: Vec<CfgHandlerClause>) {
+        self.clause_tables.push(CfgClauseTable { handler, clauses });
+    }
+
+    pub fn clause_tables(&self) -> &[CfgClauseTable] {
+        &self.clause_tables
+    }
+
+    pub fn clauses_of(&self, handler: CfgHandlerId) -> &[CfgHandlerClause] {
+        self.clause_tables
+            .iter()
+            .find(|table| table.handler == handler)
+            .map(|table| table.clauses.as_slice())
+            .unwrap_or(&[])
+    }
+
     pub fn push_region(&mut self, owner: RegionOwner, slots: Vec<RegionSlot>) -> CfgRegionId {
         let id = CfgRegionId::new(self.regions.len());
         self.regions.push(CfgRegion { id, owner, slots });
@@ -945,4 +964,21 @@ pub struct CfgFunction {
     pub name: SymbolId,
     pub params: Vec<CfgValueId>,
     pub entry: CfgBlockId,
+}
+
+/// One residual clause: the operation it answers and the function that runs it.
+///
+/// The function returns the resumption argument, so the runtime dispatcher can
+/// hand it straight back to the perform site. Nothing here reifies a
+/// continuation; a clause that would need one never reaches this table.
+#[derive(Clone, Copy, Debug)]
+pub struct CfgHandlerClause {
+    pub operation: SymbolId,
+    pub function: CfgFuncId,
+}
+
+#[derive(Clone, Debug)]
+pub struct CfgClauseTable {
+    pub handler: CfgHandlerId,
+    pub clauses: Vec<CfgHandlerClause>,
 }
