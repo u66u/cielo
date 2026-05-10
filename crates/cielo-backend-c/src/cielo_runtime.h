@@ -1,3 +1,11 @@
+/* Codegen pastes this file into the single generated translation unit, so the
+ * guard is for the copy the driver writes to disk, which tests and FFI
+ * consumers include by name. The mutable globals below are still per-TU: a
+ * second translation unit would get its own handler stack. That is latent
+ * while there is one TU, and is what CIELO-23 has to resolve. */
+#ifndef CIELO_RUNTIME_H
+#define CIELO_RUNTIME_H
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -936,3 +944,5 @@ static CieloValue cielo_make_ctor(const char *ty, const char *variant,
   out.as.ctor = ctor;
   return out;
 }
+
+#endif /* CIELO_RUNTIME_H */

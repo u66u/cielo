@@ -288,3 +288,45 @@ fn switch_traps_on_a_non_integer_selector() {
         "expected the selector trap, got: {stderr}"
     );
 }
+
+/// The driver writes the runtime header next to the emitted C, so anything that
+/// includes it by name can reach it twice through another header.
+#[test]
+fn runtime_header_can_be_included_twice() {
+    if !c_compiler_available() {
+        eprintln!("skipping runtime header include check: no C compiler found");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join(format!("cielo_header_guard_{}", std::process::id()));
+    std::fs::create_dir_all(dir.as_path()).expect("temp dir");
+    std::fs::write(dir.join("cielo_runtime.h"), cielo_backend_c::RUNTIME_HEADER)
+        .expect("write header");
+
+    let source = dir.join("twice.c");
+    std::fs::write(
+        source.as_path(),
+        concat!(
+            "#include \"cielo_runtime.h\"\n",
+            "#include \"cielo_runtime.h\"\n",
+            "int main(void) { return (int)cv_int(0).as.i; }\n"
+        ),
+    )
+    .expect("write source");
+
+    let build = Command::new(c_compiler_command())
+        .arg("-std=c11")
+        .arg("-I")
+        .arg(dir.as_path())
+        .arg("-o")
+        .arg(dir.join("twice"))
+        .arg(source.as_path())
+        .output()
+        .expect("invoke C compiler");
+    let stderr = String::from_utf8_lossy(build.stderr.as_slice()).into_owned();
+    let _ = std::fs::remove_dir_all(dir.as_path());
+    assert!(
+        build.status.success(),
+        "double include does not compile:\n{stderr}"
+    );
+}
