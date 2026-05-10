@@ -118,12 +118,10 @@ enum AdtShape {
     },
 }
 
-/// A constructor call resolved back to its declaring ADT. `variant` is `None`
-/// for a struct constructor.
+/// A constructor call resolved back to its declaring ADT.
 #[derive(Clone, Debug)]
 struct CtorTemplate {
     adt: SymbolId,
-    variant: Option<SymbolId>,
     fields: Vec<CoreTypeRef>,
 }
 
@@ -396,7 +394,13 @@ struct TypeChecker<'a> {
     prim: PrimitiveTypeIds,
     error_type: TypeId,
     adts: HashMap<SymbolId, AdtTemplate>,
-    ctors: HashMap<SymbolId, CtorTemplate>,
+    struct_ctors: HashMap<SymbolId, CtorTemplate>,
+    /// Keyed by `(enum, variant)`: a variant name alone does not identify a
+    /// constructor, since two enums may declare the same one.
+    enum_ctors: HashMap<(SymbolId, SymbolId), CtorTemplate>,
+    /// Every enum declaring a given variant name, in declaration order. Used
+    /// only where the owning enum is not already known.
+    variant_owners: HashMap<SymbolId, Vec<SymbolId>>,
     instances: HashMap<(SymbolId, Vec<TypeId>), TypeId>,
     effect_signatures: EffectSignatureTable,
     function_templates: Vec<FunctionTemplate>,
@@ -424,7 +428,9 @@ impl<'a> TypeChecker<'a> {
             prim,
             error_type,
             adts: HashMap::new(),
-            ctors: HashMap::new(),
+            struct_ctors: HashMap::new(),
+            enum_ctors: HashMap::new(),
+            variant_owners: HashMap::new(),
             instances: HashMap::new(),
             effect_signatures: EffectSignatureTable::new(),
             function_templates: Vec::new(),
@@ -452,11 +458,10 @@ impl<'a> TypeChecker<'a> {
                 },
                 span: decl.span,
             });
-            self.ctors.insert(
+            self.struct_ctors.insert(
                 decl.name,
                 CtorTemplate {
                     adt: decl.name,
-                    variant: None,
                     fields: decl.fields.clone(),
                 },
             );
@@ -475,11 +480,14 @@ impl<'a> TypeChecker<'a> {
                 span: decl.span,
             });
             for variant in &decl.variants {
-                self.ctors.insert(
-                    variant.name,
+                let owners = self.variant_owners.entry(variant.name).or_default();
+                if !owners.contains(&decl.name) {
+                    owners.push(decl.name);
+                }
+                self.enum_ctors.insert(
+                    (decl.name, variant.name),
                     CtorTemplate {
                         adt: decl.name,
-                        variant: Some(variant.name),
                         fields: variant.fields.clone(),
                     },
                 );
@@ -1234,12 +1242,7 @@ impl<'a> TypeChecker<'a> {
             let mut arm_env = env.clone();
             let mut arm_resume = resume_ctx.clone();
 
-            if let Some(ctor) = self
-                .ctors
-                .get(&arm.tag)
-                .filter(|ctor| ctor.variant.is_some())
-                .cloned()
-            {
+            if let Some(ctor) = self.resolve_arm_ctor(scrutinee_ty, arm.tag, arm.span) {
                 let (result, field_tys) = self.instantiate_ctor(&ctor);
                 let _ = self.unify_with(
                     scrutinee_ty,
@@ -1265,12 +1268,6 @@ impl<'a> TypeChecker<'a> {
                     let scheme = self.mono_scheme(*field_ty);
                     arm_env.insert(*binder, scheme);
                 }
-            } else {
-                self.diagnostics.error(
-                    "TYPE_UNKNOWN_MATCH_VARIANT",
-                    "Unknown enum variant in match arm",
-                    arm.span,
-                );
             }
 
             let arm_ty = self.infer_stmt(arm.body, &mut arm_env, &mut arm_resume);
@@ -1374,6 +1371,45 @@ impl<'a> TypeChecker<'a> {
                 Some((pending.name, pending.args.clone()))
             }
             InferTy::Var(_) => None,
+        }
+    }
+
+    /// The scrutinee's own enum decides which variant an arm tag names. Only
+    /// when the scrutinee type is still open does the tag have to identify an
+    /// enum on its own; a tag the scrutinee does not declare still resolves
+    /// elsewhere so the mismatch is reported against the scrutinee.
+    fn resolve_arm_ctor(
+        &mut self,
+        scrutinee: InferTy,
+        tag: SymbolId,
+        span: Span,
+    ) -> Option<CtorTemplate> {
+        if let Some((adt, _)) = self.adt_shape_of(scrutinee)
+            && let Some(ctor) = self.enum_ctors.get(&(adt, tag))
+        {
+            return Some(ctor.clone());
+        }
+        match self.variant_owners.get(&tag).map(Vec::as_slice) {
+            Some([owner]) => self.enum_ctors.get(&(*owner, tag)).cloned(),
+            Some(owners) if owners.len() > 1 => {
+                let names = render_symbols(owners);
+                self.diagnostics.error(
+                    "TYPE_AMBIGUOUS_MATCH_VARIANT",
+                    format!(
+                        "Match arm variant is declared by more than one enum ({names}) and the scrutinee type is unknown"
+                    ),
+                    span,
+                );
+                None
+            }
+            _ => {
+                self.diagnostics.error(
+                    "TYPE_UNKNOWN_MATCH_VARIANT",
+                    "Unknown enum variant in match arm",
+                    span,
+                );
+                None
+            }
         }
     }
 
@@ -1892,11 +1928,19 @@ impl<'a> TypeChecker<'a> {
                 InferTy::Concrete(self.core_type_ref_id(&builtin.return_type()))
             }
             ExprKind::MakeStruct { ty, fields } => {
-                self.infer_ctor_expr(*ty, fields, env, expr.span, STRUCT_CTOR_CODES)
+                let ctor = self.struct_ctors.get(ty).cloned();
+                self.infer_ctor_expr(ctor, fields, env, expr.span, STRUCT_CTOR_CODES)
             }
+            // Lowering already picked the enum, so the variant is looked up
+            // inside it rather than by name across the program.
             ExprKind::MakeEnum {
-                variant, fields, ..
-            } => self.infer_ctor_expr(*variant, fields, env, expr.span, ENUM_CTOR_CODES),
+                ty,
+                variant,
+                fields,
+            } => {
+                let ctor = self.enum_ctors.get(&(*ty, *variant)).cloned();
+                self.infer_ctor_expr(ctor, fields, env, expr.span, ENUM_CTOR_CODES)
+            }
             ExprKind::Error(_) => InferTy::Concrete(self.error_type),
         };
 
@@ -1905,13 +1949,13 @@ impl<'a> TypeChecker<'a> {
 
     fn infer_ctor_expr(
         &mut self,
-        ctor_name: SymbolId,
+        ctor: Option<CtorTemplate>,
         fields: &[ExprId],
         env: &Env,
         span: Span,
         codes: CtorCodes,
     ) -> InferTy {
-        let Some(ctor) = self.ctors.get(&ctor_name).cloned() else {
+        let Some(ctor) = ctor else {
             self.diagnostics
                 .error(codes.unknown, codes.unknown_message, span);
             for field in fields {
@@ -2151,6 +2195,16 @@ pub fn typecheck_residual_core(
 enum EffectConformance {
     Check,
     Skip,
+}
+
+/// Core carries no interner, so a declaration is named by its symbol id, the
+/// same handle `stored_type_name` falls back to.
+fn render_symbols(symbols: &[SymbolId]) -> String {
+    symbols
+        .iter()
+        .map(|symbol| format!("Adt#{}", symbol.as_u32()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn param_substitution<T: Clone>(names: &[SymbolId], values: &[T]) -> HashMap<SymbolId, T> {

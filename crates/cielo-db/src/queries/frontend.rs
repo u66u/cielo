@@ -30,18 +30,20 @@ pub fn core_file(db: &dyn Db, source: SourceFile, target: TargetProfile) -> Arc<
     let main = interner.intern("main");
     let builtins = TargetBuiltinSymbols::intern(&mut interner);
     let runtime_builtins = BuiltinSymbols::intern(&mut interner);
+    let interner = Arc::new(interner);
     let lowered = lower_program(
         &parsed.ast,
         LowerConfig::with_entrypoint(main)
             .with_target_builtins(TargetSpec::from(target), builtins)
-            .with_builtins(runtime_builtins),
+            .with_builtins(runtime_builtins)
+            .with_names(interner.clone()),
     );
     let mut diagnostics = parsed.diagnostics.clone();
     diagnostics.extend(lowered.diagnostics);
     Arc::new(CoreFile {
         source: parsed.source,
         core: LowerOutput::new(lowered.program, diagnostics),
-        interner: Arc::new(interner),
+        interner,
     })
 }
 

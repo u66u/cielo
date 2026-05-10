@@ -402,6 +402,37 @@ fn main() -> Int {
 "#,
         },
         DiffCase {
+            // Two enums declare `Empty`, so the variant tags collide. Both the
+            // oracle and the emitted C dispatch on the tag alone, which is only
+            // sound because each value reaches a match on its own enum.
+            name: "shared_variant_name_across_enums",
+            source: r#"
+enum Shape { Empty, Circle(Int) }
+enum Buffer { Empty, Full(Int) }
+
+fn shape_code(s: Shape) -> Int {
+  match s {
+    | Empty => 1
+    | Circle(r) => r
+  }
+}
+
+fn buffer_code(b: Buffer) -> Int {
+  match b {
+    | Empty => 10
+    | Full(n) => n
+  }
+}
+
+fn empty_buffer() -> Buffer { Empty }
+
+fn main() -> Int {
+  let s: Shape = Empty;
+  shape_code(s) + buffer_code(empty_buffer()) + shape_code(Circle(2)) + buffer_code(Full(3))
+}
+"#,
+        },
+        DiffCase {
             name: "discharged_handler_rt_passthrough",
             source: r#"
 effect LocalState { fn tick() -> Int }
@@ -586,6 +617,27 @@ fn main() -> Int {
   match mk(6) {
     B(x) => x
   }
+}
+"#,
+        ),
+        (
+            // Same variant name in two enums: the payload of one must never be
+            // released against the layout of the other.
+            "shared_variant_name_across_enums",
+            r#"
+enum Shape { Empty, Circle(Int) }
+enum Buffer { Empty, Full(Int) }
+fn shape_code(s: Shape) -> Int {
+  match s { | Empty => 1 | Circle(r) => r }
+}
+fn buffer_code(b: Buffer) -> Int {
+  match b { | Empty => 10 | Full(n) => n }
+}
+fn main() -> Int {
+  let seed = @runtime { 1 + 2 };
+  let s: Shape = if seed > 2 { Circle(seed) } else { Empty };
+  let b: Buffer = if seed > 2 { Full(seed) } else { Empty };
+  shape_code(s) + buffer_code(b)
 }
 "#,
         ),

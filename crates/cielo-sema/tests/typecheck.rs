@@ -437,6 +437,79 @@ fn main() -> Int {
 }
 
 #[test]
+fn accepts_two_enums_sharing_a_variant_name() {
+    let src = r#"
+enum Shape { Empty, Circle(Int) }
+enum Buffer { Empty, Full(Int) }
+fn shape_code(s: Shape) -> Int {
+  match s {
+    Empty => 1,
+    Circle(r) => r
+  }
+}
+fn buffer_code(b: Buffer) -> Int {
+  match b {
+    Empty => 10,
+    Full(n) => n
+  }
+}
+fn main() -> Int {
+  let s: Shape = Empty;
+  let b: Buffer = Empty;
+  shape_code(s) + buffer_code(b)
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    assert!(
+        !diagnostics.has_errors(),
+        "{:?}",
+        diagnostics
+            .entries()
+            .iter()
+            .map(|d| d.code.to_owned())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn reports_a_match_arm_from_another_enum_against_the_scrutinee() {
+    let src = r#"
+enum Shape { Empty, Circle(Int) }
+enum Buffer { Empty, Full(Int) }
+fn shape_code(s: Shape) -> Int {
+  match s {
+    Empty => 1,
+    Full(n) => n
+  }
+}
+fn main() -> Int {
+  shape_code(Empty)
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let mut diagnostics = DiagnosticBag::default();
+    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    assert!(
+        diagnostics
+            .entries()
+            .iter()
+            .any(|d| d.code == "TYPE_MATCH_SCRUTINEE_MISMATCH"),
+        "{:?}",
+        diagnostics
+            .entries()
+            .iter()
+            .map(|d| d.code.to_owned())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn reports_effect_performed_without_declaration() {
     let src = r#"
 effect Console { fn print(s: String) -> Int }

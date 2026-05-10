@@ -494,6 +494,103 @@ fn main() -> Int {
 }
 
 #[test]
+fn reports_arity_for_a_bare_non_nullary_variant() {
+    let src = r#"
+enum OptInt { SomeI(Int), NoneI }
+fn main() -> Int {
+  let a = SomeI;
+  0
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let codes = diagnostic_codes(&lowered);
+    assert!(
+        codes.contains(&"LOWER_BAD_ENUM_CTOR_ARITY".to_owned()),
+        "got {codes:?}"
+    );
+    assert!(!codes.contains(&"LOWER_UNKNOWN_VAR".to_owned()));
+}
+
+#[test]
+fn resolves_a_shared_variant_name_through_the_expected_type() {
+    let src = r#"
+enum Shape { Empty, Circle(Int) }
+enum Buffer { Empty, Full(Int) }
+fn shape_code(s: Shape) -> Int { match s { Empty => 1, Circle(r) => r } }
+fn buffer_of() -> Buffer { Empty }
+fn main() -> Int {
+  let b: Buffer = Empty;
+  shape_code(Empty)
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    assert!(
+        !lowered.diagnostics.has_errors(),
+        "{:?}",
+        diagnostic_codes(&lowered)
+    );
+
+    let shape = interner.intern("Shape");
+    let buffer = interner.intern("Buffer");
+    let empty = interner.intern("Empty");
+    let owners = lowered
+        .program
+        .exprs()
+        .iter()
+        .filter_map(|expr| match &expr.kind {
+            cielo_ir::core::ExprKind::MakeEnum { ty, variant, .. } if *variant == empty => {
+                Some(*ty)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(owners, vec![buffer, buffer, shape]);
+}
+
+#[test]
+fn reports_an_ambiguous_shared_variant_name_with_its_candidates() {
+    let src = r#"
+enum Shape { Empty, Circle(Int) }
+enum Buffer { Empty, Full(Int) }
+fn main() -> Int {
+  let a = Empty;
+  0
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let names = std::sync::Arc::new(interner);
+    let lowered = lower_program(
+        &parsed.program,
+        LowerConfig::default().with_names(names.clone()),
+    );
+    let ambiguity = lowered
+        .diagnostics
+        .entries()
+        .iter()
+        .find(|diag| diag.code == "LOWER_AMBIGUOUS_ENUM_CTOR")
+        .expect("ambiguity diagnostic");
+    assert!(
+        ambiguity.message.contains("Shape") && ambiguity.message.contains("Buffer"),
+        "{}",
+        ambiguity.message
+    );
+}
+
+fn diagnostic_codes(lowered: &cielo_lowering::LowerOutput) -> Vec<String> {
+    lowered
+        .diagnostics
+        .entries()
+        .iter()
+        .map(|diag| diag.code.to_owned())
+        .collect()
+}
+
+#[test]
 fn records_declared_let_types() {
     let src = r#"
 fn wrap[T](x: T) -> T {

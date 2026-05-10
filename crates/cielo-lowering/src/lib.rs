@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 // Pass 1/9: lowering (AST -> Core)
 //
@@ -22,7 +23,7 @@ use std::collections::{HashMap, HashSet};
 // Complexity:
 // - Linear in AST size (single walk + reverse statement stitching per block)
 
-use cielo_base::diagnostics::DiagnosticBag;
+use cielo_base::diagnostics::{DiagnosticBag, ErrorNode};
 use cielo_base::{EffectLabelId, FuncId, HandlerId, Interner, Span, SymbolId, VarId};
 use cielo_frontend::ast::{
     self, BuiltinType, EffectCapabilityHint, EffectPropertyHint, ExprKind as AstExprKind, Item,
@@ -70,6 +71,9 @@ pub struct LowerConfig {
     pub target_spec: Option<TargetSpec>,
     pub target_builtins: Option<TargetBuiltinSymbols>,
     pub builtins: BuiltinSymbols,
+    /// Diagnostic text only. Without it a symbol is printed as its id, which is
+    /// how the later passes render names they cannot resolve.
+    pub names: Option<Arc<Interner>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -96,11 +100,17 @@ impl LowerConfig {
             target_spec: None,
             target_builtins: None,
             builtins: BuiltinSymbols::default(),
+            names: None,
         }
     }
 
     pub fn with_builtins(mut self, builtins: BuiltinSymbols) -> Self {
         self.builtins = builtins;
+        self
+    }
+
+    pub fn with_names(mut self, names: Arc<Interner>) -> Self {
+        self.names = Some(names);
         self
     }
 
@@ -130,9 +140,11 @@ struct Lowerer {
     next_var: u32,
     functions_by_name: HashMap<SymbolId, FuncId>,
     effect_labels: HashMap<SymbolId, EffectLabelId>,
-    effect_ops: HashMap<(EffectLabelId, SymbolId), usize>,
-    struct_ctors: HashMap<SymbolId, usize>,
-    enum_ctors: HashMap<SymbolId, (SymbolId, usize)>,
+    effect_ops: HashMap<(EffectLabelId, SymbolId), Vec<CoreTypeRef>>,
+    struct_ctors: HashMap<SymbolId, Vec<CoreTypeRef>>,
+    /// Variant name -> every enum declaring it. Two enums may share a variant
+    /// name, so an unqualified use is resolved against the expected type.
+    enum_ctors: HashMap<SymbolId, Vec<EnumCtor>>,
     handler_decls: HashMap<SymbolId, ast::HandlerDecl>,
     active_resume_vars: HashSet<VarId>,
     /// Type parameters of the function whose body is being lowered, so a `let`
@@ -144,6 +156,12 @@ struct Lowerer {
 enum LoweredValue {
     Expr(cielo_base::ExprId),
     Stmt(cielo_base::StmtId),
+}
+
+#[derive(Clone, Debug)]
+struct EnumCtor {
+    enum_name: SymbolId,
+    fields: Vec<CoreTypeRef>,
 }
 
 impl Lowerer {
@@ -173,15 +191,16 @@ impl Lowerer {
                     self.effect_labels.insert(effect.name, effect_id);
                     let mut operations = Vec::with_capacity(effect.operations.len());
                     for operation in &effect.operations {
+                        let param_types = operation
+                            .params
+                            .iter()
+                            .map(|param| lower_type_ref(&param.ty, &[]))
+                            .collect::<Vec<_>>();
                         self.effect_ops
-                            .insert((effect_id, operation.name), operation.params.len());
+                            .insert((effect_id, operation.name), param_types.clone());
                         operations.push(EffectOperationDecl {
                             name: operation.name,
-                            param_types: operation
-                                .params
-                                .iter()
-                                .map(|param| lower_type_ref(&param.ty, &[]))
-                                .collect(),
+                            param_types,
                             return_type: operation
                                 .return_type
                                 .as_ref()
@@ -199,15 +218,16 @@ impl Lowerer {
                     });
                 }
                 Item::Struct(decl) => {
-                    self.struct_ctors.insert(decl.name, decl.fields.len());
+                    let fields = decl
+                        .fields
+                        .iter()
+                        .map(|field| lower_type_ref(&field.ty, &decl.type_params))
+                        .collect::<Vec<_>>();
+                    self.struct_ctors.insert(decl.name, fields.clone());
                     self.program.add_struct(AdtStructDecl {
                         name: decl.name,
                         type_params: decl.type_params.clone(),
-                        fields: decl
-                            .fields
-                            .iter()
-                            .map(|field| lower_type_ref(&field.ty, &decl.type_params))
-                            .collect(),
+                        fields,
                         field_names: decl.fields.iter().map(|field| field.name).collect(),
                         span: decl.span,
                     });
@@ -215,15 +235,21 @@ impl Lowerer {
                 Item::Enum(decl) => {
                     let mut variants = Vec::with_capacity(decl.variants.len());
                     for variant in &decl.variants {
+                        let fields = variant
+                            .fields
+                            .iter()
+                            .map(|field| lower_type_ref(field, &decl.type_params))
+                            .collect::<Vec<_>>();
                         self.enum_ctors
-                            .insert(variant.name, (decl.name, variant.fields.len()));
+                            .entry(variant.name)
+                            .or_default()
+                            .push(EnumCtor {
+                                enum_name: decl.name,
+                                fields: fields.clone(),
+                            });
                         variants.push(AdtEnumVariantDecl {
                             name: variant.name,
-                            fields: variant
-                                .fields
-                                .iter()
-                                .map(|field| lower_type_ref(field, &decl.type_params))
-                                .collect(),
+                            fields,
                             span: variant.span,
                         });
                     }
@@ -297,7 +323,11 @@ impl Lowerer {
             }
 
             self.type_params.clone_from(&function.type_params);
-            let body = self.lower_block(&function.body, &mut locals);
+            let expected = function
+                .return_type
+                .as_ref()
+                .and_then(|ty| expected_adt(&lower_type_ref(ty, &function.type_params)));
+            let body = self.lower_block(&function.body, &mut locals, expected);
             if let Some(core_fn) = self.program.function_mut(func_id) {
                 core_fn.body = body;
             }
@@ -318,10 +348,13 @@ impl Lowerer {
         self.program.set_entrypoints(entrypoints);
     }
 
+    /// `expected` is the ADT the block's tail must produce, when the enclosing
+    /// syntax fixes it; it only ever picks between same-named enum variants.
     fn lower_block(
         &mut self,
         block: &ast::BlockExpr,
         outer_locals: &mut HashMap<SymbolId, VarId>,
+        expected: Option<SymbolId>,
     ) -> cielo_base::StmtId {
         enum Action {
             Let {
@@ -355,9 +388,13 @@ impl Lowerer {
                     span,
                 } => {
                     let binding = self.fresh_var();
-                    let lowered = self.lower_binding_value(value, &locals);
-                    if let Some(ty) = ty {
-                        let declared = lower_type_ref(ty, &self.type_params);
+                    let declared = ty.as_ref().map(|ty| lower_type_ref(ty, &self.type_params));
+                    let lowered = self.lower_binding_value(
+                        value,
+                        &locals,
+                        declared.as_ref().and_then(expected_adt),
+                    );
+                    if let Some(declared) = declared {
                         self.program.set_declared_var_type(binding, declared);
                     }
                     locals.insert(*name, binding);
@@ -376,7 +413,7 @@ impl Lowerer {
                 }
                 AstStmt::Expr { value, span } => {
                     let temp = self.fresh_var();
-                    match self.lower_binding_value(value, &locals) {
+                    match self.lower_binding_value(value, &locals, None) {
                         LoweredValue::Expr(value) => actions.push(Action::Let {
                             span: *span,
                             binding: temp,
@@ -406,7 +443,7 @@ impl Lowerer {
                             *span,
                         );
                         for arg in args {
-                            let _ = self.lower_expr(arg, &locals);
+                            let _ = self.lower_expr(arg, &locals, None);
                         }
                         let value = self.push_expr(ExprKind::Error(error), *span);
                         let binding = match *binding {
@@ -425,13 +462,14 @@ impl Lowerer {
                         continue;
                     };
 
-                    match self.effect_ops.get(&(effect_label, *operation)) {
-                        Some(expected) if *expected != args.len() => {
+                    let param_types = self.effect_ops.get(&(effect_label, *operation)).cloned();
+                    match &param_types {
+                        Some(expected) if expected.len() != args.len() => {
                             self.diagnostics.error(
                                 "LOWER_BAD_EFFECT_OP_ARITY",
                                 format!(
                                     "Effect operation argument count mismatch: expected {}, got {}",
-                                    expected,
+                                    expected.len(),
                                     args.len()
                                 ),
                                 *span,
@@ -447,9 +485,17 @@ impl Lowerer {
                         }
                     }
 
+                    let expectations = param_expectations(param_types.as_deref());
                     let lowered_args = args
                         .iter()
-                        .map(|arg| self.lower_expr(arg, &locals))
+                        .enumerate()
+                        .map(|(index, arg)| {
+                            self.lower_expr(
+                                arg,
+                                &locals,
+                                expectations.get(index).copied().flatten(),
+                            )
+                        })
                         .collect();
                     let result = binding.map(|name| {
                         let var = self.fresh_var();
@@ -477,7 +523,7 @@ impl Lowerer {
         }
 
         let mut next = if let Some(tail) = &block.tail {
-            match self.lower_binding_value(tail, &locals) {
+            match self.lower_binding_value(tail, &locals, expected) {
                 LoweredValue::Expr(value) => self.push_stmt(StmtKind::Return(value), block.span),
                 LoweredValue::Stmt(value) => {
                     let binding = self.fresh_var();
@@ -549,11 +595,12 @@ impl Lowerer {
         &mut self,
         value: &ast::Expr,
         locals: &HashMap<SymbolId, VarId>,
+        expected: Option<SymbolId>,
     ) -> LoweredValue {
-        if let Some(stmt) = self.lower_effectful_expr(value, locals) {
+        if let Some(stmt) = self.lower_effectful_expr(value, locals, expected) {
             LoweredValue::Stmt(stmt)
         } else {
-            LoweredValue::Expr(self.lower_expr(value, locals))
+            LoweredValue::Expr(self.lower_expr(value, locals, expected))
         }
     }
 
@@ -561,10 +608,11 @@ impl Lowerer {
         &mut self,
         expr: &ast::Expr,
         locals: &HashMap<SymbolId, VarId>,
+        expected: Option<SymbolId>,
     ) -> Option<cielo_base::StmtId> {
         if let AstExprKind::StageBlock { stage, block } = &expr.kind {
             let mut block_locals = locals.clone();
-            let body = self.lower_block(block, &mut block_locals);
+            let body = self.lower_block(block, &mut block_locals, expected);
             return Some(self.push_stmt(
                 StmtKind::Stage {
                     stage: map_stage_marker(*stage),
@@ -581,12 +629,12 @@ impl Lowerer {
             else_branch,
         } = &expr.kind
         {
-            let cond = self.lower_expr(cond, locals);
+            let cond = self.lower_expr(cond, locals, None);
             let mut then_locals = locals.clone();
-            let then_branch = self.lower_block(then_branch, &mut then_locals);
+            let then_branch = self.lower_block(then_branch, &mut then_locals, expected);
             let else_branch = if let Some(else_block) = else_branch {
                 let mut else_locals = locals.clone();
-                self.lower_block(else_block, &mut else_locals)
+                self.lower_block(else_block, &mut else_locals, expected)
             } else {
                 let unit = self.push_expr(ExprKind::Literal(Literal::Unit), expr.span);
                 self.push_stmt(StmtKind::Return(unit), expr.span)
@@ -607,7 +655,7 @@ impl Lowerer {
             default,
         } = &expr.kind
         {
-            let scrutinee = self.lower_expr(scrutinee, locals);
+            let scrutinee = self.lower_expr(scrutinee, locals, None);
             let mut arms = Vec::with_capacity(clauses.len());
             for clause in clauses {
                 let mut clause_locals = locals.clone();
@@ -617,7 +665,7 @@ impl Lowerer {
                     clause_locals.insert(*binder, var);
                     binders.push(var);
                 }
-                let body = self.lower_block(&clause.body, &mut clause_locals);
+                let body = self.lower_block(&clause.body, &mut clause_locals, expected);
                 arms.push(MatchArm {
                     tag: clause.tag,
                     binders,
@@ -627,7 +675,7 @@ impl Lowerer {
             }
             let default = default.as_ref().map(|block| {
                 let mut default_locals = locals.clone();
-                self.lower_block(block, &mut default_locals)
+                self.lower_block(block, &mut default_locals, expected)
             });
             return Some(self.push_stmt(
                 StmtKind::Match {
@@ -649,7 +697,7 @@ impl Lowerer {
             {
                 let result = self.fresh_var();
                 let arg = if args.len() == 1 {
-                    self.lower_expr(&args[0], locals)
+                    self.lower_expr(&args[0], locals, None)
                 } else {
                     self.diagnostics.error(
                         "LOWER_RESUME_ARITY",
@@ -687,10 +735,7 @@ impl Lowerer {
                     .filter(|row| !row.is_empty());
                 let effects = effects?;
                 let result = self.fresh_var();
-                let arg_ids = args
-                    .iter()
-                    .map(|arg| self.lower_expr(arg, locals))
-                    .collect();
+                let arg_ids = self.lower_call_args(func_id, args, locals);
                 let return_expr = self.push_expr(ExprKind::Var(result), expr.span);
                 let return_stmt = self.push_stmt(StmtKind::Return(return_expr), expr.span);
                 return Some(self.push_stmt(
@@ -735,10 +780,10 @@ impl Lowerer {
         // Emitting a handler over an unresolved effect would trip the
         // pre-staging effect assertion before these diagnostics are read.
         let Some(handler_id) = handler_id else {
-            return Some(self.lower_handle_body(body, locals));
+            return Some(self.lower_handle_body(body, locals, expected));
         };
 
-        let body_stmt = self.lower_handle_body(body, locals);
+        let body_stmt = self.lower_handle_body(body, locals, expected);
         let handled = self.push_stmt(
             StmtKind::Handle {
                 handler: handler_id,
@@ -754,17 +799,18 @@ impl Lowerer {
         &mut self,
         body: &ast::Expr,
         locals: &HashMap<SymbolId, VarId>,
+        expected: Option<SymbolId>,
     ) -> cielo_base::StmtId {
-        if let Some(stmt) = self.lower_effectful_expr(body, locals) {
+        if let Some(stmt) = self.lower_effectful_expr(body, locals, expected) {
             return stmt;
         }
         match &body.kind {
             AstExprKind::Block(block) => {
                 let mut block_locals = locals.clone();
-                self.lower_block(block, &mut block_locals)
+                self.lower_block(block, &mut block_locals, expected)
             }
             _ => {
-                let body_expr = self.lower_expr(body, locals);
+                let body_expr = self.lower_expr(body, locals, expected);
                 self.push_stmt(StmtKind::Return(body_expr), body.span)
             }
         }
@@ -812,10 +858,11 @@ impl Lowerer {
             }
 
             match self.effect_ops.get(&(effect_label, clause.operation)) {
-                Some(expected) => {
+                Some(params) => {
+                    let expected = params.len();
                     if clause_param_symbols.len() == expected + 1 {
                         resume_symbol = clause_param_symbols.pop();
-                    } else if clause_param_symbols.len() != *expected {
+                    } else if clause_param_symbols.len() != expected {
                         self.diagnostics.error(
                             "LOWER_BAD_HANDLER_CLAUSE_ARITY",
                             format!(
@@ -852,10 +899,10 @@ impl Lowerer {
 
             let clause_body = if let Some(resume_var) = resume_param {
                 self.with_resume_var(resume_var, |lowerer| {
-                    lowerer.lower_block(&clause.body, &mut clause_locals)
+                    lowerer.lower_block(&clause.body, &mut clause_locals, None)
                 })
             } else {
-                self.lower_block(&clause.body, &mut clause_locals)
+                self.lower_block(&clause.body, &mut clause_locals, None)
             };
             core_clauses.push(HandlerClause {
                 operation: clause.operation,
@@ -879,10 +926,11 @@ impl Lowerer {
         &mut self,
         expr: &ast::Expr,
         locals: &HashMap<SymbolId, VarId>,
+        expected: Option<SymbolId>,
     ) -> cielo_base::ExprId {
         let kind = match &expr.kind {
             AstExprKind::Field { base, field } => ExprKind::Field {
-                base: self.lower_expr(base, locals),
+                base: self.lower_expr(base, locals, None),
                 field: *field,
             },
             AstExprKind::Int(value) => ExprKind::Literal(Literal::Int(*value)),
@@ -901,11 +949,25 @@ impl Lowerer {
                     } else {
                         ExprKind::Var(*var_id)
                     }
-                } else if let Some(&(enum_name, 0)) = self.enum_ctors.get(name) {
-                    ExprKind::MakeEnum {
-                        ty: enum_name,
-                        variant: *name,
-                        fields: Vec::new(),
+                } else if self.enum_ctors.contains_key(name) {
+                    match self.resolve_enum_ctor(*name, expected) {
+                        Some(ctor) if ctor.fields.is_empty() => ExprKind::MakeEnum {
+                            ty: ctor.enum_name,
+                            variant: *name,
+                            fields: Vec::new(),
+                        },
+                        Some(ctor) => {
+                            let error = self.diagnostics.error_node(
+                                "LOWER_BAD_ENUM_CTOR_ARITY",
+                                format!(
+                                    "Enum constructor argument count mismatch: expected {}, got 0",
+                                    ctor.fields.len()
+                                ),
+                                expr.span,
+                            );
+                            ExprKind::Error(error)
+                        }
+                        None => ExprKind::Error(self.ambiguous_ctor_error(*name, expr.span)),
                     }
                 } else {
                     let error = self.diagnostics.error_node(
@@ -918,12 +980,12 @@ impl Lowerer {
             }
             AstExprKind::Unary { op, expr: inner } => ExprKind::Unary {
                 op: map_unary_op(*op),
-                expr: self.lower_expr(inner, locals),
+                expr: self.lower_expr(inner, locals, None),
             },
             AstExprKind::Binary { op, lhs, rhs } => ExprKind::Binary {
                 op: map_binary_op(*op),
-                lhs: self.lower_expr(lhs, locals),
-                rhs: self.lower_expr(rhs, locals),
+                lhs: self.lower_expr(lhs, locals, None),
+                rhs: self.lower_expr(rhs, locals, None),
             },
             AstExprKind::Call { callee, args } => {
                 if let AstExprKind::Var(symbol) = callee.kind {
@@ -952,42 +1014,40 @@ impl Lowerer {
                             );
                             return self.push_expr(ExprKind::Error(error), expr.span);
                         }
+                        let func_id = *func_id;
                         ExprKind::PureCall {
-                            callee: *func_id,
-                            args: args
-                                .iter()
-                                .map(|arg| self.lower_expr(arg, locals))
-                                .collect(),
+                            callee: func_id,
+                            args: self.lower_call_args(func_id, args, locals),
                         }
-                    } else if let Some((enum_name, expected)) =
-                        self.enum_ctors.get(&symbol).copied()
-                    {
-                        if expected != args.len() {
-                            self.diagnostics.error(
-                                "LOWER_BAD_ENUM_CTOR_ARITY",
-                                format!(
-                                    "Enum constructor argument count mismatch: expected {}, got {}",
-                                    expected,
-                                    args.len()
-                                ),
-                                expr.span,
-                            );
+                    } else if self.enum_ctors.contains_key(&symbol) {
+                        match self.resolve_enum_ctor(symbol, expected) {
+                            Some(ctor) => {
+                                if ctor.fields.len() != args.len() {
+                                    self.diagnostics.error(
+                                        "LOWER_BAD_ENUM_CTOR_ARITY",
+                                        format!(
+                                            "Enum constructor argument count mismatch: expected {}, got {}",
+                                            ctor.fields.len(),
+                                            args.len()
+                                        ),
+                                        expr.span,
+                                    );
+                                }
+                                ExprKind::MakeEnum {
+                                    ty: ctor.enum_name,
+                                    variant: symbol,
+                                    fields: self.lower_field_args(&ctor.fields, args, locals),
+                                }
+                            }
+                            None => ExprKind::Error(self.ambiguous_ctor_error(symbol, expr.span)),
                         }
-                        ExprKind::MakeEnum {
-                            ty: enum_name,
-                            variant: symbol,
-                            fields: args
-                                .iter()
-                                .map(|arg| self.lower_expr(arg, locals))
-                                .collect(),
-                        }
-                    } else if let Some(expected) = self.struct_ctors.get(&symbol).copied() {
-                        if expected != args.len() {
+                    } else if let Some(field_types) = self.struct_ctors.get(&symbol).cloned() {
+                        if field_types.len() != args.len() {
                             self.diagnostics.error(
                                 "LOWER_BAD_STRUCT_CTOR_ARITY",
                                 format!(
                                     "Struct constructor argument count mismatch: expected {}, got {}",
-                                    expected,
+                                    field_types.len(),
                                     args.len()
                                 ),
                                 expr.span,
@@ -995,10 +1055,7 @@ impl Lowerer {
                         }
                         ExprKind::MakeStruct {
                             ty: symbol,
-                            fields: args
-                                .iter()
-                                .map(|arg| self.lower_expr(arg, locals))
-                                .collect(),
+                            fields: self.lower_field_args(&field_types, args, locals),
                         }
                     } else if let Some(target_builtin) =
                         self.lower_target_builtin_call(symbol, args, locals, expr.span)
@@ -1011,7 +1068,7 @@ impl Lowerer {
                             builtin,
                             args: args
                                 .iter()
-                                .map(|arg| self.lower_expr(arg, locals))
+                                .map(|arg| self.lower_expr(arg, locals, None))
                                 .collect(),
                         }
                     } else {
@@ -1048,6 +1105,93 @@ impl Lowerer {
         self.push_expr(kind, expr.span)
     }
 
+    /// Picks the enum an unqualified variant name belongs to. A name declared
+    /// by a single enum needs no context; otherwise only the expected type can
+    /// decide, and `None` means the caller must report the ambiguity.
+    fn resolve_enum_ctor(&self, variant: SymbolId, expected: Option<SymbolId>) -> Option<EnumCtor> {
+        let candidates = self.enum_ctors.get(&variant)?;
+        let first = candidates.first()?;
+        if candidates
+            .iter()
+            .all(|ctor| ctor.enum_name == first.enum_name)
+        {
+            return Some(first.clone());
+        }
+        let expected = expected?;
+        candidates
+            .iter()
+            .find(|ctor| ctor.enum_name == expected)
+            .cloned()
+    }
+
+    fn ambiguous_ctor_error(&mut self, variant: SymbolId, span: Span) -> ErrorNode {
+        let owners = self
+            .enum_ctors
+            .get(&variant)
+            .map(|candidates| {
+                candidates
+                    .iter()
+                    .map(|ctor| ctor.enum_name)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let names = self.describe_symbols(&owners);
+        self.diagnostics.error_node(
+            "LOWER_AMBIGUOUS_ENUM_CTOR",
+            format!(
+                "Enum constructor is declared by more than one enum ({names}); annotate the expected type"
+            ),
+            span,
+        )
+    }
+
+    fn describe_symbols(&self, symbols: &[SymbolId]) -> String {
+        symbols
+            .iter()
+            .map(|symbol| {
+                match self
+                    .config
+                    .names
+                    .as_deref()
+                    .and_then(|names| names.resolve(*symbol))
+                {
+                    Some(text) => text.to_owned(),
+                    None => format!("#{}", symbol.as_u32()),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    fn lower_call_args(
+        &mut self,
+        callee: FuncId,
+        args: &[ast::Expr],
+        locals: &HashMap<SymbolId, VarId>,
+    ) -> Vec<cielo_base::ExprId> {
+        let param_types = self
+            .program
+            .function(callee)
+            .map(|function| function.param_types.clone())
+            .unwrap_or_default();
+        self.lower_field_args(&param_types, args, locals)
+    }
+
+    fn lower_field_args(
+        &mut self,
+        declared: &[CoreTypeRef],
+        args: &[ast::Expr],
+        locals: &HashMap<SymbolId, VarId>,
+    ) -> Vec<cielo_base::ExprId> {
+        args.iter()
+            .enumerate()
+            .map(|(index, arg)| {
+                let expected = declared.get(index).and_then(expected_adt);
+                self.lower_expr(arg, locals, expected)
+            })
+            .collect()
+    }
+
     fn lower_target_builtin_call(
         &mut self,
         callee: SymbolId,
@@ -1073,7 +1217,7 @@ impl Lowerer {
         }
 
         for arg in args {
-            let _ = self.lower_expr(arg, locals);
+            let _ = self.lower_expr(arg, locals, None);
         }
         let error = self.diagnostics.error_node(
             "LOWER_TARGET_BUILTIN_ARITY",
@@ -1108,6 +1252,23 @@ impl Lowerer {
         self.next_var += 1;
         id
     }
+}
+
+/// The ADT a declared type names, if any. A type parameter yields `None`: at
+/// lowering time nothing pins it down.
+fn expected_adt(ty: &CoreTypeRef) -> Option<SymbolId> {
+    match ty {
+        CoreTypeRef::Named(name) | CoreTypeRef::Applied { name, .. } => Some(*name),
+        _ => None,
+    }
+}
+
+fn param_expectations(params: Option<&[CoreTypeRef]>) -> Vec<Option<SymbolId>> {
+    params
+        .unwrap_or_default()
+        .iter()
+        .map(expected_adt)
+        .collect()
 }
 
 /// `type_params` are the enclosing declaration's `[T]` names. A path that
