@@ -767,8 +767,6 @@ int main(void) {{
 
     (void)cielo_perform_scoped(7u, inner_cap, 123u, "tick", 0u, NULL);
     cielo_handler_pop(inner_cap);
-
-    (void)cielo_perform_scoped(7u, inner_cap, 123u, "tick", 0u, NULL);
     cielo_handler_pop(outer_cap);
 
     return (inner_hits == 1 && outer_hits == 0) ? 0 : 1;
@@ -780,6 +778,75 @@ int main(void) {{
     assert_eq!(
         actual, 0,
         "scoped perform should not dispatch into a different capability instance"
+    );
+}
+
+/// Performing on a capability whose frame has been popped is a program error.
+/// Falling through to another frame with the same effect label would run the
+/// wrong clause, and returning unit is indistinguishable from a real result.
+#[test]
+fn scoped_perform_traps_when_its_capability_left_scope() {
+    if !c_compiler_available() {
+        eprintln!("skipping stale capability runtime test: no C compiler found");
+        return;
+    }
+
+    let runtime_header = format!(
+        "{}/../cielo-backend-c/src/cielo_runtime.h",
+        env!("CARGO_MANIFEST_DIR")
+    )
+    .replace('\\', "\\\\");
+    let c_source = format!(
+        r#"
+#include <stdint.h>
+#include "{runtime_header}"
+
+static int outer_hits = 0;
+
+static CieloValue outer_clause(CieloEvidence* evidence, CieloContinuation* continuation, size_t argc, const CieloValue* args) {{
+    (void)evidence;
+    (void)continuation;
+    (void)argc;
+    (void)args;
+    outer_hits += 1;
+    return cv_unit();
+}}
+
+int main(void) {{
+    CieloClauseEntry outer_entries[1] = {{ {{123u, outer_clause}} }};
+    CieloEvidence outer = {{
+        .abi_version = cielo_runtime_abi_version(),
+        .effect = 7u,
+        .capability_id = 0u,
+        .clause_count = 1u,
+        .clauses = outer_entries,
+        .captures = NULL,
+        .reserved0 = NULL,
+        .reserved1 = NULL
+    }};
+    CieloEvidence inner = outer;
+
+    uint32_t outer_cap = cielo_handler_push_with_evidence(7u, &outer);
+    uint32_t inner_cap = cielo_handler_push_with_evidence(7u, &inner);
+    if (outer_cap == 0u || inner_cap == 0u) {{
+        return 3;
+    }}
+    cielo_handler_pop(inner_cap);
+
+    (void)cielo_perform_scoped(7u, inner_cap, 123u, "tick", 0u, NULL);
+    return outer_hits;
+}}
+"#
+    );
+
+    let (code, stderr, _) = compile_and_run_c("stale_scoped_capability", c_source.as_str());
+    assert_eq!(
+        code, None,
+        "a stale scoped capability must abort, not return a value"
+    );
+    assert!(
+        stderr.contains("scoped handler is no longer in scope"),
+        "expected the stale-capability trap, got: {stderr}"
     );
 }
 
@@ -1625,7 +1692,8 @@ fn assert_arc_balanced(case_name: &str, c_source: &str) {
     );
 }
 
-fn compile_and_run_c_exit_code(case_name: &str, c_source: &str) -> i32 {
+/// Exit code (`None` when a signal killed it), stderr, stdout.
+fn compile_and_run_c(case_name: &str, c_source: &str) -> (Option<i32>, String, String) {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock should be monotonic enough for temp dir naming")
@@ -1660,14 +1728,20 @@ fn compile_and_run_c_exit_code(case_name: &str, c_source: &str) -> i32 {
     let run = Command::new(bin_path.as_path())
         .output()
         .expect("failed to execute compiled C binary");
-    let code = run.status.code().unwrap_or_else(|| {
-        panic!(
-            "runtime execution terminated by signal for case {}:\nstdout:\n{}\nstderr:\n{}",
-            case_name,
-            String::from_utf8_lossy(run.stdout.as_slice()),
-            String::from_utf8_lossy(run.stderr.as_slice())
-        )
-    });
+    let outcome = (
+        run.status.code(),
+        String::from_utf8_lossy(run.stderr.as_slice()).into_owned(),
+        String::from_utf8_lossy(run.stdout.as_slice()).into_owned(),
+    );
     let _ = fs::remove_dir_all(work_dir.as_path());
-    code
+    outcome
+}
+
+fn compile_and_run_c_exit_code(case_name: &str, c_source: &str) -> i32 {
+    let (code, stderr, stdout) = compile_and_run_c(case_name, c_source);
+    code.unwrap_or_else(|| {
+        panic!(
+            "runtime execution terminated by signal for case {case_name}:\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        )
+    })
 }
