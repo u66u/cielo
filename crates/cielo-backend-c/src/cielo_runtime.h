@@ -870,9 +870,10 @@ static CieloValue cielo_perform_scoped(uint32_t effect,
         cielo_trap("handler has no clause for this operation");
       }
     }
-    // Scoped performs must not fall back to another handler instance with the
-    // same effect label.
-    return cv_unit();
+    // Falling back to another handler instance with the same effect label
+    // would run the wrong clause, and returning unit is indistinguishable
+    // from a real unit result.
+    cielo_trap_op("scoped handler is no longer in scope", op);
   }
   for (size_t i = g_cielo_handler_depth; i > 0; i--) {
     if (g_cielo_handlers[i - 1].effect == effect) {
