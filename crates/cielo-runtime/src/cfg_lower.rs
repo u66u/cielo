@@ -225,19 +225,39 @@ impl<'a> Lowerer<'a> {
     /// The statement cache is function-local, so it is swapped out here for
     /// the same reason [`Lowerer::lower`] clears it per function: a block
     /// reused across the boundary would belong to the wrong function.
+    ///
+    /// The parameters are synthetic rather than the clause's own variables,
+    /// which the ownership tables classify as borrowed views. The dispatcher
+    /// hands over an owned reference, so it has to arrive in a value the ARC
+    /// pass treats as managed and then bind through a `Let`, exactly as the
+    /// inlining path binds a clause parameter at the perform site. Making the
+    /// borrowed variable the parameter instead drops the reference silently.
     fn lower_clause(&mut self, handler: CfgHandlerId, clause: &LinearHandlerClause) {
         let outer = std::mem::take(&mut self.statements);
+        let params = clause
+            .params
+            .iter()
+            .map(|_| self.synthetic_value())
+            .collect::<Vec<_>>();
         // A clause body is its own function, so it starts from an empty scope
         // carrying only its parameters -- never the enclosing body's bindings.
         let mut scope = Scope::default();
-        let mut params = Vec::with_capacity(clause.params.len());
+        let mut bound = Vec::with_capacity(clause.params.len());
         for var in &clause.params {
             let value = self.cfg.push_value(Some(*var));
             scope = scope.bind(*var, value);
-            params.push(value);
+            bound.push(value);
         }
         let body = self.lower_stmt(clause.body, Exit::Return, &scope);
         let entry = self.cfg.push_block(params.clone(), Some(clause.body));
+        for (param, result) in params.iter().zip(bound) {
+            let value = self.cfg.push_expr(CfgExpr::Value(*param), None);
+            self.cfg.push_instruction(
+                entry,
+                CfgInstruction::Let { result, value },
+                Some(clause.body),
+            );
+        }
         self.cfg.set_terminator(
             entry,
             CfgTerminator::Goto {
