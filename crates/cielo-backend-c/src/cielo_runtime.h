@@ -60,7 +60,10 @@ typedef struct {
 typedef struct {
   CieloArcHeader arc;
   /* `ty` and `variant` are for cv_print and debugging only. Dispatch uses
-   * `variant_tag`, the variant's SymbolId, unique per compilation unit. */
+   * `variant_tag`, the variant's SymbolId. Two enums that declare the same
+   * variant name share a tag, so a tag only identifies a variant within one
+   * enum; comparing tags across enums is meaningless. Typecheck is what keeps
+   * that from happening: a value only ever reaches a match on its own enum. */
   const char *ty;
   const char *variant;
   uint32_t variant_tag;
