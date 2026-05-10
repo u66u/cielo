@@ -204,6 +204,44 @@ fn main() -> Int {
     );
 }
 
+/// One handler, two sites: erasure discharges the site whose perform it can
+/// see and the other keeps a clause table. Both must answer with the same
+/// clause, which is the whole claim -- erasure is an optimization over the
+/// fallback, not a different semantics.
+#[test]
+fn one_handler_can_be_erased_at_one_site_and_residual_at_another() {
+    check(
+        r#"
+effect St { fn tick(n: Int) -> Int }
+
+handler doubler with St {
+  | tick(n, resume) => resume(n * 2)
+}
+
+fn inner(n: Int) -> Int with St {
+  let t = do St.tick(n);
+  t
+}
+
+fn outer(n: Int) -> Int with St {
+  let a = inner(n);
+  a
+}
+
+fn main() -> Int {
+  let erased = handle {
+    let t = do St.tick(3);
+    t
+  } with doubler;
+  let residual = handle { outer(7) } with doubler;
+  erased + residual
+}
+"#,
+        "residual_mixed_sites",
+        20,
+    );
+}
+
 #[test]
 fn a_dispatched_clause_consumes_an_argument_it_reads() {
     check(

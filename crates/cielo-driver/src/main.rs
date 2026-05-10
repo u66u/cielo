@@ -10,7 +10,7 @@ use cielo_base::reporting::render_diagnostic;
 use cielo_base::{ExprId, Interner, SourceId, SymbolId};
 use cielo_frontend::ast::{Item, Program};
 use cielo_ir::core::CoreProgram;
-use cielo_ir::linear::LinearProgram;
+use cielo_ir::linear::{HandlerOutcome, LinearProgram};
 use cielo_staging::pipeline::ct_invalidation::{
     CtDepSnapshot, CtInvalidationReason, diff as diff_ct_invalidation,
     load_snapshot as load_ct_snapshot, save_snapshot as save_ct_snapshot,
@@ -706,6 +706,16 @@ fn print_erasure_report(source_name: &str, source: &str, linear: &LinearProgram)
         "  erased {erased}/{total} ({:.0}%)",
         (erased as f64 / total as f64) * 100.0
     );
+    // A residual site still compiles and runs, so reporting only the erasure
+    // rate reads like a failure when it is the fallback doing its job.
+    let residual = linear
+        .handler_sites
+        .iter()
+        .filter(|site| site.outcome == HandlerOutcome::Residual)
+        .count();
+    if residual > 0 {
+        println!("  residual {residual}/{total} (runtime clause table)");
+    }
 }
 
 fn line_and_column(source: &str, offset: u32) -> (usize, usize) {
