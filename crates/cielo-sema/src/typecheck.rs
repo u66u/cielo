@@ -2250,62 +2250,102 @@ fn infer_stmt_effects(program: &CoreProgram, out: &mut [SortedEffectRow]) {
     let mut memo: Vec<Option<SortedEffectRow>> = vec![None; out.len()];
     let mut visiting = HashSet::new();
     for idx in 0..program.stmts().len() {
-        let stmt_id = StmtId::new(idx);
-        let _ =
-            program.fold_stmts(
-                stmt_id,
-                &mut memo,
-                &mut visiting,
-                &mut |stmt, children| match &stmt.kind {
-                    StmtKind::Return(_) => SortedEffectRow::empty(),
-                    StmtKind::Let { .. } => children.first().cloned().unwrap_or_default(),
-                    StmtKind::Resume { .. } => children.first().cloned().unwrap_or_default(),
-                    StmtKind::Val { .. } => children
-                        .first()
-                        .cloned()
-                        .unwrap_or_default()
-                        .union(&children.get(1).cloned().unwrap_or_default()),
-                    StmtKind::Call { effects, .. } => {
-                        effects.union(&children.first().cloned().unwrap_or_default())
-                    }
-                    StmtKind::Perform { effect, .. } => SortedEffectRow::singleton(*effect)
-                        .union(&children.first().cloned().unwrap_or_default()),
-                    StmtKind::If { .. } => children
-                        .first()
-                        .cloned()
-                        .unwrap_or_default()
-                        .union(&children.get(1).cloned().unwrap_or_default()),
-                    StmtKind::Match { .. } => children
-                        .iter()
-                        .cloned()
-                        .fold(SortedEffectRow::empty(), |acc, row| acc.union(&row)),
-                    StmtKind::Handle { handler, next, .. } => {
-                        let mut row = children.first().cloned().unwrap_or_default();
-                        if let Some(effect) =
-                            program.handlers().get(handler.index()).map(|h| h.effect)
-                        {
-                            row = row.subtract(&SortedEffectRow::singleton(effect));
-                        }
-                        if next.is_some() {
-                            row = row.union(&children.get(1).cloned().unwrap_or_default());
-                        }
-                        row
-                    }
-                    StmtKind::Stage { next, .. } => {
-                        let mut row = children.first().cloned().unwrap_or_default();
-                        if next.is_some() {
-                            row = row.union(&children.get(1).cloned().unwrap_or_default());
-                        }
-                        row
-                    }
-                    StmtKind::Hole { .. } | StmtKind::Error(_) => SortedEffectRow::empty(),
-                },
-            );
+        let _ = stmt_effect_row(program, StmtId::new(idx), &mut memo, &mut visiting);
     }
 
     for (idx, row) in memo.into_iter().enumerate() {
         out[idx] = row.unwrap_or_default();
     }
+}
+
+/// `CoreProgram::fold_stmts` cannot express this: a handler's clause bodies are
+/// not `child_stmts` of its `Handle`, yet they contribute to its row. A clause
+/// that performs some *other* effect escapes outward, and handler inlining in
+/// `linearize` splices exactly those performs into the handled body. Since the
+/// dead-handler test reads this row, dropping them elides the handler that the
+/// spliced performs still need.
+fn stmt_effect_row(
+    program: &CoreProgram,
+    stmt_id: StmtId,
+    memo: &mut [Option<SortedEffectRow>],
+    visiting: &mut HashSet<StmtId>,
+) -> SortedEffectRow {
+    if let Some(cached) = memo.get(stmt_id.index()).and_then(Clone::clone) {
+        return cached;
+    }
+    if !visiting.insert(stmt_id) {
+        return SortedEffectRow::empty();
+    }
+
+    let row = match program.stmt(stmt_id).map(|stmt| &stmt.kind) {
+        None
+        | Some(StmtKind::Return(_))
+        | Some(StmtKind::Hole { .. })
+        | Some(StmtKind::Error(_)) => SortedEffectRow::empty(),
+        Some(StmtKind::Let { next, .. }) | Some(StmtKind::Resume { next, .. }) => {
+            stmt_effect_row(program, *next, memo, visiting)
+        }
+        Some(StmtKind::Val { value, next, .. }) => stmt_effect_row(program, *value, memo, visiting)
+            .union(&stmt_effect_row(program, *next, memo, visiting)),
+        Some(StmtKind::Call { effects, next, .. }) => {
+            effects.union(&stmt_effect_row(program, *next, memo, visiting))
+        }
+        Some(StmtKind::Perform { effect, next, .. }) => SortedEffectRow::singleton(*effect)
+            .union(&stmt_effect_row(program, *next, memo, visiting)),
+        Some(StmtKind::If {
+            then_branch,
+            else_branch,
+            ..
+        }) => stmt_effect_row(program, *then_branch, memo, visiting).union(&stmt_effect_row(
+            program,
+            *else_branch,
+            memo,
+            visiting,
+        )),
+        Some(StmtKind::Match { arms, default, .. }) => {
+            let mut row = SortedEffectRow::empty();
+            for arm in arms {
+                row = row.union(&stmt_effect_row(program, arm.body, memo, visiting));
+            }
+            if let Some(default_stmt) = default {
+                row = row.union(&stmt_effect_row(program, *default_stmt, memo, visiting));
+            }
+            row
+        }
+        Some(StmtKind::Handle {
+            handler,
+            body,
+            next,
+        }) => {
+            let mut row = stmt_effect_row(program, *body, memo, visiting);
+            if let Some(def) = program.handlers().get(handler.index()) {
+                row = row.union(&stmt_effect_row(program, def.return_body, memo, visiting));
+                for clause in &def.clauses {
+                    row = row.union(&stmt_effect_row(program, clause.body, memo, visiting));
+                }
+                // A clause performing the handled effect is discharged by the
+                // same inlining, and `linearize` errors if any survives.
+                row = row.subtract(&SortedEffectRow::singleton(def.effect));
+            }
+            if let Some(next_stmt) = next {
+                row = row.union(&stmt_effect_row(program, *next_stmt, memo, visiting));
+            }
+            row
+        }
+        Some(StmtKind::Stage { body, next, .. }) => {
+            let mut row = stmt_effect_row(program, *body, memo, visiting);
+            if let Some(next_stmt) = next {
+                row = row.union(&stmt_effect_row(program, *next_stmt, memo, visiting));
+            }
+            row
+        }
+    };
+
+    visiting.remove(&stmt_id);
+    if let Some(slot) = memo.get_mut(stmt_id.index()) {
+        *slot = Some(row.clone());
+    }
+    row
 }
 
 fn type_for_literal(lit: &Literal, prim: PrimitiveTypeIds) -> TypeId {

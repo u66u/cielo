@@ -320,29 +320,24 @@ fn validate_rejects_a_value_two_instructions_assign() {
     );
 }
 
-/// Two `St.tick` sites under a clause that resumes twice, all under an outer
-/// `Log` handler: the clause body is re-lowered once per resume site per
-/// perform. Until CIELO-47 every copy of a Core variable collapsed onto one
-/// `CfgValueId` — nineteen `Let`s writing `v2` here — so nothing downstream
-/// could tell one definition from another.
+/// Two `St.tick` sites under a clause that resumes twice and consumes each
+/// resume's result, so the resumes cannot be merged into one join and the
+/// clause body is re-lowered once per resume site per perform. Until CIELO-47
+/// every copy of a Core variable collapsed onto one `CfgValueId` — nineteen
+/// `Let`s writing `v2` here — so nothing downstream could tell one definition
+/// from another.
 #[test]
 fn each_re_lowering_of_an_inlined_clause_gets_its_own_values() {
     let source = r#"
 effect St { fn tick(n: Int) -> Int }
-effect Log { fn emit(n: Int) -> Int }
 
 fn main() -> Int {
   let r = handle {
-    let inner = handle {
-      do St.tick(1);
-      do St.tick(2);
-      7
-    } with St {
-      | tick(n, resume) => if n > 0 { let e = do Log.emit(n); resume(e) } else { resume(2) }
-    };
-    inner
-  } with Log {
-    | emit(m, resume) => resume(m)
+    do St.tick(1);
+    do St.tick(2);
+    7
+  } with St {
+    | tick(n, resume) => if n > 0 { let y = resume(n); y + 1 } else { let z = resume(2); z + 2 }
   };
   r
 }

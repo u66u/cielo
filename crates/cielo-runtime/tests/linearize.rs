@@ -233,32 +233,27 @@ fn merges_tail_resume_sites_into_one_join() {
     );
 }
 
-/// Merging is unsound when an arm performs before it resumes: the join would
-/// hoist that perform past the continuation. Such a clause keeps the inlining
-/// path, and stays super-linear, which is what the budget exists to catch.
+/// Merging is unsound when an arm consumes its resume's result: the join would
+/// run the continuation past the code that needs its value. Such a clause keeps
+/// the inlining path, and stays super-linear, which is what the budget exists
+/// to catch.
 #[test]
-fn leaves_a_clause_that_performs_before_resuming_alone() {
+fn leaves_a_clause_that_consumes_its_resume_result_alone() {
     let counts: Vec<usize> = [2, 3, 4]
         .into_iter()
         .map(|performs| {
             let ticks: String = (1..=performs)
-                .map(|nth| format!("      do St.tick({nth});\n"))
+                .map(|nth| format!("    do St.tick({nth});\n"))
                 .collect();
             linearize_source(&format!(
                 r#"
 effect St {{ fn tick(n: Int) -> Int }}
-effect Log {{ fn emit(n: Int) -> Int }}
 
 fn main() -> Int {{
   let r = handle {{
-    let inner = handle {{
-{ticks}      7
-    }} with St {{
-      | tick(n, resume) => if n > 0 {{ let e = do Log.emit(n); resume(e) }} else {{ resume(2) }}
-    }};
-    inner
-  }} with Log {{
-    | emit(m, resume) => resume(m)
+{ticks}    7
+  }} with St {{
+    | tick(n, resume) => if n > 0 {{ let y = resume(n); y + 1 }} else {{ let z = resume(2); z + 2 }}
   }};
   r
 }}

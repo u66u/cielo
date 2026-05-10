@@ -472,6 +472,31 @@ fn main() -> Int {
 "#,
         },
         DiffCase {
+            // Only the inner `St` clause performs `Log`, so the outer handler's
+            // body row does not mention it as written. Eliminating `Log` as dead
+            // left the perform that clause inlining splices in with no handler.
+            name: "clause_body_performs_outer_effect",
+            source: r#"
+effect St { fn tick(n: Int) -> Int }
+effect Log { fn emit(n: Int) -> Int }
+
+fn main() -> Int {
+  let r = handle {
+    let inner = handle {
+      let a = do St.tick(1);
+      a
+    } with St {
+      | tick(n) => { let e = do Log.emit(n); e }
+    };
+    inner
+  } with Log {
+    | emit(m, resume) => resume(m + 40)
+  };
+  r
+}
+"#,
+        },
+        DiffCase {
             name: "discharged_handler_rt_passthrough",
             source: r#"
 effect LocalState { fn tick() -> Int }

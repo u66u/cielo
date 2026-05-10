@@ -153,9 +153,26 @@ fn infer_stmt_effects(
             next,
         }) => {
             let mut row = infer_stmt_effects(program, *body, summaries, memo, visiting);
-            if let Some(handled_effect) = program.handlers().get(handler.index()).map(|h| h.effect)
-            {
-                row = row.subtract(&SortedEffectRow::singleton(handled_effect));
+            // Clause bodies are not child statements of the `Handle`, but what
+            // they perform escapes this handler and lands in the caller's row.
+            if let Some(def) = program.handlers().get(handler.index()) {
+                row = row.union(&infer_stmt_effects(
+                    program,
+                    def.return_body,
+                    summaries,
+                    memo,
+                    visiting,
+                ));
+                for clause in &def.clauses {
+                    row = row.union(&infer_stmt_effects(
+                        program,
+                        clause.body,
+                        summaries,
+                        memo,
+                        visiting,
+                    ));
+                }
+                row = row.subtract(&SortedEffectRow::singleton(def.effect));
             }
             if let Some(next_stmt) = next {
                 row = row.union(&infer_stmt_effects(

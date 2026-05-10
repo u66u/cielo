@@ -70,12 +70,16 @@ pub(super) fn core_stmt_calls_performing_effect(
                 body,
                 next,
             } => {
-                let discharged_by_inner = program
-                    .handlers()
-                    .get(handler.index())
-                    .is_some_and(|inner| inner.effect == effect);
+                let inner = program.handlers().get(handler.index());
+                let discharged_by_inner = inner.is_some_and(|inner| inner.effect == effect);
                 if !discharged_by_inner {
                     stack.push(*body);
+                    // Inlining the inner handler splices its clause bodies into
+                    // `body`, so a call they make reaches this handler too.
+                    if let Some(inner) = inner {
+                        stack.push(inner.return_body);
+                        stack.extend(inner.clauses.iter().map(|clause| clause.body));
+                    }
                 }
                 if let Some(next_stmt) = next {
                     stack.push(*next_stmt);
