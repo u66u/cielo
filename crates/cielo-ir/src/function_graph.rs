@@ -1,31 +1,60 @@
 use std::collections::HashSet;
 
-use cielo_base::ids::{ExprId, FuncId, StmtId};
+use cielo_base::ids::{ExprId, FuncId, HandlerId, StmtId};
 
 use crate::core::{CoreProgram, ExprKind, StmtKind};
 use crate::walk::{Walk, walk_exprs_from};
 
+/// A handler's clause bodies and return body are ordinary reachable code, so a
+/// `Handle` in a walked body pulls them into the walk. Omitting them lets
+/// `prune_unreachable_functions` drop a callee that only a clause body calls;
+/// the stale `FuncId` left behind in that clause then silently aliases
+/// whichever function lands in the freed dense slot.
 pub fn collect_reachable_functions(program: &CoreProgram) -> Vec<FuncId> {
-    let mut seen = HashSet::new();
-    let mut stack = program.entrypoints().to_vec();
-    while let Some(func_id) = stack.pop() {
-        if !seen.insert(func_id) {
+    let mut seen_funcs = HashSet::new();
+    let mut seen_handlers = HashSet::new();
+    let mut func_stack = program.entrypoints().to_vec();
+    let mut body_stack: Vec<StmtId> = Vec::new();
+
+    loop {
+        if let Some(func_id) = func_stack.pop() {
+            if seen_funcs.insert(func_id)
+                && let Some(function) = program.function(func_id)
+            {
+                body_stack.push(function.body);
+            }
             continue;
         }
-        let Some(function) = program.function(func_id) else {
-            continue;
+        let Some(body) = body_stack.pop() else {
+            break;
         };
-        for callee in collect_stmt_callees(program, function.body) {
-            stack.push(callee);
+        let refs = collect_stmt_refs(program, body);
+        func_stack.extend(refs.callees);
+        for handler_id in refs.handlers {
+            if !seen_handlers.insert(handler_id) {
+                continue;
+            }
+            let Some(handler) = program.handlers().get(handler_id.index()) else {
+                continue;
+            };
+            body_stack.push(handler.return_body);
+            body_stack.extend(handler.clauses.iter().map(|clause| clause.body));
         }
     }
-    let mut out = seen.into_iter().collect::<Vec<_>>();
+
+    let mut out = seen_funcs.into_iter().collect::<Vec<_>>();
     out.sort_by_key(|id| id.index());
     out
 }
 
-fn collect_stmt_callees(program: &CoreProgram, root: StmtId) -> Vec<FuncId> {
+struct StmtRefs {
+    callees: Vec<FuncId>,
+    handlers: Vec<HandlerId>,
+}
+
+fn collect_stmt_refs(program: &CoreProgram, root: StmtId) -> StmtRefs {
     let mut callees = HashSet::new();
+    let mut handlers = HashSet::new();
     let mut seen_stmts = HashSet::new();
     let mut seen_exprs = HashSet::new();
     let mut stack = vec![root];
@@ -36,8 +65,14 @@ fn collect_stmt_callees(program: &CoreProgram, root: StmtId) -> Vec<FuncId> {
         let Some(stmt) = program.stmt(stmt_id) else {
             continue;
         };
-        if let StmtKind::Call { callee, .. } = stmt.kind {
-            callees.insert(callee);
+        match stmt.kind {
+            StmtKind::Call { callee, .. } => {
+                callees.insert(callee);
+            }
+            StmtKind::Handle { handler, .. } => {
+                handlers.insert(handler);
+            }
+            _ => {}
         }
         for expr_id in stmt.child_exprs() {
             collect_expr_callees(program, expr_id, &mut seen_exprs, &mut callees);
@@ -46,9 +81,11 @@ fn collect_stmt_callees(program: &CoreProgram, root: StmtId) -> Vec<FuncId> {
             stack.push(child);
         }
     }
-    let mut out = callees.into_iter().collect::<Vec<_>>();
-    out.sort_by_key(|id| id.index());
-    out
+    let mut callees = callees.into_iter().collect::<Vec<_>>();
+    callees.sort_by_key(|id| id.index());
+    let mut handlers = handlers.into_iter().collect::<Vec<_>>();
+    handlers.sort_by_key(|id| id.index());
+    StmtRefs { callees, handlers }
 }
 
 fn collect_expr_callees(

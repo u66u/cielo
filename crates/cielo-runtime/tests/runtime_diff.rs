@@ -433,6 +433,45 @@ fn main() -> Int {
 "#,
         },
         DiffCase {
+            // `double` is called only from a clause body. When reachability
+            // skipped clause bodies it was pruned, and the stale callee id
+            // aliased `main`.
+            name: "clause_body_calls_helper",
+            source: r#"
+effect St { fn tick(n: Int) -> Int }
+
+fn double(x: Int) -> Int { x + x }
+
+fn main() -> Int {
+  let x = handle {
+    let v = do St.tick(3);
+    v
+  } with St {
+    | tick(n, resume) => if n > 0 { resume(double(n)) } else { resume(0) }
+  };
+  x
+}
+"#,
+        },
+        DiffCase {
+            name: "abortive_clause_calls_helper",
+            source: r#"
+effect St { fn tick(n: Int) -> Int }
+
+fn triple(x: Int) -> Int { x + x + x }
+
+fn main() -> Int {
+  let x = handle {
+    let v = do St.tick(3);
+    v
+  } with St {
+    | tick(n) => triple(n)
+  };
+  x
+}
+"#,
+        },
+        DiffCase {
             name: "discharged_handler_rt_passthrough",
             source: r#"
 effect LocalState { fn tick() -> Int }
