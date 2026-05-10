@@ -1,10 +1,15 @@
 use cielo_base::{Interner, SourceId};
+use cielo_ir::linear::{HandlerOutcome, LinearStmt};
 use cielo_runtime::linearize;
 use cielo_test_support::{PassConfig, PassHarness};
 
 struct Linearized {
     stmts: usize,
     codes: Vec<String>,
+    outcomes: Vec<HandlerOutcome>,
+    /// Clauses across every residual `Handle`, so a test can tell a table that
+    /// was built from one that was merely recorded as residual.
+    residual_clauses: usize,
 }
 
 fn linearize_source(source: &str) -> Linearized {
@@ -24,9 +29,26 @@ fn linearize_source(source: &str) -> Linearized {
 
     let sema = residual.sema().clone();
     let before = residual.diagnostics().entries().len();
-    let stmts = {
+    let (stmts, outcomes, residual_clauses) = {
         let (program, diagnostics) = residual.program_and_diagnostics_mut();
-        linearize::run(program, &sema, diagnostics).stmts().len()
+        let linear = linearize::run(program, &sema, diagnostics);
+        let clauses = linear
+            .stmts()
+            .iter()
+            .filter_map(|stmt| match &stmt.kind {
+                LinearStmt::Handle { clauses, .. } => Some(clauses.len()),
+                _ => None,
+            })
+            .sum();
+        (
+            linear.stmts().len(),
+            linear
+                .handler_sites
+                .iter()
+                .map(|site| site.outcome)
+                .collect(),
+            clauses,
+        )
     };
     Linearized {
         stmts,
@@ -37,6 +59,8 @@ fn linearize_source(source: &str) -> Linearized {
             .skip(before)
             .map(|d| d.code.to_owned())
             .collect(),
+        outcomes,
+        residual_clauses,
     }
 }
 
@@ -277,5 +301,152 @@ fn main() -> Int {
     assert!(
         !codes.iter().any(|c| c == "LINEARIZE_HANDLED_EFFECT_LEAK"),
         "a named handler must discharge the same perform, got {codes:?}"
+    );
+}
+
+/// `clause` handles `St.note`, performed one call deeper than inlining reaches.
+fn callee_perform_with_clause(clause: &str) -> String {
+    format!(
+        r#"
+effect St {{ fn note(n: Int) -> Int }}
+
+fn deep(x: Int) -> Int with St {{
+  let seen = do St.note(x);
+  seen
+}}
+
+fn shallow(x: Int) -> Int with St {{
+  let a = deep(x);
+  a + 1
+}}
+
+fn main() -> Int {{
+  let out = handle {{ shallow(3) }} with St {{
+    {clause}
+  }};
+  out
+}}
+"#
+    )
+}
+
+/// The case CIELO-1 reported: a perform inlining cannot reach used to stop the
+/// build. A tail-resumptive clause now becomes a runtime clause table instead.
+#[test]
+fn residualizes_a_tail_resumptive_clause_performed_in_a_callee() {
+    let lowered = linearize_source(&callee_perform_with_clause(
+        "| note(n, resume) => resume(n)",
+    ));
+    assert!(
+        !lowered
+            .codes
+            .iter()
+            .any(|code| code == "LINEARIZE_HANDLED_EFFECT_LEAK"),
+        "a tail-resumptive clause can stand in for inlining, got {:?}",
+        lowered.codes
+    );
+    assert!(
+        lowered.outcomes.contains(&HandlerOutcome::Residual),
+        "the handle site should report a residual handler, got {:?}",
+        lowered.outcomes
+    );
+    assert_eq!(
+        lowered.residual_clauses, 1,
+        "the residual handler needs a clause, or every perform reaching it traps"
+    );
+}
+
+/// Each of these needs machinery the residual path deliberately does not have,
+/// so the site must keep failing loudly rather than trapping at runtime.
+#[test]
+fn refuses_clauses_the_dispatcher_cannot_express() {
+    for clause in [
+        // Abortive: nothing here can unwind out of the callee.
+        "| note(n) => 100",
+        // The clause's value is not the resumption's value.
+        "| note(n, resume) => { let y = resume(n); y + 1 }",
+        // Multi-shot needs a cloned environment (CIELO-42).
+        "| note(n, resume) => { let a = resume(n); let b = resume(n); a + b }",
+    ] {
+        let lowered = linearize_source(&callee_perform_with_clause(clause));
+        assert!(
+            lowered
+                .codes
+                .iter()
+                .any(|code| code == "LINEARIZE_HANDLED_EFFECT_LEAK"),
+            "`{clause}` must still be rejected, got {:?}",
+            lowered.codes
+        );
+        assert_eq!(
+            lowered.residual_clauses, 0,
+            "`{clause}` must not reach the clause table"
+        );
+    }
+}
+
+/// A dispatched clause runs in its own frame with only its arguments, so a read
+/// of an enclosing binding has nowhere to come from until closures land.
+#[test]
+fn refuses_a_clause_that_reads_an_enclosing_binding() {
+    let lowered = linearize_source(
+        r#"
+effect St { fn note(n: Int) -> Int }
+
+fn deep(x: Int) -> Int with St {
+  let seen = do St.note(x);
+  seen
+}
+
+fn shallow(x: Int) -> Int with St {
+  let a = deep(x);
+  a + 1
+}
+
+fn main() -> Int {
+  let bias = 41;
+  let out = handle { shallow(3) } with St {
+    | note(n, resume) => resume(bias)
+  };
+  out
+}
+"#,
+    );
+    assert!(
+        lowered
+            .codes
+            .iter()
+            .any(|code| code == "LINEARIZE_HANDLED_EFFECT_LEAK"),
+        "a captured binding has no environment yet, got {:?}",
+        lowered.codes
+    );
+}
+
+/// The clause table is the fallback, not a replacement: a perform inlining can
+/// see must still be erased, leaving no table to dispatch through.
+#[test]
+fn keeps_erasing_a_lexically_visible_perform() {
+    let lowered = linearize_source(
+        r#"
+effect St { fn note(n: Int) -> Int }
+
+fn main() -> Int {
+  let out = handle {
+    let seen = do St.note(1);
+    seen
+  } with St {
+    | note(n, resume) => resume(n)
+  };
+  out
+}
+"#,
+    );
+    assert_eq!(
+        lowered.outcomes,
+        vec![HandlerOutcome::Inlined],
+        "erasure must still win when the perform is visible"
+    );
+    assert_eq!(
+        lowered.residual_clauses, 0,
+        "an erased handler needs no clause table"
     );
 }

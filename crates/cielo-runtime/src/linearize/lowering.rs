@@ -734,7 +734,7 @@ fn residual_clauses(
     let mut lowered = Vec::with_capacity(handler.clauses.len());
     for clause in &handler.clauses {
         let resume = analyze_clause_resume(input.program, clause);
-        if let Some(blocker) = residual_clause_blocker(input.program, clause, resume) {
+        if let Some(blocker) = residual_clause_blocker(input.program, handler, clause, resume) {
             return Err(blocker);
         }
         let resume_var = clause

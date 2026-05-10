@@ -19,10 +19,12 @@
 //!   future lowering that passes evidence as a call argument (evidence-passing
 //!   style, `docs/v1/decisions.md`) adds a route this analysis does not model.
 //! * **No continuation object exists.** `cielo_dispatch_with_evidence` passes a
-//!   null continuation and linearize rejects multi-shot resume outright, so a
-//!   `Perform` of the region's own effect returns to the region or not at all.
-//!   CIELO-19 (dynamic handler fallback) and CIELO-42 (multi-shot resumption)
-//!   both break this: once a clause receives a real `CieloContinuation`, a
+//!   null continuation, and a residual clause (CIELO-19) is admitted only when
+//!   it is tail-resumptive: it *returns* the resumption argument to the perform
+//!   site rather than receiving a continuation it could store. So a `Perform`
+//!   of the region's own effect still returns to the region or not at all,
+//!   whether it was inlined or dispatched. CIELO-42 (multi-shot resumption) is
+//!   what breaks this: once a clause receives a real `CieloContinuation`, a
 //!   `Perform` inside the extent can be resumed after the close, and
 //!   [`escapes`] must stop treating the region's own effect as confined.
 //! * **Regions nest with the C frame.** A slot is placed per enclosing

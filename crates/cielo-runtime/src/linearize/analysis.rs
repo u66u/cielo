@@ -226,6 +226,10 @@ pub(super) enum ResidualBlocker {
     /// The clause reads a variable bound outside it. A dispatched clause runs
     /// in its own frame, so that read needs an environment (CIELO-25).
     CapturesEnvironment,
+    /// The clause can reach the effect it discharges. Its own frame is still on
+    /// the handler stack while it runs, so that perform would dispatch straight
+    /// back into it. Inlining diverges on the same shape, but at compile time.
+    ReentersHandler,
 }
 
 impl ResidualBlocker {
@@ -237,6 +241,7 @@ impl ResidualBlocker {
             Self::NotTailResumptive => "clause does not resume in tail position",
             Self::MultiShot => "clause may resume more than once",
             Self::CapturesEnvironment => "clause reads a variable bound outside it",
+            Self::ReentersHandler => "clause can perform the effect it handles",
         }
     }
 }
@@ -244,6 +249,7 @@ impl ResidualBlocker {
 /// Whether `clause` can run as a dispatched function instead of being inlined.
 pub(super) fn residual_clause_blocker(
     program: &CoreProgram,
+    handler: &HandlerDef,
     clause: &HandlerClause,
     resume: ClauseResumeAnalysis,
 ) -> Option<ResidualBlocker> {
@@ -258,7 +264,30 @@ pub(super) fn residual_clause_blocker(
     if !resume.tail_resumptive {
         return Some(ResidualBlocker::NotTailResumptive);
     }
-    clause_captures_environment(program, clause).then_some(ResidualBlocker::CapturesEnvironment)
+    if clause_captures_environment(program, clause) {
+        return Some(ResidualBlocker::CapturesEnvironment);
+    }
+    (core_stmt_performs_effect(program, clause.body, handler.effect)
+        || core_stmt_calls_performing_effect(program, clause.body, handler.effect))
+    .then_some(ResidualBlocker::ReentersHandler)
+}
+
+fn core_stmt_performs_effect(program: &CoreProgram, root: StmtId, effect: EffectLabelId) -> bool {
+    let mut stack = vec![root];
+    let mut seen = HashSet::new();
+    while let Some(stmt_id) = stack.pop() {
+        if !seen.insert(stmt_id) {
+            continue;
+        }
+        let Some(stmt) = program.stmt(stmt_id) else {
+            continue;
+        };
+        if matches!(stmt.kind, StmtKind::Perform { effect: found, .. } if found == effect) {
+            return true;
+        }
+        stack.extend(stmt.child_stmts());
+    }
+    false
 }
 
 /// True when the clause body reads a variable it does not itself bind.
