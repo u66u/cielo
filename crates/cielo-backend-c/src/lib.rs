@@ -2,6 +2,7 @@
 
 pub mod c_constants;
 pub mod cfg_codegen;
+mod structure;
 
 pub use cfg_codegen::emit;
 

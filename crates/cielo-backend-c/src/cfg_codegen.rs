@@ -19,6 +19,8 @@ use cielo_ir::core::Literal;
 use cielo_ir::region::{Placement, RegionOwner, RegionSlotKind};
 use cielo_ir::walk::{Walk, walk_exprs};
 
+use crate::structure::{self, Edge, Layout, Region};
+
 const C_RUNTIME_HEADER: &str = include_str!("cielo_runtime.h");
 
 pub fn emit(
@@ -47,15 +49,32 @@ pub fn emit(
     }
 
     let names = function_names(program, interner);
+    let signatures = program
+        .functions
+        .iter()
+        .map(|function| (function.id, Signature::of(program, function)))
+        .collect::<HashMap<_, _>>();
     for function in &program.functions {
-        emit_signature(&mut out, function, &names[&function.id]);
+        emit_signature(
+            &mut out,
+            function,
+            &names[&function.id],
+            &signatures[&function.id],
+        );
         out.push_str(";\n");
     }
     out.push('\n');
     emit_clause_tables(&mut out, program, &names);
     for function in &program.functions {
         emit_function(
-            &mut out, program, function, &names, interner, &pools, arc_trace,
+            &mut out,
+            program,
+            function,
+            &names,
+            &signatures[&function.id],
+            interner,
+            &pools,
+            arc_trace,
         );
         out.push('\n');
     }
@@ -142,27 +161,94 @@ fn emit_clause_tables(out: &mut String, program: &CfgProgram, names: &HashMap<Cf
     }
 }
 
-fn emit_signature(out: &mut String, function: &CfgFunction, name: &str) {
-    write!(out, "static CieloValue {name}(").expect("in-memory write");
+/// A parameter list wider than this is not what `max-inline-insns-single` is
+/// for, and a body that opens a handler scope carries an evidence frame that
+/// should not be duplicated at every call site.
+const INLINE_INSTRUCTION_BUDGET: usize = 8;
+
+/// What the declaration and the definition have to agree on.
+struct Signature {
+    /// `static inline` moves GCC's per-call-site budget from
+    /// `max-inline-insns-auto` up to `max-inline-insns-single`, and stops a
+    /// handler specialization nothing calls from tripping `-Wunused-function`.
+    inline: bool,
+    /// Parameters nothing in the body writes back into. The CFG reuses one
+    /// value namespace for parameters, block parameters and instruction
+    /// results, so a parameter an edge assigns must stay mutable.
+    const_params: HashSet<CfgValueId>,
+}
+
+impl Signature {
+    fn of(program: &CfgProgram, function: &CfgFunction) -> Self {
+        let blocks = reachable_blocks(program, function.entry);
+        let mut instructions = 0;
+        let mut opens_scope = false;
+        let mut assigned = HashSet::new();
+        for block_id in &blocks {
+            let block = program.block(*block_id).expect("known block");
+            // Only the writes the emitter actually performs. A block's own
+            // parameters are not among them: the entry block's parameters *are*
+            // the function's, and every other block's are filled in either by a
+            // `Goto` edge below or by the terminator that defines them.
+            if let CfgTerminator::Goto { target, args } = &block.terminator
+                && let Some(node) = program.block(*target)
+            {
+                assigned.extend(node.params.iter().take(args.len()).copied());
+            }
+            assigned.extend(block.terminator.defined_values());
+            for instruction in &block.instructions {
+                let Some(node) = program.instruction(*instruction) else {
+                    continue;
+                };
+                instructions += 1;
+                assigned.extend(node.kind.result());
+                opens_scope |= matches!(
+                    node.kind,
+                    CfgInstruction::HandlerEnter { .. } | CfgInstruction::RegionEnter { .. }
+                );
+            }
+        }
+        Self {
+            inline: !opens_scope && instructions <= INLINE_INSTRUCTION_BUDGET,
+            const_params: function
+                .params
+                .iter()
+                .copied()
+                .filter(|param| !assigned.contains(param))
+                .collect(),
+        }
+    }
+}
+
+fn emit_signature(out: &mut String, function: &CfgFunction, name: &str, signature: &Signature) {
+    let storage = if signature.inline { "static inline" } else { "static" };
+    write!(out, "{storage} CieloValue {name}(").expect("in-memory write");
     for (idx, value) in function.params.iter().enumerate() {
         if idx > 0 {
             out.push_str(", ");
         }
-        write!(out, "CieloValue v{}", value.as_u32()).expect("in-memory write");
+        let qualifier = if signature.const_params.contains(value) {
+            "const "
+        } else {
+            ""
+        };
+        write!(out, "{qualifier}CieloValue v{}", value.as_u32()).expect("in-memory write");
     }
     out.push(')');
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_function(
     out: &mut String,
     program: &CfgProgram,
     function: &CfgFunction,
     names: &HashMap<CfgFuncId, String>,
+    signature: &Signature,
     interner: &Interner,
     pools: &CConstantPools,
     arc_trace: bool,
 ) {
-    emit_signature(out, function, &names[&function.id]);
+    emit_signature(out, function, &names[&function.id], signature);
     out.push_str(" {\n");
     let params = function.params.iter().copied().collect::<HashSet<_>>();
     for value in reachable_values(program, function.entry) {
@@ -197,9 +283,8 @@ fn emit_function(
         writeln!(out, "    CieloRegion reg{} = {{ NULL }};", region.as_u32())
             .expect("in-memory write");
     }
-    writeln!(out, "    goto b{};", function.entry.as_u32()).expect("in-memory write");
 
-    let blocks = reachable_blocks(program, function.entry);
+    let layout = structure::plan(program, function.entry);
     let mut cx = EmitCx {
         program,
         names,
@@ -210,162 +295,213 @@ fn emit_function(
         arc_trace,
         temp: 0,
     };
-    for block_id in blocks {
-        let block = program.block(block_id).expect("known block");
-        writeln!(out, "b{}: ;", block.id.as_u32()).expect("in-memory write");
-        emit_arc_ops(out, &block.entry_arc, 1, &cx, "entry", block.id.as_u32());
-        for instruction_id in &block.instructions {
-            let instruction = program
-                .instruction(*instruction_id)
-                .expect("known instruction");
-            emit_arc_ops(
-                out,
-                &instruction.arc.pre,
-                1,
-                &cx,
-                "pre",
-                instruction.id.as_u32(),
-            );
-            match &instruction.kind {
-                CfgInstruction::Let { result, value } | CfgInstruction::Eval { result, value } => {
-                    let expression = emit_expr(*value, &mut cx);
-                    writeln!(out, "    v{} = {expression};", result.as_u32())
-                        .expect("in-memory write");
-                }
-                CfgInstruction::HandlerEnter { handler, effect } => {
-                    let placement = cx.placements.get(handler).copied().unwrap_or_default();
-                    let (slot, address) = match placement {
-                        Placement::Stack => (
-                            format!("hev{}", handler.as_u32()),
-                            format!("&hev{}", handler.as_u32()),
-                        ),
-                        Placement::Arena => (
-                            format!("(*hev{})", handler.as_u32()),
-                            format!("hev{}", handler.as_u32()),
-                        ),
-                    };
-                    let clauses = program.clauses_of(*handler);
-                    let table = if clauses.is_empty() {
-                        "NULL".to_owned()
-                    } else {
-                        format!("cielo_clauses_h{}", handler.as_u32())
-                    };
-                    writeln!(
-                        out,
-                        "    {slot} = (CieloEvidence){{ .abi_version = cielo_runtime_abi_version(), .effect = {}, .capability_id = 0, .clause_count = {}, .clauses = {table}, .captures = NULL, .reserved0 = NULL, .reserved1 = NULL }};",
-                        effect.as_u32(),
-                        clauses.len()
-                    )
-                    .expect("in-memory write");
-                    writeln!(
-                        out,
-                        "    hcap{} = cielo_handler_push_with_evidence({}, {address});",
-                        handler.as_u32(),
-                        effect.as_u32(),
-                    )
-                    .expect("in-memory write");
-                }
-                CfgInstruction::HandlerExit { handler, .. } => {
-                    writeln!(out, "    cielo_handler_pop(hcap{});", handler.as_u32())
-                        .expect("in-memory write");
-                }
-                CfgInstruction::RegionEnter { region } => {
-                    emit_region_open(out, program, *region, &cx.placements);
-                }
-                CfgInstruction::RegionExit { region } => {
-                    if program
-                        .region(*region)
-                        .is_some_and(|region| !region.is_fully_stack())
-                    {
-                        writeln!(out, "    cielo_region_close(&reg{});", region.as_u32())
-                            .expect("in-memory write");
-                    }
-                }
-                CfgInstruction::StageEnter { stage } => {
-                    writeln!(out, "    /* stage {:?} enter */", stage).expect("in-memory write");
-                }
-                CfgInstruction::StageExit { stage } => {
-                    writeln!(out, "    /* stage {:?} exit */", stage).expect("in-memory write");
-                }
-                CfgInstruction::Hole => out.push_str("    /* hole */\n"),
-                CfgInstruction::Error => out.push_str("    /* error */\n"),
-            }
-            emit_arc_ops(
-                out,
-                &instruction.arc.post,
-                1,
-                &cx,
-                "post",
-                instruction.id.as_u32(),
-            );
-        }
-        emit_terminator(
+    emit_region(out, &layout.root, &layout, 1, &mut cx);
+    out.push_str("}\n");
+}
+
+fn pad(indent: usize) -> String {
+    "    ".repeat(indent)
+}
+
+fn emit_region(
+    out: &mut String,
+    region: &Region,
+    layout: &Layout,
+    indent: usize,
+    cx: &mut EmitCx<'_>,
+) {
+    let program = cx.program;
+    let block = program.block(region.block).expect("known block");
+    if layout.labels.contains(&region.block) {
+        // The null statement is load-bearing: C11 wants a statement after a
+        // label, and the next thing emitted is often a declaration.
+        writeln!(out, "{}b{}: ;", pad(indent), region.block.as_u32()).expect("in-memory write");
+    }
+    emit_arc_ops(
+        out,
+        &block.entry_arc,
+        indent,
+        cx,
+        "entry",
+        region.block.as_u32(),
+    );
+    for instruction_id in &block.instructions {
+        let instruction = program
+            .instruction(*instruction_id)
+            .expect("known instruction");
+        emit_arc_ops(
             out,
-            block.id,
-            &block.terminator,
-            &block.terminator_arc,
-            &mut cx,
+            &instruction.arc.pre,
+            indent,
+            cx,
+            "pre",
+            instruction.id.as_u32(),
+        );
+        emit_instruction(out, instruction, indent, cx);
+        emit_arc_ops(
+            out,
+            &instruction.arc.post,
+            indent,
+            cx,
+            "post",
+            instruction.id.as_u32(),
         );
     }
-    out.push_str("}\n");
+    emit_terminator(out, region, layout, indent, cx);
+    for join in &region.joins {
+        emit_region(out, join, layout, indent, cx);
+    }
+}
+
+fn emit_instruction(
+    out: &mut String,
+    instruction: &cielo_ir::cfg::CfgInstructionNode,
+    indent: usize,
+    cx: &mut EmitCx<'_>,
+) {
+    let program = cx.program;
+    let pad = pad(indent);
+    match &instruction.kind {
+        CfgInstruction::Let { result, value } | CfgInstruction::Eval { result, value } => {
+            let expression = emit_expr(*value, cx);
+            writeln!(out, "{pad}v{} = {expression};", result.as_u32()).expect("in-memory write");
+        }
+        CfgInstruction::HandlerEnter { handler, effect } => {
+            let placement = cx.placements.get(handler).copied().unwrap_or_default();
+            let (slot, address) = match placement {
+                Placement::Stack => (
+                    format!("hev{}", handler.as_u32()),
+                    format!("&hev{}", handler.as_u32()),
+                ),
+                Placement::Arena => (
+                    format!("(*hev{})", handler.as_u32()),
+                    format!("hev{}", handler.as_u32()),
+                ),
+            };
+            let clauses = program.clauses_of(*handler);
+            let table = if clauses.is_empty() {
+                "NULL".to_owned()
+            } else {
+                format!("cielo_clauses_h{}", handler.as_u32())
+            };
+            writeln!(
+                out,
+                "{pad}{slot} = (CieloEvidence){{ .abi_version = cielo_runtime_abi_version(), .effect = {}, .capability_id = 0, .clause_count = {}, .clauses = {table}, .captures = NULL, .reserved0 = NULL, .reserved1 = NULL }};",
+                effect.as_u32(),
+                clauses.len()
+            )
+            .expect("in-memory write");
+            writeln!(
+                out,
+                "{pad}hcap{} = cielo_handler_push_with_evidence({}, {address});",
+                handler.as_u32(),
+                effect.as_u32(),
+            )
+            .expect("in-memory write");
+        }
+        CfgInstruction::HandlerExit { handler, .. } => {
+            writeln!(out, "{pad}cielo_handler_pop(hcap{});", handler.as_u32())
+                .expect("in-memory write");
+        }
+        CfgInstruction::RegionEnter { region } => {
+            emit_region_open(out, program, *region, &cx.placements, indent);
+        }
+        CfgInstruction::RegionExit { region } => {
+            if program
+                .region(*region)
+                .is_some_and(|region| !region.is_fully_stack())
+            {
+                writeln!(out, "{pad}cielo_region_close(&reg{});", region.as_u32())
+                    .expect("in-memory write");
+            }
+        }
+        CfgInstruction::StageEnter { stage } => {
+            writeln!(out, "{pad}/* stage {stage:?} enter */").expect("in-memory write");
+        }
+        CfgInstruction::StageExit { stage } => {
+            writeln!(out, "{pad}/* stage {stage:?} exit */").expect("in-memory write");
+        }
+        CfgInstruction::Hole => writeln!(out, "{pad}/* hole */").expect("in-memory write"),
+        CfgInstruction::Error => writeln!(out, "{pad}/* error */").expect("in-memory write"),
+    }
+}
+
+/// Emits whatever the edge needs to reach its target: nothing when the target
+/// is laid out next, a `goto` when it is not, or the target's whole body when
+/// this is the only edge into it.
+fn emit_edge(
+    out: &mut String,
+    edge: &Edge,
+    layout: &Layout,
+    indent: usize,
+    cx: &mut EmitCx<'_>,
+) {
+    match edge {
+        Edge::Inline(region) => emit_region(out, region, layout, indent, cx),
+        Edge::Goto(target) => {
+            writeln!(out, "{}goto b{};", pad(indent), target.as_u32()).expect("in-memory write");
+        }
+        Edge::Fallthrough => {}
+    }
 }
 
 fn emit_terminator(
     out: &mut String,
-    block: CfgBlockId,
-    terminator: &CfgTerminator,
-    arc: &cielo_ir::cfg::CfgArcOps,
+    region: &Region,
+    layout: &Layout,
+    indent: usize,
     cx: &mut EmitCx<'_>,
 ) {
-    emit_arc_ops(out, &arc.pre, 1, cx, "term-pre", block.as_u32());
-    match terminator {
+    let program = cx.program;
+    let block = region.block;
+    let node = program.block(block).expect("known block");
+    let arc = &node.terminator_arc;
+    let nested = pad(indent + 1);
+    let pad = pad(indent);
+    emit_arc_ops(out, &arc.pre, indent, cx, "term-pre", block.as_u32());
+    let edge = |index: usize| region.edges.get(index).expect("edge per successor");
+    match &node.terminator {
         CfgTerminator::Return(value) => {
             let temp = cx.fresh("return");
             let value = emit_expr(*value, cx);
-            writeln!(out, "    CieloValue {temp} = {value};").expect("in-memory write");
-            emit_arc_ops(out, &arc.post, 1, cx, "term-post", block.as_u32());
-            writeln!(out, "    return {temp};").expect("in-memory write");
+            writeln!(out, "{pad}CieloValue {temp} = {value};").expect("in-memory write");
+            emit_arc_ops(out, &arc.post, indent, cx, "term-post", block.as_u32());
+            writeln!(out, "{pad}return {temp};").expect("in-memory write");
         }
         CfgTerminator::Goto { target, args } => {
-            emit_edge_values(out, *target, args, cx);
-            emit_arc_ops(out, &arc.post, 1, cx, "term-post", block.as_u32());
-            writeln!(out, "    goto b{};", target.as_u32()).expect("in-memory write");
+            emit_edge_values(out, *target, args, indent, cx);
+            emit_arc_ops(out, &arc.post, indent, cx, "term-post", block.as_u32());
+            emit_edge(out, edge(0), layout, indent, cx);
         }
-        CfgTerminator::Branch {
-            cond,
-            then_target,
-            else_target,
-        } => {
+        CfgTerminator::Branch { cond, .. } => {
             let cond = emit_expr(*cond, cx);
             let temp = cx.fresh("cond");
-            writeln!(out, "    CieloValue {temp} = {cond};").expect("in-memory write");
-            emit_arc_ops(out, &arc.post, 1, cx, "term-post", block.as_u32());
-            writeln!(
-                out,
-                "    if (cv_truthy({temp})) goto b{}; else goto b{};",
-                then_target.as_u32(),
-                else_target.as_u32()
-            )
-            .expect("in-memory write");
+            writeln!(out, "{pad}CieloValue {temp} = {cond};").expect("in-memory write");
+            emit_arc_ops(out, &arc.post, indent, cx, "term-post", block.as_u32());
+            writeln!(out, "{pad}if (cv_truthy({temp})) {{").expect("in-memory write");
+            emit_edge(out, edge(0), layout, indent + 1, cx);
+            writeln!(out, "{pad}}} else {{").expect("in-memory write");
+            emit_edge(out, edge(1), layout, indent + 1, cx);
+            writeln!(out, "{pad}}}").expect("in-memory write");
         }
         CfgTerminator::Match {
-            scrutinee,
-            arms,
-            default,
+            scrutinee, arms, ..
         } => {
             let match_temp = cx.fresh("match");
             let scrutinee_expr = emit_expr(*scrutinee, cx);
-            writeln!(out, "    CieloValue {match_temp} = {scrutinee_expr};")
+            writeln!(out, "{pad}CieloValue {match_temp} = {scrutinee_expr};")
                 .expect("in-memory write");
             for (idx, arm) in arms.iter().enumerate() {
-                let keyword = if idx == 0 { "if" } else { "else if" };
+                let keyword = if idx == 0 { "if" } else { "} else if" };
                 writeln!(
                     out,
-                    "    {keyword} (cielo_ctor_is_variant({match_temp}, {}u)) {{ /* {} */",
+                    "{pad}{keyword} (cielo_ctor_is_variant({match_temp}, {}u)) {{ /* {} */",
                     arm.tag.as_u32(),
                     escape(&symbol_text(cx.interner, arm.tag))
                 )
                 .expect("in-memory write");
+                // The binders are the arm target's block parameters, assigned
+                // here by name rather than passed as edge arguments (CIELO-48).
                 for (field, (binder, mode)) in
                     arm.binders.iter().zip(arm.projections.iter()).enumerate()
                 {
@@ -376,55 +512,56 @@ fn emit_terminator(
                     };
                     writeln!(
                         out,
-                        "        v{} = {getter}({match_temp}, {field});",
+                        "{nested}v{} = {getter}({match_temp}, {field});",
                         binder.as_u32()
                     )
                     .expect("in-memory write");
                     if *mode == CfgProjectionMode::Copy {
-                        writeln!(out, "        cielo_arc_retain(v{});", binder.as_u32())
+                        writeln!(out, "{nested}cielo_arc_retain(v{});", binder.as_u32())
                             .expect("in-memory write");
                     }
                 }
-                emit_arc_ops(out, &arc.post, 2, cx, "term-post", block.as_u32());
-                writeln!(out, "        goto b{};", arm.target.as_u32()).expect("in-memory write");
-                out.push_str("    }\n");
+                emit_arc_ops(out, &arc.post, indent + 1, cx, "term-post", block.as_u32());
+                emit_edge(out, edge(idx), layout, indent + 1, cx);
             }
-            if !arms.is_empty() {
-                out.push_str("    else {\n");
+            if arms.is_empty() {
+                writeln!(out, "{pad}{{").expect("in-memory write");
             } else {
-                out.push_str("    {\n");
+                writeln!(out, "{pad}}} else {{").expect("in-memory write");
             }
-            emit_arc_ops(out, &arc.post, 2, cx, "term-post", block.as_u32());
-            writeln!(out, "        goto b{};", default.as_u32()).expect("in-memory write");
-            out.push_str("    }\n");
+            emit_arc_ops(out, &arc.post, indent + 1, cx, "term-post", block.as_u32());
+            emit_edge(out, edge(arms.len()), layout, indent + 1, cx);
+            writeln!(out, "{pad}}}").expect("in-memory write");
         }
         CfgTerminator::Switch {
-            selector,
-            targets,
-            default,
+            selector, targets, ..
         } => {
             let temp = cx.fresh("switch");
             let selector = emit_expr(*selector, cx);
-            writeln!(out, "    CieloValue {temp} = {selector};").expect("in-memory write");
-            emit_arc_ops(out, &arc.post, 1, cx, "term-post", block.as_u32());
-            // A dense case list lets the C compiler pick a jump table.
-            writeln!(out, "    switch (cv_switch_index({temp})) {{").expect("in-memory write");
-            for (index, target) in targets.iter().enumerate() {
-                writeln!(out, "        case {index}: goto b{};", target.as_u32())
-                    .expect("in-memory write");
+            writeln!(out, "{pad}CieloValue {temp} = {selector};").expect("in-memory write");
+            emit_arc_ops(out, &arc.post, indent, cx, "term-post", block.as_u32());
+            // A dense case list lets the C compiler pick a jump table. Every
+            // arm is planned with no fallthrough, so each case body ends in a
+            // jump and none can run into the next.
+            writeln!(out, "{pad}switch (cv_switch_index({temp})) {{").expect("in-memory write");
+            for index in 0..targets.len() {
+                writeln!(out, "{nested}case {index}: {{").expect("in-memory write");
+                emit_edge(out, edge(index), layout, indent + 2, cx);
+                writeln!(out, "{nested}}}").expect("in-memory write");
             }
-            writeln!(out, "        default: goto b{};", default.as_u32()).expect("in-memory write");
-            out.push_str("    }\n");
+            writeln!(out, "{nested}default: {{").expect("in-memory write");
+            emit_edge(out, edge(targets.len()), layout, indent + 2, cx);
+            writeln!(out, "{nested}}}").expect("in-memory write");
+            writeln!(out, "{pad}}}").expect("in-memory write");
         }
         CfgTerminator::Call {
             convention,
             callee_fn,
             args,
             result,
-            target,
             ..
         } => {
-            let args = materialize_args(out, args, cx);
+            let args = materialize_args(out, args, indent, cx);
             let callee = cx
                 .names
                 .get(callee_fn)
@@ -435,18 +572,18 @@ fn emit_terminator(
                 call_wrapper(*convention),
                 args.join(", ")
             );
-            writeln!(out, "    v{} = {call};", result.as_u32()).expect("in-memory write");
-            emit_arc_ops(out, &arc.post, 1, cx, "term-post", block.as_u32());
-            writeln!(out, "    goto b{};", target.as_u32()).expect("in-memory write");
+            writeln!(out, "{pad}v{} = {call};", result.as_u32()).expect("in-memory write");
+            emit_arc_ops(out, &arc.post, indent, cx, "term-post", block.as_u32());
+            emit_edge(out, edge(0), layout, indent, cx);
         }
         CfgTerminator::Perform {
             effect,
             operation,
             args,
             result,
-            target,
+            ..
         } => {
-            let args = materialize_args(out, args, cx);
+            let args = materialize_args(out, args, indent, cx);
             let array = if args.is_empty() {
                 "NULL".to_owned()
             } else {
@@ -481,37 +618,52 @@ fn emit_terminator(
                 )
             };
             if let Some(result) = result {
-                writeln!(out, "    v{} = {call};", result.as_u32()).expect("in-memory write");
+                writeln!(out, "{pad}v{} = {call};", result.as_u32()).expect("in-memory write");
             } else {
-                writeln!(out, "    (void){call};").expect("in-memory write");
+                writeln!(out, "{pad}(void){call};").expect("in-memory write");
             }
-            emit_arc_ops(out, &arc.post, 1, cx, "term-post", block.as_u32());
-            writeln!(out, "    goto b{};", target.as_u32()).expect("in-memory write");
+            emit_arc_ops(out, &arc.post, indent, cx, "term-post", block.as_u32());
+            emit_edge(out, edge(0), layout, indent, cx);
         }
-        CfgTerminator::Unreachable => out.push_str("    return cv_unit();\n"),
+        CfgTerminator::Unreachable => {
+            writeln!(out, "{pad}return cv_unit();").expect("in-memory write");
+        }
     }
 }
 
-fn emit_edge_values(out: &mut String, target: CfgBlockId, args: &[CfgExprId], cx: &mut EmitCx<'_>) {
+fn emit_edge_values(
+    out: &mut String,
+    target: CfgBlockId,
+    args: &[CfgExprId],
+    indent: usize,
+    cx: &mut EmitCx<'_>,
+) {
     let params = &cx.program.block(target).expect("known target").params;
+    let pad = pad(indent);
     let mut temps = Vec::new();
     for arg in args {
         let temp = cx.fresh("edge");
         let value = emit_expr(*arg, cx);
-        writeln!(out, "    CieloValue {temp} = {value};").expect("in-memory write");
+        writeln!(out, "{pad}CieloValue {temp} = {value};").expect("in-memory write");
         temps.push(temp);
     }
     for (param, temp) in params.iter().zip(temps) {
-        writeln!(out, "    v{} = {temp};", param.as_u32()).expect("in-memory write");
+        writeln!(out, "{pad}v{} = {temp};", param.as_u32()).expect("in-memory write");
     }
 }
 
-fn materialize_args(out: &mut String, args: &[CfgExprId], cx: &mut EmitCx<'_>) -> Vec<String> {
+fn materialize_args(
+    out: &mut String,
+    args: &[CfgExprId],
+    indent: usize,
+    cx: &mut EmitCx<'_>,
+) -> Vec<String> {
+    let pad = pad(indent);
     args.iter()
         .map(|arg| {
             let temp = cx.fresh("arg");
             let expression = emit_expr(*arg, cx);
-            writeln!(out, "    CieloValue {temp} = {expression};").expect("in-memory write");
+            writeln!(out, "{pad}CieloValue {temp} = {expression};").expect("in-memory write");
             temp
         })
         .collect()
@@ -704,6 +856,7 @@ fn emit_region_open(
     program: &CfgProgram,
     region: CfgRegionId,
     placements: &HashMap<CfgHandlerId, Placement>,
+    indent: usize,
 ) {
     let Some(node) = program.region(region) else {
         return;
@@ -711,7 +864,8 @@ fn emit_region_open(
     if node.is_fully_stack() {
         return;
     }
-    writeln!(out, "    cielo_region_open(&reg{});", region.as_u32()).expect("in-memory write");
+    let pad = pad(indent);
+    writeln!(out, "{pad}cielo_region_open(&reg{});", region.as_u32()).expect("in-memory write");
     let RegionOwner::Handler { handler, .. } = node.owner;
     for slot in &node.slots {
         let RegionSlotKind::HandlerEvidence { .. } = slot.kind;
@@ -720,7 +874,7 @@ fn emit_region_open(
         }
         writeln!(
             out,
-            "    hev{} = (CieloEvidence *)cielo_region_alloc(&reg{}, sizeof(CieloEvidence));",
+            "{pad}hev{} = (CieloEvidence *)cielo_region_alloc(&reg{}, sizeof(CieloEvidence));",
             handler.as_u32(),
             region.as_u32()
         )
