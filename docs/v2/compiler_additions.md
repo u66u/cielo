@@ -242,6 +242,8 @@ SSA vs structured C
 v1 TBD: "Do we just emit SSA, or do we want proper C to let compilers optimize heuristically?"
 
 v2 answer: Emit structured C. The Linear IR preserves enough structure (if/match nodes, function boundaries) to recover structured control flow. SSA-style C (all gotos) defeats C compiler heuristics that look for loop patterns.
+
+Landed in CIELO-44, with two corrections. There are no loop patterns to defeat: Core has no loop form, so every CFG is acyclic and recursion is a call. The relooper only ever recovers if/else and match chains, and a back edge — reachable today only from a hand-built CFG — falls back to a label and a goto. And the improvement is in the emitted C, not in the object code: over the nine examples, structured emission produced byte-identical `.text` at -O2 and identical static and dynamic ARC op counts. GCC builds the same CFG either way. The win is that emitted C is now readable and reviewable, which is what makes an ARC or handler bug findable by reading it.
 PGO Integration
 Motivation
 
