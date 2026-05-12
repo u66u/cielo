@@ -171,9 +171,9 @@ fn emit_clause_tables(out: &mut String, program: &CfgProgram, names: &HashMap<Cf
     }
 }
 
-/// A parameter list wider than this is not what `max-inline-insns-single` is
-/// for, and a body that opens a handler scope carries an evidence frame that
-/// should not be duplicated at every call site.
+/// Reachable instructions a body may hold and still be offered for inlining.
+/// Well under GCC's own `max-inline-insns-single`, since one CFG instruction
+/// expands to several C statements.
 const INLINE_INSTRUCTION_BUDGET: usize = 8;
 
 /// What the declaration and the definition have to agree on.
@@ -181,6 +181,8 @@ struct Signature {
     /// `static inline` moves GCC's per-call-site budget from
     /// `max-inline-insns-auto` up to `max-inline-insns-single`, and stops a
     /// handler specialization nothing calls from tripping `-Wunused-function`.
+    /// Never set on a body that opens a handler or region scope: an evidence
+    /// frame is not worth duplicating at every call site.
     inline: bool,
     /// Parameters nothing in the body writes back into. The CFG reuses one
     /// value namespace for parameters, block parameters and instruction
