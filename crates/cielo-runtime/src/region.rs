@@ -23,10 +23,13 @@
 //!   it is tail-resumptive: it *returns* the resumption argument to the perform
 //!   site rather than receiving a continuation it could store. So a `Perform`
 //!   of the region's own effect still returns to the region or not at all,
-//!   whether it was inlined or dispatched. CIELO-42 (multi-shot resumption) is
-//!   what breaks this: once a clause receives a real `CieloContinuation`, a
-//!   `Perform` inside the extent can be resumed after the close, and
-//!   [`escapes`] must stop treating the region's own effect as confined.
+//!   whether it was inlined or dispatched. CIELO-54 does not change that: a
+//!   clause that performs before resuming lowers by inlining, where the
+//!   resumption is a spliced statement graph and not a value, so it still never
+//!   reaches a clause table. CIELO-42 (multi-shot resumption) is what breaks
+//!   this: once a clause receives a real `CieloContinuation`, a `Perform`
+//!   inside the extent can be resumed after the close, and [`escapes`] must
+//!   stop treating the region's own effect as confined.
 //! * **Regions nest with the C frame.** A slot is placed per enclosing
 //!   function, so the extent walk never crosses a `CfgFunction` boundary.
 //!   Regions that outlive their opening frame need a different substrate.
