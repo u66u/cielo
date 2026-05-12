@@ -62,7 +62,9 @@ fn main() -> Int {
     let mut definitions = compiled
         .c_source
         .lines()
-        .filter(|line| line.starts_with("static CieloValue cielo_fn_work_") && line.ends_with('{'))
+        // Storage class is not the subject here, and a small body earns
+        // `static inline`, so match on the name and the opening brace only.
+        .filter(|line| line.contains(" cielo_fn_work_") && line.ends_with('{'))
         .collect::<Vec<_>>();
     definitions.sort_unstable();
     definitions.dedup();
