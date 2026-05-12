@@ -1,12 +1,19 @@
 use cielo_base::ids::{StmtId, VarId};
 
+/// A clause context is a stack, not a single frame. A clause that performs
+/// another effect before resuming has that effect's clause spliced *inside* it,
+/// and the inner clause's `resume` splices back the code that still has to
+/// reach the outer `resume`. Dropping `outer` on the way in loses the only
+/// record of which continuation that outer `resume` names (CIELO-54).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) struct ResumeContext {
+pub(super) struct ResumeContext<'a> {
     pub(super) resume_var: VarId,
     pub(super) perform_result: Option<VarId>,
     pub(super) continuation: StmtId,
     pub(super) clause_convention: ClauseConvention,
     pub(super) strategy: ResumeStrategy,
+    /// The context in force at the perform site this clause answers.
+    pub(super) outer: Option<&'a ResumeContext<'a>>,
 }
 
 /// How a clause's `resume` sites reach the handled continuation.

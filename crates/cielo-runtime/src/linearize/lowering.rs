@@ -398,7 +398,7 @@ fn lower_stmt_under_handlers(
     stmt_id: StmtId,
     handlers: &[&HandlerDef],
     state: &mut LoweringState<'_>,
-    resume_ctx: Option<ResumeContext>,
+    resume_ctx: Option<&ResumeContext<'_>>,
 ) -> LinearStmtId {
     let Some(handler) = handlers.last().copied() else {
         return lower_stmt(input, stmt_id, state);
@@ -479,9 +479,16 @@ fn lower_stmt_under_handlers(
                     continuation: *next,
                     clause_convention,
                     strategy,
+                    outer: resume_ctx,
                 });
-                let lowered_clause =
-                    lower_matching_clause(input, clause, args, handlers, clause_resume_ctx, state);
+                let lowered_clause = lower_matching_clause(
+                    input,
+                    clause,
+                    args,
+                    handlers,
+                    clause_resume_ctx.as_ref(),
+                    state,
+                );
                 match strategy {
                     ResumeStrategy::Inline => lowered_clause,
                     ResumeStrategy::Join => {
@@ -526,8 +533,16 @@ fn lower_stmt_under_handlers(
                 return state.linear.push_stmt(LinearStmt::Return(arg_expr));
             }
 
-            let continuation =
-                lower_stmt_under_handlers(input, active_ctx.continuation, handlers, state, None);
+            // The continuation belongs to the perform site, so it is lowered
+            // under that site's clause context -- this clause's own frame
+            // popped, everything enclosing it still live.
+            let continuation = lower_stmt_under_handlers(
+                input,
+                active_ctx.continuation,
+                handlers,
+                state,
+                active_ctx.outer,
+            );
             let continuation = if let Some(perform_var) = active_ctx.perform_result {
                 let arg_expr = lower_expr(input, *arg, state);
                 state.linear.push_stmt(LinearStmt::Let {
@@ -830,7 +845,7 @@ fn lower_matching_clause(
     clause: &HandlerClause,
     args: &[ExprId],
     handlers: &[&HandlerDef],
-    resume_ctx: Option<ResumeContext>,
+    resume_ctx: Option<&ResumeContext<'_>>,
     state: &mut LoweringState<'_>,
 ) -> LinearStmtId {
     let clause_body = lower_stmt_under_handlers(input, clause.body, handlers, state, resume_ctx);
