@@ -221,7 +221,11 @@ impl Signature {
 }
 
 fn emit_signature(out: &mut String, function: &CfgFunction, name: &str, signature: &Signature) {
-    let storage = if signature.inline { "static inline" } else { "static" };
+    let storage = if signature.inline {
+        "static inline"
+    } else {
+        "static"
+    };
     write!(out, "{storage} CieloValue {name}(").expect("in-memory write");
     for (idx, value) in function.params.iter().enumerate() {
         if idx > 0 {
@@ -429,13 +433,7 @@ fn emit_instruction(
 /// Emits whatever the edge needs to reach its target: nothing when the target
 /// is laid out next, a `goto` when it is not, or the target's whole body when
 /// this is the only edge into it.
-fn emit_edge(
-    out: &mut String,
-    edge: &Edge,
-    layout: &Layout,
-    indent: usize,
-    cx: &mut EmitCx<'_>,
-) {
+fn emit_edge(out: &mut String, edge: &Edge, layout: &Layout, indent: usize, cx: &mut EmitCx<'_>) {
     match edge {
         Edge::Inline(region) => emit_region(out, region, layout, indent, cx),
         Edge::Goto(target) => {

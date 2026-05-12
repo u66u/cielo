@@ -80,7 +80,9 @@ impl Planner<'_> {
             Some(CfgTerminator::Switch { .. }) => None,
             _ => joins.first().copied().or(fallthrough),
         };
-        let successors = terminator.map(CfgTerminator::successors).unwrap_or_default();
+        let successors = terminator
+            .map(CfgTerminator::successors)
+            .unwrap_or_default();
         let edges = successors
             .into_iter()
             .map(|target| self.edge(target, arm_fallthrough))
