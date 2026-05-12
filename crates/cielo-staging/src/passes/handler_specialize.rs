@@ -337,14 +337,40 @@ fn rewrite_direct_handle_callsite(
         return false;
     };
 
+    let row = specialized_row(program, sema, specialized_callee);
     let Some(handle_stmt) = program.stmt_mut(candidate.handle_stmt) else {
         return false;
     };
     if matches!(handle_stmt.kind, StmtKind::Handle { next: None, .. }) {
         handle_stmt.kind = replacement;
+        widen_stmt_row(sema, candidate.handle_stmt, &row);
         return true;
     }
     false
+}
+
+/// What the specialized callee performs: the handled effect is discharged
+/// inside it, but whatever its clause bodies perform now escapes through the
+/// call instead of through a `Handle` the caller can see.
+fn specialized_row(
+    program: &CoreProgram,
+    sema: &SemanticTables,
+    specialized_callee: FuncId,
+) -> SortedEffectRow {
+    program
+        .function(specialized_callee)
+        .and_then(|function| sema.effects_of_stmt.get(function.body.index()))
+        .cloned()
+        .unwrap_or_else(SortedEffectRow::empty)
+}
+
+/// Widens rather than replaces: the pre-rewrite row still describes everything
+/// on the spine except the call, and an over-wide row only costs a handler that
+/// stays installed. Narrowing one would elide a handler a perform still needs.
+fn widen_stmt_row(sema: &mut SemanticTables, stmt_id: StmtId, row: &SortedEffectRow) {
+    if let Some(slot) = sema.effects_of_stmt.get_mut(stmt_id.index()) {
+        *slot = slot.union(row);
+    }
 }
 
 fn build_rewritten_body(
@@ -358,16 +384,12 @@ fn build_rewritten_body(
     let stmt = program.stmt(body_stmt)?.clone();
     match stmt.kind {
         StmtKind::Call {
-            result,
-            args,
-            effects,
-            next,
-            ..
+            result, args, next, ..
         } => Some(StmtKind::Call {
             result,
             callee: specialized_callee,
             args,
-            effects,
+            effects: specialized_row(program, sema, specialized_callee),
             next,
         }),
         StmtKind::Let {
@@ -519,6 +541,8 @@ fn build_rewritten_stmt(
                     .resize(cloned.index() + 1, SortedEffectRow::empty());
             }
             sema.effects_of_stmt[cloned.index()] = effects;
+            let row = specialized_row(program, sema, specialized_callee);
+            widen_stmt_row(sema, cloned, &row);
             Some(cloned)
         }
         None => None,
