@@ -270,6 +270,59 @@ fn main() -> Int {{
     );
 }
 
+/// The other half of the merge blocker, and the only shape that reaches
+/// `is_tail_resumptive_stmt`'s `Perform` arm: an arm that performs an outer
+/// effect before resuming. Joining would hoist that perform past the
+/// continuation. Until CIELO-54 this could not be asserted end to end, because
+/// the outer clause's continuation was spliced in ahead of the inner `resume`
+/// and lost the context naming it.
+#[test]
+fn leaves_a_clause_that_performs_before_resuming_alone() {
+    let counts: Vec<usize> = [2, 3, 4]
+        .into_iter()
+        .map(|performs| {
+            let ticks: String = (1..=performs)
+                .map(|nth| format!("      do St.tick({nth});\n"))
+                .collect();
+            let lowered = linearize_source(&format!(
+                r#"
+effect St {{ fn tick(n: Int) -> Int }}
+effect Log {{ fn emit(n: Int) -> Int }}
+
+fn main() -> Int {{
+  let r = handle {{
+    let inner = handle {{
+{ticks}      7
+    }} with St {{
+      | tick(n, resume) => if n > 0 {{ let e = do Log.emit(n); resume(e) }} else {{ resume(2) }}
+    }};
+    inner
+  }} with Log {{
+    | emit(m, resume) => resume(m)
+  }};
+  r
+}}
+"#
+            ));
+            assert!(
+                lowered
+                    .codes
+                    .iter()
+                    .all(|code| !code.starts_with("LINEARIZE_RESUME_OUTSIDE")),
+                "performing before resuming must still lower, got {:?}",
+                lowered.codes
+            );
+            lowered.stmts
+        })
+        .collect();
+
+    let steps = growth_steps(&counts);
+    assert!(
+        steps[1] > steps[0],
+        "a clause that performs before resuming must keep re-lowering the continuation, got {counts:?}"
+    );
+}
+
 /// Naming a handler is a frontend affordance only: by linearize it is an
 /// ordinary handler frame, discharged exactly like the inline form above.
 #[test]

@@ -497,6 +497,62 @@ fn main() -> Int {
 "#,
         },
         DiffCase {
+            // The inner clause performs `Log` *before* it resumes, so the `Log`
+            // clause is spliced in ahead of the `St` resume. Dropping the outer
+            // clause context there left that resume with nothing naming its
+            // continuation, and the program did not lower at all (CIELO-54).
+            name: "clause_performs_before_resuming",
+            source: r#"
+effect St { fn tick(n: Int) -> Int }
+effect Log { fn emit(n: Int) -> Int }
+
+fn main() -> Int {
+  let r = handle {
+    let inner = handle {
+      do St.tick(1);
+      do St.tick(2);
+      7
+    } with St {
+      | tick(n, resume) => if n > 0 { let e = do Log.emit(n); resume(e) } else { resume(2) }
+    };
+    inner
+  } with Log {
+    | emit(m, resume) => resume(m)
+  };
+  r
+}
+"#,
+        },
+        DiffCase {
+            // Same shape reached through a call, so `St` is specialized into the
+            // callee instead of inlined. The call kept the unspecialized row, so
+            // `Log` looked dead in `main` and the perform trapped at runtime.
+            name: "specialized_clause_performs_outer_effect",
+            source: r#"
+effect St { fn tick(n: Int) -> Int }
+effect Log { fn emit(n: Int) -> Int }
+
+fn helper(x: Int) -> Int with St {
+  let a = do St.tick(x);
+  a
+}
+
+fn main() -> Int {
+  let r = handle {
+    let inner = handle {
+      helper(1)
+    } with St {
+      | tick(n, resume) => { let e = do Log.emit(n); resume(e) }
+    };
+    inner
+  } with Log {
+    | emit(m, resume) => resume(m + 6)
+  };
+  r
+}
+"#,
+        },
+        DiffCase {
             name: "discharged_handler_rt_passthrough",
             source: r#"
 effect LocalState { fn tick() -> Int }
@@ -1397,7 +1453,16 @@ fn eval_stmt_at(
             for arg in args {
                 values.push(eval_expr_at(program, ct, sema, *arg, env, depth)?);
             }
-            let returned = eval_call(program, ct, sema, *callee, values, depth + 1)?;
+            let returned = eval_call(
+                program,
+                ct,
+                sema,
+                *callee,
+                values,
+                handler_stack,
+                continuations,
+                depth + 1,
+            )?;
             env.insert(*result, returned);
             eval_stmt_at(
                 program,
@@ -1624,22 +1689,36 @@ fn eval_expr_at(
             for arg in args {
                 values.push(eval_expr_at(program, ct, sema, *arg, env, depth)?);
             }
-            eval_call(program, ct, sema, *callee, values, depth + 1)
+            // A `PureCall` has an empty effect row, so it needs no frames.
+            eval_call(
+                program,
+                ct,
+                sema,
+                *callee,
+                values,
+                &mut Vec::new(),
+                &mut Vec::new(),
+                depth + 1,
+            )
         }
         // Builtins produce output rather than a value the oracle can model.
         ExprKind::BuiltinCall { .. } | ExprKind::Error(_) => None,
     }
 }
 
-/// Evaluates a call by binding parameters and running the callee body. Only
-/// effect-free bodies succeed; anything that performs returns `None` because
-/// there is no handler stack in this context.
+/// Handlers are deep: the caller's frames stay on the stack across a call, so a
+/// callee performing an effect its caller handles resolves against them. A
+/// fresh stack here instead made every such program unevaluatable, which the
+/// seeded cases could only report as "no oracle".
+#[allow(clippy::too_many_arguments)]
 fn eval_call(
     program: &CoreProgram,
     ct: &CtPropagationTables,
     sema: &SemanticTables,
     callee: cielo_base::FuncId,
     args: Vec<OracleValue>,
+    handler_stack: &mut Vec<HandlerFrame>,
+    continuations: &mut Vec<Continuation>,
     depth: usize,
 ) -> Option<OracleValue> {
     if depth > ORACLE_MAX_CALL_DEPTH {
@@ -1653,16 +1732,14 @@ fn eval_call(
     for (param, value) in function.params.iter().zip(args) {
         env.insert(*param, value);
     }
-    let mut handler_stack = Vec::new();
-    let mut continuations = Vec::new();
     eval_stmt_at(
         program,
         ct,
         sema,
         function.body,
         &mut env,
-        &mut handler_stack,
-        &mut continuations,
+        handler_stack,
+        continuations,
         depth,
     )
 }
