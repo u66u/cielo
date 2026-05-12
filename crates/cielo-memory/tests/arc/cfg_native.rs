@@ -54,10 +54,10 @@ fn compile_without_normalize(source: &str) -> cielo_test_support::CompiledC {
 /// The runtime header defines these helpers and calls them itself, so counting
 /// over the whole file measures the header, not the program.
 fn emitted_bodies(c_source: &str) -> &str {
-    let start = c_source
-        .find("\nstatic CieloValue cielo_fn_")
-        .expect("emitted C must define at least one function");
-    &c_source[start..]
+    c_source
+        .split_once(cielo_backend_c::EMITTED_BODIES_MARKER)
+        .expect("emitted C must carry the body marker")
+        .1
 }
 
 fn arc_op_count(compiled: &cielo_test_support::CompiledC, kind: CfgArcOpKind) -> usize {

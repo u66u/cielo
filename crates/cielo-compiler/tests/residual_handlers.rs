@@ -121,8 +121,8 @@ fn main() -> Int {
     // The header defines the push helper, so only the emitted bodies can say
     // whether anything still installs evidence.
     let bodies = c_source
-        .split_once("\nstatic CieloValue cielo_fn_")
-        .expect("emitted C declares at least one function")
+        .split_once(cielo_backend_c::EMITTED_BODIES_MARKER)
+        .expect("emitted C carries the body marker")
         .1;
     assert!(
         !bodies.contains("cielo_handler_push_with_evidence("),

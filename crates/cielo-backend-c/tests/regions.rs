@@ -19,10 +19,10 @@ fn emit(linear: &LinearProgram, interner: &Interner) -> String {
 }
 
 fn bodies(emitted: &str) -> &str {
-    let start = emitted
-        .find("\nstatic CieloValue cielo_fn_")
-        .expect("emitted C should define at least one function");
-    &emitted[start..]
+    emitted
+        .split_once(cielo_backend_c::EMITTED_BODIES_MARKER)
+        .expect("emitted C should carry the body marker")
+        .1
 }
 
 #[test]

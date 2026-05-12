@@ -23,6 +23,13 @@ use crate::structure::{self, Edge, Layout, Region};
 
 const C_RUNTIME_HEADER: &str = include_str!("cielo_runtime.h");
 
+/// Separates the runtime header from everything this program emitted.
+///
+/// Counting `cielo_arc_retain` over a whole emitted file measures the header,
+/// which defines and calls the helper itself. The storage class of an emitted
+/// function is not a boundary to key on: a small body earns `static inline`.
+pub const EMITTED_BODIES_MARKER: &str = "/* --- cielo emitted bodies --- */\n";
+
 pub fn emit(
     program: &CfgProgram,
     interner: &Interner,
@@ -47,6 +54,9 @@ pub fn emit(
     if !pools.declarations.is_empty() {
         out.push('\n');
     }
+
+    out.push_str(EMITTED_BODIES_MARKER);
+    out.push('\n');
 
     let names = function_names(program, interner);
     let signatures = program

@@ -13,10 +13,10 @@ use std::ffi::OsString;
 use std::process::{Command, Stdio};
 
 fn bodies(emitted: &str) -> &str {
-    let start = emitted
-        .find("CieloValue cielo_fn_")
-        .expect("emitted C should declare at least one function");
-    &emitted[start..]
+    emitted
+        .split_once(cielo_backend_c::EMITTED_BODIES_MARKER)
+        .expect("emitted C should carry the body marker")
+        .1
 }
 
 fn compile_to_c(source: &str) -> String {
