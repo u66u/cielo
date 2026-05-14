@@ -98,6 +98,131 @@ fn bool_lit(value: bool) -> &'static str {
     if value { "true" } else { "false" }
 }
 
+/// Depth is the only termination condition, so every recursive arm must
+/// decrement it and the leaf arms must be reachable at depth 0.
+struct ExprGen<'a> {
+    rng: &'a mut DeterministicRng,
+    ints: Vec<String>,
+    bools: Vec<String>,
+}
+
+impl ExprGen<'_> {
+    fn int_expr(&mut self, depth: u32) -> String {
+        if depth == 0 {
+            return self.int_leaf();
+        }
+        match self.rng.next_bounded_u64(6) {
+            0 => self.int_leaf(),
+            1 => format!("(0 - {})", self.int_expr(depth - 1)),
+            // Magnitudes stay small so no operand can overflow. The oracle
+            // wraps where C is undefined, so an overflow would agree on both
+            // sides and go unnoticed rather than being caught -- CIELO-58.
+            2 => {
+                let (lhs, rhs) = (self.int_expr(depth - 1), self.int_expr(depth - 1));
+                let op = ["+", "-", "*"][self.rng.next_bounded_u64(3) as usize];
+                format!("({lhs} {op} {rhs})")
+            }
+            // A generated divisor is shifted away from zero: a trapping divide
+            // makes the oracle decline to judge, which silently drops the case.
+            3 => {
+                let lhs = self.int_expr(depth - 1);
+                let rhs = self.int_expr(depth - 1);
+                let op = ["/", "%"][self.rng.next_bounded_u64(2) as usize];
+                format!("({lhs} {op} (({rhs} % 7) + 8))")
+            }
+            _ => self.int_leaf(),
+        }
+    }
+
+    fn bool_expr(&mut self, depth: u32) -> String {
+        if depth == 0 {
+            return self.bool_leaf();
+        }
+        match self.rng.next_bounded_u64(5) {
+            0 => self.bool_leaf(),
+            1 => format!("(!{})", self.bool_expr(depth - 1)),
+            2 => {
+                let (lhs, rhs) = (self.int_expr(depth - 1), self.int_expr(depth - 1));
+                let op = ["==", "!=", "<", ">", "<=", ">="][self.rng.next_bounded_u64(6) as usize];
+                format!("({lhs} {op} {rhs})")
+            }
+            3 => {
+                let (lhs, rhs) = (self.bool_expr(depth - 1), self.bool_expr(depth - 1));
+                let op = ["&&", "||"][self.rng.next_bounded_u64(2) as usize];
+                format!("({lhs} {op} {rhs})")
+            }
+            _ => {
+                let (lhs, rhs) = (self.bool_expr(depth - 1), self.bool_expr(depth - 1));
+                format!("({lhs} == {rhs})")
+            }
+        }
+    }
+
+    fn int_leaf(&mut self) -> String {
+        if !self.ints.is_empty() && self.rng.next_bool() {
+            let index = self.rng.next_bounded_u64(self.ints.len() as u64) as usize;
+            return self.ints[index].clone();
+        }
+        format!("{}", self.rng.next_small_int(40) - 20)
+    }
+
+    fn bool_leaf(&mut self) -> String {
+        if !self.bools.is_empty() && self.rng.next_bool() {
+            let index = self.rng.next_bounded_u64(self.bools.len() as u64) as usize;
+            return self.bools[index].clone();
+        }
+        bool_lit(self.rng.next_bool()).to_owned()
+    }
+}
+
+/// Nested arithmetic, comparison and boolean expressions over a `let` chain.
+///
+/// This exercises the divergence class the oracle can actually judge: anything
+/// where Core evaluation and the compiled C disagree. It cannot catch a rule
+/// both sides implement identically wrongly -- see `eval_binary`.
+fn build_generated_expr_source(rng: &mut DeterministicRng) -> String {
+    let bindings = 2 + rng.next_bounded_u64(3) as usize;
+    let mut builder = ExprGen {
+        rng,
+        ints: Vec::new(),
+        bools: Vec::new(),
+    };
+    let mut body = String::new();
+    for index in 0..bindings {
+        let name = format!("v{index}");
+        if builder.rng.next_bool() {
+            let value = if builder.rng.next_bool() {
+                let cond = builder.bool_expr(1);
+                let then_branch = builder.int_expr(2);
+                let else_branch = builder.int_expr(2);
+                format!("if {cond} {{ {then_branch} }} else {{ {else_branch} }}")
+            } else {
+                builder.int_expr(2)
+            };
+            body.push_str(&format!("  let {name} = {value};\n"));
+            builder.ints.push(name);
+        } else {
+            let value = builder.bool_expr(2);
+            body.push_str(&format!("  let {name} = {value};\n"));
+            builder.bools.push(name);
+        }
+    }
+    let tail = builder.int_expr(3);
+    // Exit codes are the low 8 bits, so fold into a range the harness can read
+    // back unambiguously from both sides.
+    format!("fn main() -> Int {{\n{body}  (({tail}) % 100) + 100\n}}\n")
+}
+
+fn build_generated_expr_case(seed: u64, case_index: usize) -> GeneratedDiffCase {
+    let mut rng = DeterministicRng::new(seed);
+    GeneratedDiffCase {
+        name: format!("generated_expr_{case_index:02}"),
+        source: build_generated_expr_source(&mut rng),
+        seed,
+        template: "expr",
+    }
+}
+
 fn build_generated_handler_case(seed: u64, case_index: usize) -> GeneratedDiffCase {
     let mut rng = DeterministicRng::new(seed);
     let template_kind = rng.next_bounded_u64(4);
@@ -862,6 +987,79 @@ fn runtime_exit_matches_evaluator_oracle_for_seed_expanding_handler_cases() {
                 actual, expected,
                 "runtime/evaluator mismatch for generated case {} (seed {:#x}, template {})",
                 generated.name, generated.seed, generated.template
+            );
+            case_index += 1;
+        }
+    }
+}
+
+/// Nested expression shapes rather than handler shapes: operator nesting,
+/// comparison and boolean chains, `if` in value position, and a `let` chain
+/// feeding later expressions.
+///
+/// This covers the class the oracle can judge — Core evaluation disagreeing
+/// with the compiled C. A rule both sides implement identically wrongly is
+/// invisible here by construction; those need a stated expected value instead.
+#[test]
+fn runtime_exit_matches_evaluator_oracle_for_generated_expressions() {
+    if !c_compiler_available() {
+        eprintln!("skipping generated expression diff test: no C compiler found");
+        return;
+    }
+
+    const BASE_SEEDS: [u64; 6] = [
+        0x51E7_2C10_9AB3_44D2,
+        0x2F80_1DDE_6C41_7735,
+        0xB33F_0AC5_1928_3746,
+        0x77AA_5599_CC33_EE11,
+        0x1B2D_3F4A_5C6E_7081,
+        0xE1D2_C3B4_A596_8778,
+    ];
+    const VARIANTS_PER_SEED: usize = 6;
+    const VARIANT_MIX: u64 = 0x9E37_79B9_7F4A_7C15;
+    const SOURCE_ID_BASE: u32 = 30_000;
+
+    let compiler = PassHarness::new(PassConfig::default());
+    let mut case_index = 0u32;
+
+    for base_seed in BASE_SEEDS {
+        for variant in 0..VARIANTS_PER_SEED {
+            let derived_seed = base_seed
+                ^ ((variant as u64 + 1).wrapping_mul(VARIANT_MIX))
+                ^ ((case_index as u64 + 1).wrapping_mul(0xBF58_476D_1CE4_E5B9));
+            let generated = build_generated_expr_case(derived_seed, case_index as usize);
+            let mut interner = Interner::new();
+            let compiled = compiler.compile_source_to_c(
+                generated.source.as_str(),
+                SourceId::from_u32(SOURCE_ID_BASE + case_index),
+                &mut interner,
+            );
+            assert!(
+                !compiled.residual.diagnostics().has_errors(),
+                "generated case {} (seed {:#x}) did not compile:\n{}\ndiagnostics: {:?}",
+                generated.name,
+                generated.seed,
+                generated.source,
+                compiled
+                    .residual
+                    .diagnostics()
+                    .entries()
+                    .iter()
+                    .map(|d| d.code.to_owned())
+                    .collect::<Vec<_>>()
+            );
+            let expected = evaluator_oracle_exit_code(&compiled, &interner).unwrap_or_else(|| {
+                panic!(
+                    "failed to compute evaluator oracle for generated case {} (seed {:#x})\nsource:\n{}",
+                    generated.name, generated.seed, generated.source
+                )
+            });
+            let actual =
+                compile_and_run_c_exit_code(generated.name.as_str(), compiled.c_source.as_str());
+            assert_eq!(
+                actual, expected,
+                "runtime/evaluator mismatch for generated case {} (seed {:#x})\nsource:\n{}",
+                generated.name, generated.seed, generated.source
             );
             case_index += 1;
         }
