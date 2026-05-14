@@ -882,6 +882,7 @@ fn scoped_perform_does_not_dispatch_to_wrong_capability() {
     .replace('\\', "\\\\");
     let c_source = format!(
         r#"
+#define CIELO_RUNTIME_IMPL
 #include <stdint.h>
 #include "{runtime_header}"
 
@@ -970,6 +971,7 @@ fn scoped_perform_traps_when_its_capability_left_scope() {
     .replace('\\', "\\\\");
     let c_source = format!(
         r#"
+#define CIELO_RUNTIME_IMPL
 #include <stdint.h>
 #include "{runtime_header}"
 
@@ -1036,6 +1038,7 @@ fn callback_scoped_capability_avoids_wrong_handler_interception() {
     .replace('\\', "\\\\");
     let c_source = format!(
         r#"
+#define CIELO_RUNTIME_IMPL
 #include <stdint.h>
 #include "{runtime_header}"
 
@@ -1126,6 +1129,7 @@ fn arc_runtime_release_frees_nested_ctor_graph() {
     .replace('\\', "\\\\");
     let c_source = format!(
         r#"
+#define CIELO_RUNTIME_IMPL
 #include <stdint.h>
 #include "{runtime_header}"
 
@@ -1174,6 +1178,7 @@ fn arc_runtime_dec_is_last_and_immortal_ctor_are_safe() {
     .replace('\\', "\\\\");
     let c_source = format!(
         r#"
+#define CIELO_RUNTIME_IMPL
 #include <stdint.h>
 #include "{runtime_header}"
 

@@ -37,6 +37,9 @@ pub fn emit(
     arc_trace: bool,
 ) -> String {
     let mut out = String::new();
+    // The generated unit owns the runtime's mutable state and out-of-line
+    // functions; anything else that includes the header links against it.
+    out.push_str("#define CIELO_RUNTIME_IMPL\n");
     emit_builtin_table(&mut out, program, interner);
     out.push_str(C_RUNTIME_HEADER);
     if !out.ends_with('\n') {

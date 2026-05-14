@@ -1,8 +1,10 @@
-/* Codegen pastes this file into the single generated translation unit, so the
- * guard is for the copy the driver writes to disk, which tests and FFI
- * consumers include by name. The mutable globals below are still per-TU: a
- * second translation unit would get its own handler stack. That is latent
- * while there is one TU, and is what CIELO-23 has to resolve. */
+/* Codegen pastes this file into the generated translation unit and defines
+ * CIELO_RUNTIME_IMPL ahead of the paste, so that unit owns the one definition
+ * of the runtime's mutable state and out-of-line functions. Every other unit --
+ * the copy the driver writes to disk, which tests and FFI consumers include by
+ * name -- sees declarations only and links against it. Two units that both
+ * define CIELO_RUNTIME_IMPL collide at link time; that is deliberate, because
+ * the alternative is each of them silently getting a private handler stack. */
 #ifndef CIELO_RUNTIME_H
 #define CIELO_RUNTIME_H
 
@@ -26,18 +28,10 @@ enum {
 
 /* Unrecoverable faults abort here. A sentinel return would be
  * indistinguishable from a real result. */
-_Noreturn static void cielo_trap(const char *what) {
-  fflush(stdout);
-  fprintf(stderr, "cielo: %s\n", what);
-  abort();
-}
+_Noreturn void cielo_trap(const char *what);
 
 /* Same, but names the operation that faulted. */
-_Noreturn static void cielo_trap_op(const char *what, const char *op) {
-  fflush(stdout);
-  fprintf(stderr, "cielo: %s: %s\n", what, op ? op : "?");
-  abort();
-}
+_Noreturn void cielo_trap_op(const char *what, const char *op);
 
 typedef enum {
   CV_UNIT = 0,
@@ -141,13 +135,6 @@ typedef struct {
 } CieloHandlerFrame;
 
 enum { CIELO_HANDLER_STACK_MAX = 64 };
-static CieloHandlerFrame g_cielo_handlers[CIELO_HANDLER_STACK_MAX];
-static size_t g_cielo_handler_depth = 0;
-static uint32_t g_cielo_next_capability_id = 1;
-
-#define CIELO_CALL_PURE(expr) (expr)
-#define CIELO_CALL_DIRECT(expr) (expr)
-#define CIELO_CALL_CONTROL(expr) (expr)
 
 typedef struct {
   uint64_t ctor_allocations;
@@ -161,16 +148,55 @@ typedef struct {
   uint64_t release_last_calls;
 } CieloArcStats;
 
-static CieloArcStats g_cielo_arc_stats = {0};
+/* One handler stack per program, not per translation unit. A unit with its own
+ * copy would push a handler that no `perform` compiled elsewhere can find, and
+ * the effect would escape to the no-handler trap. Capability ids have to be
+ * drawn from one counter for the same reason: two units minting `1`
+ * independently makes `cielo_perform_scoped` dispatch into the wrong instance.
+ * These are `extern` rather than `static inline` accessors because the handler
+ * stack is written on the hot path of every handler entry and exit. */
+extern CieloHandlerFrame g_cielo_handlers[CIELO_HANDLER_STACK_MAX];
+extern size_t g_cielo_handler_depth;
+extern uint32_t g_cielo_next_capability_id;
+extern CieloArcStats g_cielo_arc_stats;
+
+#define CIELO_CALL_PURE(expr) (expr)
+#define CIELO_CALL_DIRECT(expr) (expr)
+#define CIELO_CALL_CONTROL(expr) (expr)
 
 /* Counting makes every retain/release observable, so the C compiler cannot
  * fold away pairs the ARC pass already proved dead. On for tests, off for
- * benchmarks and release builds. */
+ * benchmarks and release builds. Each unit decides for itself; the totals they
+ * accumulate into are shared either way. */
 #ifdef CIELO_ARC_STATS
 #define CIELO_ARC_COUNT(FIELD) (g_cielo_arc_stats.FIELD++)
 #else
 #define CIELO_ARC_COUNT(FIELD) ((void)0)
 #endif
+
+void cielo_arc_destroy_and_dispose(CieloValue value);
+bool cv_equal(CieloValue a, CieloValue b);
+CieloValue cielo_make_str(const char *data, size_t len);
+CieloValue cielo_make_ctor(const char *ty, const char *variant,
+                           uint32_t variant_tag, size_t argc,
+                           const CieloValue *fields);
+CieloValue cielo_perform(uint32_t effect, uint32_t op_symbol, const char *op,
+                         size_t argc, const CieloValue *args);
+CieloValue cielo_perform_scoped(uint32_t effect,
+                                uint32_t expected_capability_id,
+                                uint32_t op_symbol, const char *op, size_t argc,
+                                const CieloValue *args);
+
+/* Builtins are runtime-provided operations. Codegen calls them directly for a
+ * `BuiltinCall`; the dispatch table in the implementation unit only serves
+ * operations that arrive through `perform`, so an effect whose name matches a
+ * builtin still resolves once no handler claims it. Arguments are borrowed,
+ * never released here. */
+typedef CieloValue (*CieloBuiltinFn)(size_t argc, const CieloValue *args);
+
+CieloValue cielo_builtin_print(size_t argc, const CieloValue *args);
+CieloValue cielo_builtin_str_len(size_t argc, const CieloValue *args);
+CieloValue cielo_builtin_str_concat(size_t argc, const CieloValue *args);
 
 static inline uint32_t cielo_runtime_abi_version(void) {
   return (uint32_t)CIELO_RUNTIME_ABI_VERSION;
@@ -247,8 +273,6 @@ static inline bool cielo_arc_dec_is_last(CieloValue value) {
   return arc->refcount == 0u;
 }
 
-static void cielo_arc_destroy_and_dispose(CieloValue value);
-
 static inline void cielo_arc_release(CieloValue value) {
   if (!cielo_arc_is_managed(value))
     return;
@@ -257,70 +281,6 @@ static inline void cielo_arc_release(CieloValue value) {
     return;
   CIELO_ARC_COUNT(release_last_calls);
   cielo_arc_destroy_and_dispose(value);
-}
-
-/* Destruction uses an explicit worklist. Recursing would overflow the C
- * stack on any structure as deep as its input is long. */
-typedef struct {
-  CieloValue *items;
-  size_t len;
-  size_t cap;
-} CieloDropStack;
-
-static void cielo_drop_stack_push(CieloDropStack *stack, CieloValue value) {
-  if (stack->len == stack->cap) {
-    size_t cap = stack->cap ? stack->cap * 2u : 16u;
-    CieloValue *items =
-        (CieloValue *)realloc(stack->items, cap * sizeof(CieloValue));
-    if (items == NULL)
-      cielo_trap("out of memory growing drop stack");
-    stack->items = items;
-    stack->cap = cap;
-  }
-  stack->items[stack->len++] = value;
-}
-
-static void cielo_arc_destroy_and_dispose(CieloValue value) {
-  if (!cielo_arc_is_managed(value) || cielo_arc_is_immortal(value))
-    return;
-
-  CieloDropStack stack = {NULL, 0u, 0u};
-  cielo_drop_stack_push(&stack, value);
-
-  while (stack.len > 0u) {
-    CieloValue dying = stack.items[--stack.len];
-
-    /* Strings own no children, and their bytes live in the tail of the same
-     * block, so one free finishes them. */
-    if (dying.tag == CV_STRING) {
-      CIELO_ARC_COUNT(str_frees);
-      free(dying.as.str);
-      continue;
-    }
-
-    CieloCtor *ctor = dying.as.ctor;
-    CieloValue *fields = ctor->fields;
-    size_t argc = ctor->argc;
-    ctor->fields = NULL;
-    ctor->argc = 0u;
-
-    for (size_t i = 0; i < argc; i++) {
-      CieloValue field = fields[i];
-      if (!cielo_arc_is_managed(field))
-        continue;
-      CIELO_ARC_COUNT(release_calls);
-      if (!cielo_arc_dec_is_last(field))
-        continue;
-      CIELO_ARC_COUNT(release_last_calls);
-      cielo_drop_stack_push(&stack, field);
-    }
-
-    /* `fields` points into the tail of `ctor`; one free covers both. */
-    CIELO_ARC_COUNT(ctor_frees);
-    free(ctor);
-  }
-
-  free(stack.items);
 }
 
 static inline bool cielo_ctor_is_variant(CieloValue value,
@@ -610,47 +570,6 @@ static inline CieloValue cv_mod(CieloValue a, CieloValue b) {
 }
 static inline const char *cielo_cstr0(const char *s) { return s ? s : ""; }
 
-static bool cv_equal(CieloValue a, CieloValue b) {
-  if (a.tag != b.tag)
-    return false;
-  switch (a.tag) {
-  case CV_UNIT:
-    return true;
-  case CV_BOOL:
-    return a.as.b == b.as.b;
-  case CV_INT:
-    return a.as.i == b.as.i;
-  case CV_FLOAT:
-    return a.as.f == b.as.f;
-  case CV_CHAR:
-    return a.as.c == b.as.c;
-  case CV_STRING: {
-    /* By value, never by pointer: two equal strings built at runtime are
-     * distinct allocations, and pooling only dedups literals. */
-    size_t len = cielo_str_len(a);
-    return len == cielo_str_len(b) &&
-           memcmp(cielo_str_data(a), cielo_str_data(b), len) == 0;
-  }
-  case CV_CTOR:
-    break;
-  }
-  /* Constructors compare structurally. Values are immutable and built
-   * bottom-up, so the heap is a DAG and this terminates. */
-  const CieloCtor *x = a.as.ctor;
-  const CieloCtor *y = b.as.ctor;
-  if (x == y)
-    return true;
-  if (x == NULL || y == NULL)
-    return false;
-  if (x->argc != y->argc || x->variant_tag != y->variant_tag)
-    return false;
-  for (size_t i = 0; i < x->argc; i++) {
-    if (!cv_equal(x->fields[i], y->fields[i]))
-      return false;
-  }
-  return true;
-}
-
 static inline CieloValue cv_eq(CieloValue a, CieloValue b) {
   return cv_bool(cv_equal(a, b));
 }
@@ -737,15 +656,156 @@ static inline void cv_print(CieloValue v) {
   }
 }
 
-/* Builtins are runtime-provided operations. Codegen calls them directly for a
- * `BuiltinCall`; the table below only serves operations that arrive through
- * `perform`, so an effect whose name matches a builtin still resolves once no
- * handler claims it. Arguments are borrowed, never released here. */
-typedef CieloValue (*CieloBuiltinFn)(size_t argc, const CieloValue *args);
+static inline bool cielo_dispatch_with_evidence(CieloEvidence *evidence,
+                                                uint32_t op_symbol, size_t argc,
+                                                const CieloValue *args,
+                                                CieloValue *out) {
+  if (evidence == NULL || out == NULL) {
+    return false;
+  }
+  if (evidence->abi_version != cielo_runtime_abi_version()) {
+    return false;
+  }
+  if (evidence->clauses == NULL || evidence->clause_count == 0) {
+    return false;
+  }
+  for (uint32_t i = 0; i < evidence->clause_count; i++) {
+    const CieloClauseEntry *entry = &evidence->clauses[i];
+    if (entry->op_symbol == op_symbol && entry->clause != NULL) {
+      *out = entry->clause(evidence, NULL, argc, args);
+      return true;
+    }
+  }
+  return false;
+}
+
+#ifdef CIELO_RUNTIME_IMPL
+
+CieloHandlerFrame g_cielo_handlers[CIELO_HANDLER_STACK_MAX];
+size_t g_cielo_handler_depth = 0;
+uint32_t g_cielo_next_capability_id = 1;
+CieloArcStats g_cielo_arc_stats = {0};
+
+_Noreturn void cielo_trap(const char *what) {
+  fflush(stdout);
+  fprintf(stderr, "cielo: %s\n", what);
+  abort();
+}
+
+_Noreturn void cielo_trap_op(const char *what, const char *op) {
+  fflush(stdout);
+  fprintf(stderr, "cielo: %s: %s\n", what, op ? op : "?");
+  abort();
+}
+
+/* Destruction uses an explicit worklist. Recursing would overflow the C
+ * stack on any structure as deep as its input is long. */
+typedef struct {
+  CieloValue *items;
+  size_t len;
+  size_t cap;
+} CieloDropStack;
+
+static void cielo_drop_stack_push(CieloDropStack *stack, CieloValue value) {
+  if (stack->len == stack->cap) {
+    size_t cap = stack->cap ? stack->cap * 2u : 16u;
+    CieloValue *items =
+        (CieloValue *)realloc(stack->items, cap * sizeof(CieloValue));
+    if (items == NULL)
+      cielo_trap("out of memory growing drop stack");
+    stack->items = items;
+    stack->cap = cap;
+  }
+  stack->items[stack->len++] = value;
+}
+
+void cielo_arc_destroy_and_dispose(CieloValue value) {
+  if (!cielo_arc_is_managed(value) || cielo_arc_is_immortal(value))
+    return;
+
+  CieloDropStack stack = {NULL, 0u, 0u};
+  cielo_drop_stack_push(&stack, value);
+
+  while (stack.len > 0u) {
+    CieloValue dying = stack.items[--stack.len];
+
+    /* Strings own no children, and their bytes live in the tail of the same
+     * block, so one free finishes them. */
+    if (dying.tag == CV_STRING) {
+      CIELO_ARC_COUNT(str_frees);
+      free(dying.as.str);
+      continue;
+    }
+
+    CieloCtor *ctor = dying.as.ctor;
+    CieloValue *fields = ctor->fields;
+    size_t argc = ctor->argc;
+    ctor->fields = NULL;
+    ctor->argc = 0u;
+
+    for (size_t i = 0; i < argc; i++) {
+      CieloValue field = fields[i];
+      if (!cielo_arc_is_managed(field))
+        continue;
+      CIELO_ARC_COUNT(release_calls);
+      if (!cielo_arc_dec_is_last(field))
+        continue;
+      CIELO_ARC_COUNT(release_last_calls);
+      cielo_drop_stack_push(&stack, field);
+    }
+
+    /* `fields` points into the tail of `ctor`; one free covers both. */
+    CIELO_ARC_COUNT(ctor_frees);
+    free(ctor);
+  }
+
+  free(stack.items);
+}
+
+bool cv_equal(CieloValue a, CieloValue b) {
+  if (a.tag != b.tag)
+    return false;
+  switch (a.tag) {
+  case CV_UNIT:
+    return true;
+  case CV_BOOL:
+    return a.as.b == b.as.b;
+  case CV_INT:
+    return a.as.i == b.as.i;
+  case CV_FLOAT:
+    return a.as.f == b.as.f;
+  case CV_CHAR:
+    return a.as.c == b.as.c;
+  case CV_STRING: {
+    /* By value, never by pointer: two equal strings built at runtime are
+     * distinct allocations, and pooling only dedups literals. */
+    size_t len = cielo_str_len(a);
+    return len == cielo_str_len(b) &&
+           memcmp(cielo_str_data(a), cielo_str_data(b), len) == 0;
+  }
+  case CV_CTOR:
+    break;
+  }
+  /* Constructors compare structurally. Values are immutable and built
+   * bottom-up, so the heap is a DAG and this terminates. */
+  const CieloCtor *x = a.as.ctor;
+  const CieloCtor *y = b.as.ctor;
+  if (x == y)
+    return true;
+  if (x == NULL || y == NULL)
+    return false;
+  if (x->argc != y->argc || x->variant_tag != y->variant_tag)
+    return false;
+  for (size_t i = 0; i < x->argc; i++) {
+    if (!cv_equal(x->fields[i], y->fields[i]))
+      return false;
+  }
+  return true;
+}
 
 /* Bytes live in the tail of the same block, so destruction frees once. The
  * result is owned: the caller's ARC releases it. */
-static CieloValue cielo_make_str(const char *data, size_t len) {
+CieloValue cielo_make_str(const char *data, size_t len) {
   CieloStr *str = (CieloStr *)malloc(sizeof(CieloStr) + len + 1u);
   if (str == NULL)
     cielo_trap("out of memory allocating string");
@@ -768,7 +828,7 @@ static void cielo_builtin_release_args(size_t argc, const CieloValue *args) {
   }
 }
 
-static CieloValue cielo_builtin_print(size_t argc, const CieloValue *args) {
+CieloValue cielo_builtin_print(size_t argc, const CieloValue *args) {
   if (argc != 1 || args == NULL)
     cielo_trap("print expects exactly one argument");
   cv_print(args[0]);
@@ -776,7 +836,7 @@ static CieloValue cielo_builtin_print(size_t argc, const CieloValue *args) {
   return cv_unit();
 }
 
-static CieloValue cielo_builtin_str_len(size_t argc, const CieloValue *args) {
+CieloValue cielo_builtin_str_len(size_t argc, const CieloValue *args) {
   if (argc != 1 || args == NULL)
     cielo_trap("str_len expects exactly one argument");
   if (args[0].tag != CV_STRING)
@@ -786,8 +846,7 @@ static CieloValue cielo_builtin_str_len(size_t argc, const CieloValue *args) {
   return out;
 }
 
-static CieloValue cielo_builtin_str_concat(size_t argc,
-                                           const CieloValue *args) {
+CieloValue cielo_builtin_str_concat(size_t argc, const CieloValue *args) {
   if (argc != 2 || args == NULL)
     cielo_trap("str_concat expects exactly two arguments");
   if (args[0].tag != CV_STRING || args[1].tag != CV_STRING)
@@ -813,7 +872,10 @@ typedef struct {
 #define CIELO_BUILTIN_ENTRY(SYMBOL, FN) {(SYMBOL), (FN)},
 
 /* SymbolIds are only stable within a compilation unit, so the keys cannot be
- * baked into this header; codegen defines CIELO_BUILTIN_TABLE above it. */
+ * baked into this header; codegen defines CIELO_BUILTIN_TABLE above it. Read
+ * only, so one copy is a link-time convenience rather than a correctness
+ * requirement -- but it lives here because `cielo_perform` does, and a unit
+ * with a private empty table would trap on a builtin the program does define. */
 static const CieloBuiltinEntry g_cielo_builtins[] = {
 #ifdef CIELO_BUILTIN_TABLE
     CIELO_BUILTIN_TABLE(CIELO_BUILTIN_ENTRY)
@@ -830,44 +892,15 @@ static CieloBuiltinFn cielo_builtin_lookup(uint32_t op_symbol) {
   return NULL;
 }
 
-static CieloValue cielo_perform_scoped(uint32_t effect,
-                                       uint32_t expected_capability_id,
-                                       uint32_t op_symbol, const char *op,
-                                       size_t argc, const CieloValue *args);
-
-static inline bool cielo_dispatch_with_evidence(CieloEvidence *evidence,
-                                                uint32_t op_symbol, size_t argc,
-                                                const CieloValue *args,
-                                                CieloValue *out) {
-  if (evidence == NULL || out == NULL) {
-    return false;
-  }
-  if (evidence->abi_version != cielo_runtime_abi_version()) {
-    return false;
-  }
-  if (evidence->clauses == NULL || evidence->clause_count == 0) {
-    return false;
-  }
-  for (uint32_t i = 0; i < evidence->clause_count; i++) {
-    const CieloClauseEntry *entry = &evidence->clauses[i];
-    if (entry->op_symbol == op_symbol && entry->clause != NULL) {
-      *out = entry->clause(evidence, NULL, argc, args);
-      return true;
-    }
-  }
-  return false;
-}
-
-static CieloValue cielo_perform(uint32_t effect, uint32_t op_symbol,
-                                const char *op, size_t argc,
-                                const CieloValue *args) {
+CieloValue cielo_perform(uint32_t effect, uint32_t op_symbol, const char *op,
+                         size_t argc, const CieloValue *args) {
   return cielo_perform_scoped(effect, 0, op_symbol, op, argc, args);
 }
 
-static CieloValue cielo_perform_scoped(uint32_t effect,
-                                       uint32_t expected_capability_id,
-                                       uint32_t op_symbol, const char *op,
-                                       size_t argc, const CieloValue *args) {
+CieloValue cielo_perform_scoped(uint32_t effect,
+                                uint32_t expected_capability_id,
+                                uint32_t op_symbol, const char *op, size_t argc,
+                                const CieloValue *args) {
   CieloValue dispatched = cv_unit();
   if (expected_capability_id != 0) {
     for (size_t i = g_cielo_handler_depth; i > 0; i--) {
@@ -911,9 +944,9 @@ static CieloValue cielo_perform_scoped(uint32_t effect,
  * Pooled constructors keep their own static field arrays, but they are
  * immortal and never destroyed, so destruction can always assume fields are
  * inline and free the block once. */
-static CieloValue cielo_make_ctor(const char *ty, const char *variant,
-                                  uint32_t variant_tag, size_t argc,
-                                  const CieloValue *fields) {
+CieloValue cielo_make_ctor(const char *ty, const char *variant,
+                           uint32_t variant_tag, size_t argc,
+                           const CieloValue *fields) {
   CieloCtor *ctor =
       (CieloCtor *)malloc(sizeof(CieloCtor) + argc * sizeof(CieloValue));
   if (ctor == NULL) {
@@ -944,5 +977,7 @@ static CieloValue cielo_make_ctor(const char *ty, const char *variant,
   out.as.ctor = ctor;
   return out;
 }
+
+#endif /* CIELO_RUNTIME_IMPL */
 
 #endif /* CIELO_RUNTIME_H */

@@ -307,6 +307,7 @@ fn runtime_header_can_be_included_twice() {
     std::fs::write(
         source.as_path(),
         concat!(
+            "#define CIELO_RUNTIME_IMPL\n",
             "#include \"cielo_runtime.h\"\n",
             "#include \"cielo_runtime.h\"\n",
             "int main(void) { return (int)cv_int(0).as.i; }\n"
@@ -328,5 +329,119 @@ fn runtime_header_can_be_included_twice() {
     assert!(
         build.status.success(),
         "double include does not compile:\n{stderr}"
+    );
+}
+
+/// The runtime's mutable state is one program-wide copy, not one per
+/// translation unit. With `static` globals this linked and ran, and the second
+/// unit's `perform` silently missed a handler the first unit had pushed.
+#[test]
+fn two_translation_units_share_one_handler_stack() {
+    if !c_compiler_available() {
+        eprintln!("skipping two-unit link check: no C compiler found");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join(format!("cielo_two_tu_{}", std::process::id()));
+    std::fs::create_dir_all(dir.as_path()).expect("temp dir");
+    std::fs::write(dir.join("cielo_runtime.h"), cielo_backend_c::RUNTIME_HEADER)
+        .expect("write header");
+
+    // Stands in for the generated unit: it defines the runtime.
+    std::fs::write(
+        dir.join("provider.c"),
+        r#"#define CIELO_RUNTIME_IMPL
+#include "cielo_runtime.h"
+
+static int hits = 0;
+
+static CieloValue tick(CieloEvidence *evidence, CieloContinuation *continuation,
+                       size_t argc, const CieloValue *args) {
+  (void)evidence;
+  (void)continuation;
+  (void)argc;
+  (void)args;
+  hits += 1;
+  return cv_unit();
+}
+
+static CieloClauseEntry entries[1] = {{123u, tick}};
+static CieloEvidence evidence;
+
+uint32_t provider_push(void) {
+  evidence.clause_count = 1u;
+  evidence.clauses = entries;
+  return cielo_handler_push_with_evidence(7u, &evidence);
+}
+
+int provider_hits(void) { return hits; }
+size_t provider_depth(void) { return g_cielo_handler_depth; }
+"#,
+    )
+    .expect("write provider");
+
+    // Stands in for an FFI consumer: declarations only, linked against the
+    // provider.
+    std::fs::write(
+        dir.join("consumer.c"),
+        r#"#include "cielo_runtime.h"
+
+uint32_t provider_push(void);
+int provider_hits(void);
+size_t provider_depth(void);
+
+int main(void) {
+  uint32_t theirs = provider_push();
+  if (theirs == 0u)
+    return 2;
+  if (g_cielo_handler_depth != 1u || provider_depth() != 1u)
+    return 3;
+  if (cielo_handler_find_capability(7u) != theirs)
+    return 4;
+  (void)cielo_perform(7u, 123u, "tick", 0u, NULL);
+  if (provider_hits() != 1)
+    return 5;
+  uint32_t mine = cielo_handler_push(9u);
+  if (mine == theirs)
+    return 6;
+  cielo_handler_pop(mine);
+  cielo_handler_pop(theirs);
+  if (g_cielo_handler_depth != 0u)
+    return 7;
+  return 0;
+}
+"#,
+    )
+    .expect("write consumer");
+
+    let binary = dir.join("two_tu");
+    let build = Command::new(c_compiler_command())
+        .arg("-std=c11")
+        .arg("-Wall")
+        .arg("-Werror=unused-function")
+        .arg("-Werror=implicit-function-declaration")
+        .arg("-I")
+        .arg(dir.as_path())
+        .arg("-o")
+        .arg(binary.as_path())
+        .arg(dir.join("provider.c"))
+        .arg(dir.join("consumer.c"))
+        .output()
+        .expect("invoke C compiler");
+    let build_stderr = String::from_utf8_lossy(build.stderr.as_slice()).into_owned();
+    assert!(
+        build.status.success(),
+        "two units including the runtime header do not link:\n{build_stderr}"
+    );
+
+    let run = Command::new(binary.as_path())
+        .output()
+        .expect("run two-unit binary");
+    let _ = std::fs::remove_dir_all(dir.as_path());
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "units disagreed about the runtime's shared state:\n{}",
+        String::from_utf8_lossy(run.stderr.as_slice())
     );
 }
