@@ -137,17 +137,32 @@ pub fn remap_func_id(remap: &[Option<FuncId>], source: FuncId) -> Option<FuncId>
     remap.get(source.index()).copied().flatten()
 }
 
+/// The id a dropped callee is rewritten to. `remap` is indexed by the old
+/// function count, which is never below the new one, so this is out of range in
+/// the compacted program.
+fn poison_func_id(remap: &[Option<FuncId>]) -> FuncId {
+    FuncId::new(remap.len())
+}
+
+/// Rewrites every call site in the arena, live or dead, because the arena keeps
+/// the bodies of pruned functions and nothing distinguishes them here.
+///
+/// A callee with no mapping is poisoned rather than left alone. Leaving it
+/// stale makes it alias whichever function took the freed dense slot, which is
+/// a wrong answer with nothing to point at -- CIELO-52 was exactly that, from a
+/// reachability walk that missed handler clause bodies. Dead call sites are
+/// never read again, so poisoning them costs nothing; a live one now fails to
+/// resolve and the backend emits a name that does not link.
 pub fn remap_program_function_ids(program: &mut CoreProgram, remap: &[Option<FuncId>]) {
+    let poison = poison_func_id(remap);
     let stmt_count = program.stmts().len();
     for stmt_idx in 0..stmt_count {
         let stmt_id = StmtId::new(stmt_idx);
         let Some(stmt) = program.stmt_mut(stmt_id) else {
             continue;
         };
-        if let StmtKind::Call { callee, .. } = &mut stmt.kind
-            && let Some(mapped) = remap_func_id(remap, *callee)
-        {
-            *callee = mapped;
+        if let StmtKind::Call { callee, .. } = &mut stmt.kind {
+            *callee = remap_func_id(remap, *callee).unwrap_or(poison);
         }
     }
 
@@ -157,10 +172,8 @@ pub fn remap_program_function_ids(program: &mut CoreProgram, remap: &[Option<Fun
         let Some(expr) = program.expr_mut(expr_id) else {
             continue;
         };
-        if let ExprKind::PureCall { callee, .. } = &mut expr.kind
-            && let Some(mapped) = remap_func_id(remap, *callee)
-        {
-            *callee = mapped;
+        if let ExprKind::PureCall { callee, .. } = &mut expr.kind {
+            *callee = remap_func_id(remap, *callee).unwrap_or(poison);
         }
     }
 }
