@@ -69,7 +69,7 @@ fn staging_boundary_rejects_non_concrete_effect_rows() {
     program.set_entrypoints([main]);
 
     let sema = SemanticTables::with_counts(program.exprs().len(), program.stmts().len());
-    let typed = TypedCore::new(program, DiagnosticBag::default(), sema);
+    let typed = TypedCore::new(program, DiagnosticBag::default(), sema, None);
     let mut mono_summary = MonomorphizationSummary::default();
     mono_summary.source_to_mono.insert(main, vec![main]);
     let (program, diagnostics, sema) = typed.into_parts();

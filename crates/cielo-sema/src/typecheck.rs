@@ -27,7 +27,9 @@ use crate::ty::{EnumVariant, PrimitiveType, StructField, TypeKind, TypeStore};
 use cielo_base::Span;
 use cielo_base::densemap::DenseMap;
 use cielo_base::diagnostics::DiagnosticBag;
-use cielo_base::{EffectLabelId, ExprId, FuncId, HandlerId, StmtId, SymbolId, TypeId, VarId};
+use cielo_base::{
+    EffectLabelId, ExprId, FuncId, HandlerId, Interner, StmtId, SymbolId, TypeId, VarId,
+};
 use cielo_ir::core::{
     CoreProgram, CoreTypeRef, ExprKind, Literal, OpCategory, PrimitiveTypeRef, StmtKind, UnaryOp,
 };
@@ -390,6 +392,9 @@ impl InferState {
 struct TypeChecker<'a> {
     program: &'a CoreProgram,
     diagnostics: &'a mut DiagnosticBag,
+    /// Diagnostic text only. Core carries no names, so without an interner a
+    /// declaration is rendered as its symbol id.
+    names: Option<&'a Interner>,
     store: TypeStore,
     prim: PrimitiveTypeIds,
     error_type: TypeId,
@@ -416,7 +421,11 @@ struct TypeChecker<'a> {
 }
 
 impl<'a> TypeChecker<'a> {
-    fn new(program: &'a CoreProgram, diagnostics: &'a mut DiagnosticBag) -> Self {
+    fn new(
+        program: &'a CoreProgram,
+        diagnostics: &'a mut DiagnosticBag,
+        names: Option<&'a Interner>,
+    ) -> Self {
         let mut store = TypeStore::new();
         let prim = intern_primitives(&mut store);
         let error_type = store.intern(TypeKind::Error);
@@ -424,6 +433,7 @@ impl<'a> TypeChecker<'a> {
         let mut checker = Self {
             program,
             diagnostics,
+            names,
             store,
             prim,
             error_type,
@@ -1392,7 +1402,7 @@ impl<'a> TypeChecker<'a> {
         match self.variant_owners.get(&tag).map(Vec::as_slice) {
             Some([owner]) => self.enum_ctors.get(&(*owner, tag)).cloned(),
             Some(owners) if owners.len() > 1 => {
-                let names = render_symbols(owners);
+                let names = render_symbols(self.names, owners);
                 self.diagnostics.error(
                     "TYPE_AMBIGUOUS_MATCH_VARIANT",
                     format!(
@@ -2134,7 +2144,10 @@ impl<'a> TypeChecker<'a> {
     fn type_name(&mut self, ty: InferTy) -> String {
         match self.infer.resolve(ty) {
             InferTy::Var(var) => match self.infer.label_of(var) {
-                Some(name) => format!("type parameter #{}", name.as_u32()),
+                Some(name) => match self.names.and_then(|names| names.resolve(name)) {
+                    Some(text) => format!("type parameter {text}"),
+                    None => format!("type parameter #{}", name.as_u32()),
+                },
                 None => "?".to_owned(),
             },
             InferTy::App(app) => {
@@ -2145,7 +2158,7 @@ impl<'a> TypeChecker<'a> {
                     .map(|arg| self.type_name(arg))
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("Adt#{}[{args}]", pending.name.as_u32())
+                format!("{}[{args}]", render_symbol(self.names, pending.name))
             }
             InferTy::Concrete(ty) => self.stored_type_name(ty),
         }
@@ -2164,10 +2177,11 @@ impl<'a> TypeChecker<'a> {
                     .iter()
                     .map(|arg| self.stored_type_name(*arg))
                     .collect::<Vec<_>>();
+                let name = render_symbol(self.names, *name);
                 if rendered.is_empty() {
-                    format!("Adt#{}", name.as_u32())
+                    name
                 } else {
-                    format!("Adt#{}[{}]", name.as_u32(), rendered.join(", "))
+                    format!("{name}[{}]", rendered.join(", "))
                 }
             }
             Some(TypeKind::TypeParam(idx)) => format!("T{idx}"),
@@ -2177,8 +2191,12 @@ impl<'a> TypeChecker<'a> {
     }
 }
 
-pub fn typecheck_core(program: &CoreProgram, diagnostics: &mut DiagnosticBag) -> SemanticTables {
-    TypeChecker::new(program, diagnostics).run(EffectConformance::Check)
+pub fn typecheck_core(
+    program: &CoreProgram,
+    diagnostics: &mut DiagnosticBag,
+    names: Option<&Interner>,
+) -> SemanticTables {
+    TypeChecker::new(program, diagnostics, names).run(EffectConformance::Check)
 }
 
 /// For Core that has been through residualization, which erases every
@@ -2187,8 +2205,9 @@ pub fn typecheck_core(program: &CoreProgram, diagnostics: &mut DiagnosticBag) ->
 pub fn typecheck_residual_core(
     program: &CoreProgram,
     diagnostics: &mut DiagnosticBag,
+    names: Option<&Interner>,
 ) -> SemanticTables {
-    TypeChecker::new(program, diagnostics).run(EffectConformance::Skip)
+    TypeChecker::new(program, diagnostics, names).run(EffectConformance::Skip)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -2197,14 +2216,21 @@ enum EffectConformance {
     Skip,
 }
 
-/// Core carries no interner, so a declaration is named by its symbol id, the
-/// same handle `stored_type_name` falls back to.
-fn render_symbols(symbols: &[SymbolId]) -> String {
+fn render_symbols(names: Option<&Interner>, symbols: &[SymbolId]) -> String {
     symbols
         .iter()
-        .map(|symbol| format!("Adt#{}", symbol.as_u32()))
+        .map(|symbol| render_symbol(names, *symbol))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// The `Adt#` fallback is what a caller that supplied no interner sees; the id
+/// is still enough to tell two otherwise identically-rendered types apart.
+fn render_symbol(names: Option<&Interner>, symbol: SymbolId) -> String {
+    match names.and_then(|names| names.resolve(symbol)) {
+        Some(text) => text.to_owned(),
+        None => format!("Adt#{}", symbol.as_u32()),
+    }
 }
 
 fn param_substitution<T: Clone>(names: &[SymbolId], values: &[T]) -> HashMap<SymbolId, T> {

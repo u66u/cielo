@@ -189,7 +189,7 @@ fn snapshot_file_deps(mono: &Monomorphized) -> Vec<CtFileDep> {
 
 fn typecheck(built: LowerOutput) -> TypedCore {
     let (program, diagnostics) = built.into_parts();
-    check_core(program, diagnostics)
+    check_core(program, diagnostics, None)
 }
 
 pub fn emit_runtime(

@@ -53,7 +53,7 @@ pub fn typed_file(db: &dyn Db, source: SourceFile, target: TargetProfile) -> Arc
     let (program, diagnostics) = core.core.clone().into_parts();
     Arc::new(TypedFile {
         source: core.source,
-        typed: check_core(program, diagnostics),
+        typed: check_core(program, diagnostics, Some(core.interner.clone())),
         interner: core.interner.clone(),
     })
 }

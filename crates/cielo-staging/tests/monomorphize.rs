@@ -13,7 +13,7 @@ fn monomorphize_source(src: &str, interner: &mut Interner) -> Monomorphized {
     let compiler = PassHarness::new(PassConfig::default());
     let core = compiler.parse_and_lower_to_core(src, SourceId::from_u32(0), interner);
     let (program, diagnostics) = core.into_parts();
-    monomorphize::run(check_core(program, diagnostics))
+    monomorphize::run(check_core(program, diagnostics, None))
 }
 
 fn instances_named(mono: &Monomorphized, interner: &Interner, name: &str) -> usize {

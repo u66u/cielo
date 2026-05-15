@@ -24,7 +24,7 @@ pub fn lower_and_typecheck(source: &str) -> (CoreProgram, SemanticTables) {
     let core = compiler.parse_and_lower_to_core(source, SourceId::from_u32(0), &mut interner);
     let program = core.program().clone();
     let mut diagnostics = DiagnosticBag::default();
-    let sema = typecheck_core(&program, &mut diagnostics);
+    let sema = typecheck_core(&program, &mut diagnostics, Some(&interner));
     assert!(
         !diagnostics.has_errors(),
         "fixture must typecheck cleanly, got diagnostics: {:?}",

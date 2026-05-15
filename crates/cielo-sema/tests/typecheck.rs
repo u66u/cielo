@@ -28,7 +28,7 @@ fn infers_simple_binary_types() {
     });
 
     let mut diagnostics = DiagnosticBag::default();
-    let sema = typecheck_core(&program, &mut diagnostics);
+    let sema = typecheck_core(&program, &mut diagnostics, None);
     assert!(sema.type_of_expr.iter().all(Option::is_some));
 }
 
@@ -46,7 +46,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let sema = typecheck_core(&lowered.program, &mut diagnostics);
+    let sema = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
 
     let int_literal_expr = lowered
         .program
@@ -133,7 +133,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(1), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let sema = typecheck_core(&lowered.program, &mut diagnostics);
+    let sema = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
 
     assert_eq!(sema.ownership_of_expr.len(), lowered.program.exprs().len());
 
@@ -210,7 +210,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let sema = typecheck_core(&lowered.program, &mut diagnostics);
+    let sema = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     assert!(
         sema.effects_of_stmt
             .iter()
@@ -233,7 +233,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let sema = typecheck_core(&lowered.program, &mut diagnostics);
+    let sema = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     let main_body = lowered.program.functions()[0].body;
     let root_row = &sema.effects_of_stmt[main_body.index()];
     assert!(!root_row.contains(EffectLabelId::from_u32(0)));
@@ -256,7 +256,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let sema = typecheck_core(&lowered.program, &mut diagnostics);
+    let sema = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     let main_body = lowered
         .program
         .functions()
@@ -282,7 +282,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let sema = typecheck_core(&lowered.program, &mut diagnostics);
+    let sema = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     let all_ctors_typed = lowered
         .program
         .exprs()
@@ -313,7 +313,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    let _ = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     assert!(!diagnostics.has_errors());
     assert!(diagnostics.entries().is_empty());
 }
@@ -335,7 +335,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let sema = typecheck_core(&lowered.program, &mut diagnostics);
+    let sema = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     assert!(
         !diagnostics.has_errors(),
         "{:?}",
@@ -365,7 +365,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    let _ = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     assert!(
         diagnostics
             .entries()
@@ -392,7 +392,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    let _ = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     assert!(
         diagnostics
             .entries()
@@ -421,7 +421,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    let _ = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     assert!(
         !diagnostics
             .entries()
@@ -463,7 +463,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    let _ = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     assert!(
         !diagnostics.has_errors(),
         "{:?}",
@@ -494,7 +494,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    let _ = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     assert!(
         diagnostics
             .entries()
@@ -525,7 +525,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    let _ = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     assert!(
         diagnostics
             .entries()
@@ -552,7 +552,7 @@ fn main() -> Int with Console {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    let _ = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     assert!(
         !diagnostics
             .entries()
@@ -581,7 +581,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    let _ = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     assert!(
         !diagnostics
             .entries()
@@ -604,7 +604,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    let _ = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     assert!(
         diagnostics
             .entries()
@@ -626,7 +626,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    let _ = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     assert!(
         diagnostics
             .entries()
@@ -650,7 +650,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    let _ = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     assert!(
         diagnostics
             .entries()
@@ -674,7 +674,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    let _ = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     assert!(
         !diagnostics
             .entries()
@@ -697,7 +697,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let sema = typecheck_core(&lowered.program, &mut diagnostics);
+    let sema = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
 
     let console = sema
         .effect_properties
@@ -754,7 +754,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    let _ = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     assert!(
         diagnostics
             .entries()
@@ -780,7 +780,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    let _ = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     assert!(
         diagnostics
             .entries()
@@ -805,7 +805,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    let _ = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     assert!(
         !diagnostics
             .entries()
@@ -828,7 +828,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    let _ = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     assert!(
         diagnostics
             .entries()
@@ -851,7 +851,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    let _ = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     assert!(
         diagnostics
             .entries()
@@ -873,7 +873,7 @@ fn main() -> Int {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    let _ = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     assert!(
         diagnostics
             .entries()
@@ -888,7 +888,7 @@ fn diagnose(src: &str) -> DiagnosticBag {
     let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
     let lowered = lower_program(&parsed.program, LowerConfig::default());
     let mut diagnostics = DiagnosticBag::default();
-    let _ = typecheck_core(&lowered.program, &mut diagnostics);
+    let _ = typecheck_core(&lowered.program, &mut diagnostics, Some(&interner));
     diagnostics
 }
 

@@ -42,7 +42,9 @@ pub fn run(residual: StagedCore) -> StagedCore {
     shrink_to_fixpoint(&mut program);
     speculative_inline_once(&mut program);
     shrink_to_fixpoint(&mut program);
-    let sema = typecheck_residual_core(&program, &mut diagnostics);
+    // No interner: `StagedCore` does not carry one, so any type error escaping
+    // this far names its types by symbol id.
+    let sema = typecheck_residual_core(&program, &mut diagnostics, None);
     facts.constant_table = constant_table::build_for_core(&program);
     StagedCore::new(program, diagnostics, sema, facts, report)
 }

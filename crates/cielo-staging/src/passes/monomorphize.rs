@@ -47,6 +47,7 @@ const MAX_INSTANCES: usize = 512;
 type Bindings = Vec<(SymbolId, CoreTypeRef)>;
 
 pub fn run(typed: TypedCore) -> Monomorphized {
+    let names = typed.names();
     let (mut program, mut diagnostics, sema) = typed.into_parts();
 
     // Specializing a program that already failed to typecheck would build
@@ -84,7 +85,7 @@ pub fn run(typed: TypedCore) -> Monomorphized {
     // rewritten program is concrete, so re-deriving every table is both
     // cheaper and less error-prone than substituting into each of them.
     let mut recheck = DiagnosticBag::default();
-    let sema = typecheck_core(&program, &mut recheck);
+    let sema = typecheck_core(&program, &mut recheck, names.as_deref());
     diagnostics.extend(recheck);
 
     Monomorphized::new(program, diagnostics, sema, mono)
