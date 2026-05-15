@@ -2224,8 +2224,6 @@ fn render_symbols(names: Option<&Interner>, symbols: &[SymbolId]) -> String {
         .join(", ")
 }
 
-/// The `Adt#` fallback is what a caller that supplied no interner sees; the id
-/// is still enough to tell two otherwise identically-rendered types apart.
 fn render_symbol(names: Option<&Interner>, symbol: SymbolId) -> String {
     match names.and_then(|names| names.resolve(symbol)) {
         Some(text) => text.to_owned(),
