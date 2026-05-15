@@ -1069,3 +1069,58 @@ fn f(opt: Option[Int, Bool]) -> Int {
         diagnostics.entries()
     );
 }
+
+#[test]
+fn a_type_mismatch_names_the_declarations_it_compared() {
+    let diagnostics = diagnose(
+        r#"
+struct Meters { v: Int }
+struct Feet { v: Int }
+fn walk(d: Meters) -> Int {
+  0
+}
+fn main() -> Int {
+  walk(Feet(1))
+}
+"#,
+    );
+    let mismatch = message_for(&diagnostics, "TYPE_CALL_ARG_MISMATCH");
+    assert!(
+        mismatch.contains("Meters") && mismatch.contains("Feet"),
+        "a mismatch between two ADTs must name them: {mismatch}"
+    );
+}
+
+#[test]
+fn an_ambiguous_match_variant_names_its_candidate_enums() {
+    let diagnostics = diagnose(
+        r#"
+enum Shape { Empty, Circle(Int) }
+enum Buffer { Empty, Full(Int) }
+fn pick[T](x: T) -> Int {
+  match x {
+    | Empty => 1
+    | _ => 0
+  }
+}
+fn main() -> Int {
+  0
+}
+"#,
+    );
+    let ambiguity = message_for(&diagnostics, "TYPE_AMBIGUOUS_MATCH_VARIANT");
+    assert!(
+        ambiguity.contains("Shape") && ambiguity.contains("Buffer"),
+        "the candidates are the whole point of this diagnostic: {ambiguity}"
+    );
+}
+
+fn message_for(diagnostics: &DiagnosticBag, code: &str) -> String {
+    diagnostics
+        .entries()
+        .iter()
+        .find(|entry| entry.code == code)
+        .unwrap_or_else(|| panic!("expected {code}, got {:?}", diagnostics.entries()))
+        .message
+        .clone()
+}
