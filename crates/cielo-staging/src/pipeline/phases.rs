@@ -141,6 +141,11 @@ pub struct CtFileDep {
     pub content_hash: String,
 }
 
+/// Bump on any change to what the CT evaluator folds or to what it folds it
+/// into: a persisted cache keyed on a stale policy would be replayed as if the
+/// old semantics still held.
+pub const EVALUATOR_POLICY: &str = "v2-int-checked-litnorm";
+
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct CtCacheKey {
     pub target_word_size_bits: u8,
@@ -156,7 +161,7 @@ impl Default for CtCacheKey {
             target_word_size_bits: 64,
             target_endianness: "little".to_owned(),
             target_pointer_alignment: 8,
-            evaluator_policy: "v1-int-wrap-litnorm".to_owned(),
+            evaluator_policy: EVALUATOR_POLICY.to_owned(),
             compiler_version: env!("CARGO_PKG_VERSION").to_owned(),
         }
     }

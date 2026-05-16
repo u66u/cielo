@@ -1,10 +1,8 @@
-use crate::pipeline::phases::{BranchDecision, CtCacheKey, CtEvalStats};
+use crate::pipeline::phases::{BranchDecision, CtCacheKey, CtEvalStats, EVALUATOR_POLICY};
 use cielo_base::densemap::DenseMap;
 use cielo_base::{EffectLabelId, ExprId};
 use cielo_ir::core::{BinaryOp, CoreProgram, ExprKind, Literal, OpCategory, UnaryOp};
 use cielo_ir::target::{Endianness, TargetSpec};
-
-pub(super) const EVALUATOR_POLICY: &str = "v1-int-wrap-litnorm";
 
 pub(super) fn assert_pre_staging_effects_concrete(program: &CoreProgram) {
     let effect_count = program.effects().len();
