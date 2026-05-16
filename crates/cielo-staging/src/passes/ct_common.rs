@@ -194,7 +194,7 @@ pub(super) fn eval_unary(
 ) -> Option<(Literal, bool)> {
     match (op, value) {
         (UnaryOp::Neg, Literal::Int(v)) => {
-            Some((Literal::Int(normalize_int(v.wrapping_neg(), target)), false))
+            Some((Literal::Int(normalize_int(v.checked_neg()?, target)), false))
         }
         (UnaryOp::Neg, Literal::Float(v)) if v.is_finite() => Some((Literal::Float(-v), true)),
         (UnaryOp::Not, Literal::Bool(v)) => Some((Literal::Bool(!v), false)),
@@ -295,14 +295,19 @@ fn eval_int_arith(
 ) -> Option<(Literal, bool)> {
     let lhs = normalize_int(left, target);
     let rhs = normalize_int(right, target);
+    // Declining to fold leaves the expression as runtime arithmetic, where the
+    // C runtime traps. Folding a wrapped value instead would make the same
+    // computation answer differently depending on whether it reached CT.
+    // `i64::MIN % -1` is exempt: cv_mod also defines it as 0.
     let value = match op {
-        BinaryOp::Add => lhs.wrapping_add(rhs),
-        BinaryOp::Sub => lhs.wrapping_sub(rhs),
-        BinaryOp::Mul => lhs.wrapping_mul(rhs),
-        BinaryOp::Div if rhs != 0 => lhs.wrapping_div(rhs),
+        BinaryOp::Add => lhs.checked_add(rhs)?,
+        BinaryOp::Sub => lhs.checked_sub(rhs)?,
+        BinaryOp::Mul => lhs.checked_mul(rhs)?,
+        BinaryOp::Div => lhs.checked_div(rhs)?,
         BinaryOp::Mod if rhs != 0 => lhs.wrapping_rem(rhs),
         _ => return None,
     };
+    // Narrowing to a sub-64-bit target word is a separate, deliberate wrap.
     folded(Literal::Int(normalize_int(value, target)), false)
 }
 

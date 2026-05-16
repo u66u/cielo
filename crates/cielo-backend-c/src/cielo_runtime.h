@@ -518,31 +518,52 @@ static inline bool cv_both(CieloValue a, CieloValue b, CieloTag tag) {
   return a.tag == tag && b.tag == tag;
 }
 
+/* Signed integer overflow is undefined in C, so the compiler is entitled to
+ * assume it never happens and miscompile the surrounding code -- wrapping is
+ * not a safe fallback. Every int arithmetic path therefore checks first and
+ * traps, mirroring cv_div. Float paths are exempt: IEEE 754 gives infinity,
+ * which is defined. Requires GCC 5+ or Clang for __builtin_*_overflow; the
+ * driver emits for gcc. */
 static inline CieloValue cv_neg(CieloValue a) {
   if (a.tag == CV_FLOAT)
     return cv_float(-a.as.f);
   if (a.tag != CV_INT)
     cielo_trap("negation of a non-numeric value");
-  return cv_int(-a.as.i);
+  int64_t out;
+  if (__builtin_sub_overflow((int64_t)0, a.as.i, &out))
+    cielo_trap("integer negation overflow");
+  return cv_int(out);
 }
 static inline CieloValue cv_not(CieloValue a) { return cv_bool(!cv_truthy(a)); }
 static inline CieloValue cv_add(CieloValue a, CieloValue b) {
-  if (cv_both(a, b, CV_INT))
-    return cv_int(a.as.i + b.as.i);
+  if (cv_both(a, b, CV_INT)) {
+    int64_t out;
+    if (__builtin_add_overflow(a.as.i, b.as.i, &out))
+      cielo_trap("integer addition overflow");
+    return cv_int(out);
+  }
   if (cv_both(a, b, CV_FLOAT))
     return cv_float(a.as.f + b.as.f);
   cielo_trap("addition of non-numeric or mismatched operands");
 }
 static inline CieloValue cv_sub(CieloValue a, CieloValue b) {
-  if (cv_both(a, b, CV_INT))
-    return cv_int(a.as.i - b.as.i);
+  if (cv_both(a, b, CV_INT)) {
+    int64_t out;
+    if (__builtin_sub_overflow(a.as.i, b.as.i, &out))
+      cielo_trap("integer subtraction overflow");
+    return cv_int(out);
+  }
   if (cv_both(a, b, CV_FLOAT))
     return cv_float(a.as.f - b.as.f);
   cielo_trap("subtraction of non-numeric or mismatched operands");
 }
 static inline CieloValue cv_mul(CieloValue a, CieloValue b) {
-  if (cv_both(a, b, CV_INT))
-    return cv_int(a.as.i * b.as.i);
+  if (cv_both(a, b, CV_INT)) {
+    int64_t out;
+    if (__builtin_mul_overflow(a.as.i, b.as.i, &out))
+      cielo_trap("integer multiplication overflow");
+    return cv_int(out);
+  }
   if (cv_both(a, b, CV_FLOAT))
     return cv_float(a.as.f * b.as.f);
   cielo_trap("multiplication of non-numeric or mismatched operands");

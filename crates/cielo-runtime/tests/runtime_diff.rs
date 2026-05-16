@@ -114,9 +114,10 @@ impl ExprGen<'_> {
         match self.rng.next_bounded_u64(6) {
             0 => self.int_leaf(),
             1 => format!("(0 - {})", self.int_expr(depth - 1)),
-            // Magnitudes stay small so no operand can overflow. The oracle
-            // wraps where C is undefined, so an overflow would agree on both
-            // sides and go unnoticed rather than being caught -- CIELO-58.
+            // Magnitudes stay small so overflow is rare rather than impossible:
+            // an overflowing case traps in C and the oracle declines, which
+            // silently drops it, so widening the leaves would buy coverage of
+            // nothing while shrinking the set of cases actually compared.
             2 => {
                 let (lhs, rhs) = (self.int_expr(depth - 1), self.int_expr(depth - 1));
                 let op = ["+", "-", "*"][self.rng.next_bounded_u64(3) as usize];
@@ -2046,25 +2047,30 @@ fn eval_call(
 
 fn eval_unary(op: UnaryOp, value: OracleValue) -> Option<OracleValue> {
     match (op, value) {
-        (UnaryOp::Neg, OracleValue::Int(value)) => Some(OracleValue::Int(value.wrapping_neg())),
+        (UnaryOp::Neg, OracleValue::Int(value)) => Some(OracleValue::Int(value.checked_neg()?)),
         (UnaryOp::Not, OracleValue::Bool(value)) => Some(OracleValue::Bool(!value)),
         _ => None,
     }
 }
 
+/// `None` means "no oracle for this case" and the harness skips it, which is
+/// the only honest answer for arithmetic the C runtime traps on: it dies by
+/// signal rather than producing a value to compare against. Wrapping here would
+/// assert a result the compiled program never returns. `i64::MIN % -1` is the
+/// one exception -- cv_mod defines it as 0 instead of trapping.
 fn eval_binary(op: BinaryOp, lhs: OracleValue, rhs: OracleValue) -> Option<OracleValue> {
     match (op, lhs, rhs) {
         (BinaryOp::Add, OracleValue::Int(lhs), OracleValue::Int(rhs)) => {
-            Some(OracleValue::Int(lhs.wrapping_add(rhs)))
+            Some(OracleValue::Int(lhs.checked_add(rhs)?))
         }
         (BinaryOp::Sub, OracleValue::Int(lhs), OracleValue::Int(rhs)) => {
-            Some(OracleValue::Int(lhs.wrapping_sub(rhs)))
+            Some(OracleValue::Int(lhs.checked_sub(rhs)?))
         }
         (BinaryOp::Mul, OracleValue::Int(lhs), OracleValue::Int(rhs)) => {
-            Some(OracleValue::Int(lhs.wrapping_mul(rhs)))
+            Some(OracleValue::Int(lhs.checked_mul(rhs)?))
         }
-        (BinaryOp::Div, OracleValue::Int(lhs), OracleValue::Int(rhs)) if rhs != 0 => {
-            Some(OracleValue::Int(lhs.wrapping_div(rhs)))
+        (BinaryOp::Div, OracleValue::Int(lhs), OracleValue::Int(rhs)) => {
+            Some(OracleValue::Int(lhs.checked_div(rhs)?))
         }
         (BinaryOp::Mod, OracleValue::Int(lhs), OracleValue::Int(rhs)) if rhs != 0 => {
             Some(OracleValue::Int(lhs.wrapping_rem(rhs)))
