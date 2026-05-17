@@ -23,26 +23,35 @@
 //!   it is tail-resumptive: it *returns* the resumption argument to the perform
 //!   site rather than receiving a continuation it could store. So a `Perform`
 //!   of the region's own effect still returns to the region or not at all,
-//!   whether it was inlined or dispatched. CIELO-54 does not change that: a
-//!   clause that performs before resuming lowers by inlining, where the
-//!   resumption is a spliced statement graph and not a value, so it still never
-//!   reaches a clause table. CIELO-42 (multi-shot resumption) is what breaks
-//!   this: once a clause receives a real `CieloContinuation`, a `Perform`
-//!   inside the extent can be resumed after the close, and [`escapes`] must
-//!   stop treating the region's own effect as confined.
+//!   whether it was inlined or dispatched. CIELO-42 (multi-shot resumption) is
+//!   what breaks this: once a clause receives a real `CieloContinuation`, a
+//!   `Perform` inside the extent can be resumed after the close, and [`escapes`]
+//!   must stop treating the region's own effect as confined.
+//!
+//!   CIELO-39 *does* reify a continuation, and deliberately not as an object: a
+//!   defunctionalised clause enters one shared copy of the continuation by
+//!   `Goto` and leaves it by `Switch`, both inside the frame that opened the
+//!   region. The code pointer is a case index, the values it carries are block
+//!   parameters, and nothing takes the address of anything. That is why it needs
+//!   no [`RegionSlotKind`] arm of its own and why the arm above is unchanged:
+//!   the reified continuation is only reachable while the region is open, and
+//!   the paths out of it are the same paths inlining would have produced. A
+//!   continuation that outlives the frame is the case that needs a slot, and
+//!   that is CIELO-42's, not this one's.
 //! * **Regions nest with the C frame.** A slot is placed per enclosing
 //!   function, so the extent walk never crosses a `CfgFunction` boundary.
 //!   Regions that outlive their opening frame need a different substrate.
 //! * **The extent is syntactic.** It is the block set reachable from the
 //!   `RegionEnter` that stops at `RegionExit`, so an unstructured jump back into
 //!   a closed region would be invisible here. `cfg_lower` only ever produces the
-//!   bracketed shape, and [`region_extent`] returning no exit is itself treated
-//!   as escaping.
+//!   bracketed shape -- a resumption jump included, which enters a block the
+//!   walk already reaches from the same `RegionEnter` -- and [`region_extent`]
+//!   returning no exit is itself treated as escaping.
 //!
-//! Closure and continuation environments (CIELO-19/42) get a
-//! [`RegionSlotKind`] arm rather than a parallel analysis: the confinement
-//! question is the same one, and the match here is exhaustive so a new arm
-//! cannot silently inherit evidence's answer.
+//! Closure environments (CIELO-25) and an escaping continuation's environment
+//! (CIELO-42) get a [`RegionSlotKind`] arm rather than a parallel analysis: the
+//! confinement question is the same one, and the match here is exhaustive so a
+//! new arm cannot silently inherit evidence's answer.
 
 use std::collections::HashSet;
 
@@ -123,11 +132,14 @@ fn escapes(cfg: &CfgProgram, region: CfgRegionId) -> bool {
             // whether -- it resumes relative to the close.
             CfgTerminator::Call { convention, .. } => *convention == CfgCallConvention::Control,
             // An effect this region does not handle unwinds past it. Its own
-            // effect is confined only while continuations stay unreified; see
-            // the module doc.
+            // effect is confined only while no continuation *object* exists to
+            // resume it after the close; see the module doc.
             CfgTerminator::Perform { effect, .. } => Some(*effect) != own_effect,
             // A trap ends the process, so no dangling address is ever read.
             CfgTerminator::Unreachable => false,
+            // `Switch` is a defunctionalised continuation's dispatch, and its
+            // targets are blocks of this same function that the extent walk
+            // already reaches. It moves control, never an address.
             CfgTerminator::Goto { .. }
             | CfgTerminator::Branch { .. }
             | CfgTerminator::Match { .. }

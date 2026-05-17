@@ -1,5 +1,5 @@
-use cielo_base::{EffectLabelId, LinearFuncId, SymbolId, VarId};
-use cielo_ir::cfg::{CfgInstruction, CfgProgram};
+use cielo_base::{EffectLabelId, LinearFuncId, ResumptionId, SymbolId, VarId};
+use cielo_ir::cfg::{CfgInstruction, CfgProgram, CfgTerminator};
 use cielo_ir::core::Literal;
 use cielo_ir::linear::{LinearExpr, LinearFunction, LinearProgram, LinearStmt};
 use cielo_ir::region::{Placement, RegionOwner, RegionSlotKind};
@@ -190,6 +190,51 @@ fn a_control_call_inside_the_region_forces_the_arena() {
 
     let cfg = lower(&linear);
     assert_eq!(only_placement(&cfg), Placement::Arena);
+}
+
+/// A defunctionalised clause reifies the continuation, which the confinement
+/// argument used to rest on nobody doing. It reifies it as blocks of this same
+/// function reached by `Goto` and left by `Switch`, so no slot address can
+/// outlive the close and the evidence still belongs on the stack (CIELO-39).
+#[test]
+fn a_defunctionalised_resumption_stays_confined() {
+    let mut linear = LinearProgram::default();
+    let zero = linear.push_expr(LinearExpr::Literal(Literal::Int(0)));
+    let resumption = ResumptionId::from_u32(0);
+    let resumed = VarId::from_u32(1);
+
+    let resumed_expr = linear.push_expr(LinearExpr::Var(resumed));
+    let after = linear.push_stmt(LinearStmt::Return(resumed_expr));
+    let jump = linear.push_stmt(LinearStmt::ResumeJump {
+        resumption,
+        label: 0,
+        arg: zero,
+        result: resumed,
+        next: after,
+    });
+    let continuation = linear.push_stmt(LinearStmt::Return(zero));
+    let body = linear.push_stmt(LinearStmt::Resumption {
+        id: resumption,
+        clause: jump,
+        param: VarId::from_u32(0),
+        continuation,
+    });
+    let handle = linear.push_stmt(LinearStmt::Handle {
+        effect: HANDLED,
+        clauses: Vec::new(),
+        body,
+        next: None,
+    });
+    single_function(&mut linear, handle);
+
+    let cfg = lower(&linear);
+    assert!(
+        cfg.blocks()
+            .iter()
+            .any(|block| matches!(block.terminator, CfgTerminator::Switch { .. })),
+        "the resumption's dispatch is the only producer of `Switch`"
+    );
+    assert_eq!(only_placement(&cfg), Placement::Stack);
 }
 
 /// A CFG that never reached `place` must read as arena-backed, because that is
