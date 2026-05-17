@@ -448,7 +448,8 @@ Third stage historically used only to guarantee inlining, which monomorphization
 ## Target-Aware CT Evaluation
 
 The evaluator simulates target semantics, not host:
-- Integer arithmetic uses target-width wrapping
+- Integer arithmetic narrows to the target word width; anything that overflows
+  `i64` or faults is left unfolded for the runtime to trap on
 - Byte reinterpretation uses target endianness
 - CT cache keyed by target spec
 

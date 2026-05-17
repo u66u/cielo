@@ -14,9 +14,10 @@ restrict CT evaluation.
 
 ### v1 mitigations
 
-- Integer arithmetic: evaluator uses target-width wrapping (not host). Overflow edges
-  (`MIN / -1`, `MIN % -1`) fold with wrapping target-width behavior. Integer literals
-  normalized to target word width during CT folding.
+- Integer arithmetic: an operation that overflows `i64`, divides by zero, or is
+  `MIN / -1` is not folded at all — it residualizes and the C runtime traps on it.
+  `MIN % -1` folds to `0`, matching `cv_mod`. Results that fit `i64` are then
+  narrowed to the target word width, as are integer literals.
 - Float arithmetic: host behavior with `folded_float_host` tracking counter. Non-finite
   inputs/results (NaN/Inf) are left unresolved — the evaluator produces `Stuck` for
   expressions that would produce NaN/Inf, preventing cross-target divergence.
@@ -273,12 +274,17 @@ transformation in the normalizer.
 
 ## Target-width integer semantics
 
-The CT evaluator wraps integer arithmetic to the target word size, not the host. This
-means:
+The CT evaluator computes in `i64` and then narrows the result to the target word
+size. The two steps fail differently: exceeding `i64` is a fault the runtime traps
+on, so the evaluator declines to fold rather than inventing an answer the compiled
+program would never produce; narrowing to a smaller target word is ordinary
+wrapping. This means:
 
-- `i64::MAX + 1` on a 64-bit target wraps to `i64::MIN`
-- `i64::MAX + 1` on a 32-bit target wraps to `i32::MIN` (as i64 representation)
-- `i64::MIN / -1` wraps (does not panic) on any target
+- `i64::MAX + 1` does not fold on any target — it residualizes, and the emitted C
+  traps with `integer addition overflow`
+- `2147483647 + 1` on a 64-bit target folds to `2147483648`; on a 32-bit target it
+  folds to `i32::MIN` (as i64 representation)
+- `i64::MIN / -1` does not fold on any target — `cv_div` traps on it
 
 All integer literals are normalized to the target word width during CT folding. A literal
 `0xFFFFFFFF` on a 32-bit target is `-1` (i32), not `4294967295` (u32 interpreted as i64).
