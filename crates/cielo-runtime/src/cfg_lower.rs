@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use cielo_base::ids::{
     CfgBlockId, CfgExprId, CfgFuncId, CfgHandlerId, CfgValueId, LinearExprId, LinearFuncId,
-    LinearStmtId, VarId,
+    LinearStmtId, ResumptionId, VarId,
 };
 use cielo_ir::cfg::{
     CfgCallConvention, CfgExpr, CfgFunction, CfgHandlerClause, CfgInstruction, CfgMatchArm,
@@ -102,6 +102,22 @@ struct PendingClause {
     entry: CfgBlockId,
 }
 
+/// The blocks a defunctionalised clause's `ResumeJump`s need, while its clause
+/// body is being lowered.
+///
+/// `entry` and `resumed` exist before the clause is walked because every site
+/// names them; `arms` can only be collected during that walk, since the code
+/// after a site has to be lowered where it can still see the clause's own
+/// bindings.
+struct OpenResumption {
+    entry: CfgBlockId,
+    /// The continuation's value, bound at each site's `result`. One value for
+    /// every site: it is a block parameter, which `check_single_assignment`
+    /// exempts precisely because predecessors, not instructions, fill it.
+    resumed: CfgValueId,
+    arms: Vec<(u32, CfgBlockId)>,
+}
+
 struct Lowerer<'a> {
     linear: &'a LinearProgram,
     cfg: CfgProgram,
@@ -124,6 +140,8 @@ struct Lowerer<'a> {
     unit: Option<CfgExprId>,
     next_handler: usize,
     pending_clauses: Vec<PendingClause>,
+    /// Resumptions whose clause body is currently being lowered.
+    open_resumptions: HashMap<ResumptionId, OpenResumption>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -139,6 +157,7 @@ impl<'a> Lowerer<'a> {
             unit: None,
             next_handler: 0,
             pending_clauses: Vec::new(),
+            open_resumptions: HashMap::new(),
         }
     }
 
@@ -742,6 +761,117 @@ impl<'a> Lowerer<'a> {
                 );
                 block
             }
+            LinearStmt::Resumption {
+                id: resumption,
+                clause,
+                param,
+                continuation,
+            } => {
+                let argument = self.cfg.push_value(Some(param));
+                // The code pointer, and the only thing that has to survive the
+                // round trip through the continuation. A block parameter rather
+                // than storage: it is filled by the jump edge, so the sites can
+                // disagree about it without two instructions writing one value.
+                let label = self.synthetic_value();
+                let resumed = self.synthetic_value();
+                let entry = self.cfg.push_block(vec![argument, label], Some(id));
+                let dispatch = self.cfg.push_block(vec![resumed], Some(id));
+                let body = self.lower_stmt(
+                    continuation,
+                    Exit::Yield(dispatch),
+                    &scope.bind(param, argument),
+                );
+                self.cfg.set_terminator(
+                    entry,
+                    CfgTerminator::Goto {
+                        target: body,
+                        args: Vec::new(),
+                    },
+                );
+
+                let shadowed = self.open_resumptions.insert(
+                    resumption,
+                    OpenResumption {
+                        entry,
+                        resumed,
+                        arms: Vec::new(),
+                    },
+                );
+                let clause = self.lower_stmt(clause, exit, scope);
+                let mut open = self
+                    .open_resumptions
+                    .remove(&resumption)
+                    .expect("the clause body cannot close its own resumption");
+                if let Some(shadowed) = shadowed {
+                    self.open_resumptions.insert(resumption, shadowed);
+                }
+
+                // A label the clause never handed out is unreachable, so the
+                // default stands in for it rather than the table growing holes.
+                let default = self.cfg.push_block(Vec::new(), Some(id));
+                self.cfg.set_terminator(default, CfgTerminator::Unreachable);
+                open.arms.sort_unstable_by_key(|(label, _)| *label);
+                let mut targets = vec![default; open.arms.len()];
+                for (label, target) in open.arms {
+                    if let Some(slot) = targets.get_mut(label as usize) {
+                        *slot = target;
+                    }
+                }
+                let selector = self.cfg.push_expr(CfgExpr::Value(label), None);
+                self.cfg.set_terminator(
+                    dispatch,
+                    CfgTerminator::Switch {
+                        selector,
+                        targets,
+                        default,
+                    },
+                );
+                clause
+            }
+            LinearStmt::ResumeJump {
+                resumption,
+                label,
+                arg,
+                result,
+                next,
+            } => {
+                match self
+                    .open_resumptions
+                    .get(&resumption)
+                    .map(|open| (open.entry, open.resumed))
+                {
+                    Some((entry, resumed)) => {
+                        let after = self.lower_stmt(next, exit, &scope.bind(result, resumed));
+                        if let Some(open) = self.open_resumptions.get_mut(&resumption) {
+                            open.arms.push((label, after));
+                        }
+                        let block = self.cfg.push_block(Vec::new(), Some(id));
+                        let arg = self.lower_owned(block, arg, scope);
+                        let selector = self
+                            .cfg
+                            .push_expr(CfgExpr::Literal(Literal::Int(i64::from(label))), None);
+                        self.cfg.set_terminator(
+                            block,
+                            CfgTerminator::Goto {
+                                target: entry,
+                                args: vec![arg, selector],
+                            },
+                        );
+                        block
+                    }
+                    // Only malformed input reaches this: a jump whose resumption
+                    // is not the one being lowered. An error node keeps the graph
+                    // well-formed, so `validate` reports it instead of panicking.
+                    None => {
+                        let block = self.cfg.push_block(Vec::new(), Some(id));
+                        self.cfg
+                            .push_instruction(block, CfgInstruction::Error, Some(id));
+                        let unit = self.unit_expr();
+                        self.set_exit(block, unit, exit);
+                        block
+                    }
+                }
+            }
             LinearStmt::Hole => {
                 let block = self.cfg.push_block(Vec::new(), Some(id));
                 self.cfg
@@ -956,6 +1086,29 @@ fn free_vars(linear: &LinearProgram) -> Vec<Vec<VarId>> {
                 if let Some(next) = next {
                     vars.extend_from_slice(&stmts[next.index()]);
                 }
+            }
+            LinearStmt::Resumption {
+                clause,
+                param,
+                continuation,
+                ..
+            } => {
+                vars.extend_from_slice(&stmts[clause.index()]);
+                extend_unbound(
+                    &mut vars,
+                    &stmts[continuation.index()],
+                    std::slice::from_ref(param),
+                );
+            }
+            LinearStmt::ResumeJump {
+                arg, result, next, ..
+            } => {
+                read_expr(&mut vars, arg);
+                extend_unbound(
+                    &mut vars,
+                    &stmts[next.index()],
+                    std::slice::from_ref(result),
+                );
             }
             LinearStmt::Hole | LinearStmt::Error => {}
         }

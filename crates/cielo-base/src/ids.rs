@@ -64,6 +64,7 @@ define_id!(StmtId);
 define_id!(LinearExprId);
 define_id!(LinearStmtId);
 define_id!(LinearFuncId);
+define_id!(ResumptionId);
 define_id!(CfgExprId);
 define_id!(CfgInstId);
 define_id!(CfgBlockId);

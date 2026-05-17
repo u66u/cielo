@@ -1,7 +1,9 @@
 use crate::builtins::Builtin;
 use crate::core::{BinaryOp, Literal, StageDirective, UnaryOp};
 use crate::ownership::OperandRole;
-use cielo_base::{EffectLabelId, LinearExprId, LinearFuncId, LinearStmtId, Span, SymbolId, VarId};
+use cielo_base::{
+    EffectLabelId, LinearExprId, LinearFuncId, LinearStmtId, ResumptionId, Span, SymbolId, VarId,
+};
 use smallvec::{SmallVec, smallvec};
 use std::hash::{Hash, Hasher};
 
@@ -115,8 +117,14 @@ impl LinearStmtNode {
             | LinearStmt::PureCall { next, .. }
             | LinearStmt::DirectCall { next, .. }
             | LinearStmt::ControlCall { next, .. }
+            | LinearStmt::ResumeJump { next, .. }
             | LinearStmt::Perform { next, .. } => smallvec![*next],
             LinearStmt::Val { value, next, .. } => smallvec![*value, *next],
+            LinearStmt::Resumption {
+                clause,
+                continuation,
+                ..
+            } => smallvec![*clause, *continuation],
             LinearStmt::If {
                 then_branch,
                 else_branch,
@@ -157,6 +165,7 @@ impl LinearStmtNode {
         match &self.kind {
             LinearStmt::Return(expr) => smallvec![*expr],
             LinearStmt::Let { value, .. } => smallvec![*value],
+            LinearStmt::ResumeJump { arg, .. } => smallvec![*arg],
             LinearStmt::If { cond, .. }
             | LinearStmt::Match {
                 scrutinee: cond, ..
@@ -170,6 +179,7 @@ impl LinearStmtNode {
             LinearStmt::Val { .. }
             | LinearStmt::Handle { .. }
             | LinearStmt::Stage { .. }
+            | LinearStmt::Resumption { .. }
             | LinearStmt::Hole
             | LinearStmt::Error => SmallVec::new(),
         }
@@ -372,6 +382,34 @@ pub enum LinearStmt {
         stage: StageDirective,
         body: LinearStmtId,
         next: Option<LinearStmtId>,
+    },
+    /// One copy of a perform site's continuation, shared by every `resume` in
+    /// the clause spliced there.
+    ///
+    /// `clause` reaches it through [`LinearStmt::ResumeJump`], which enters
+    /// `continuation` with the resumption argument bound to `param` and a dense
+    /// site index. The dispatch at the end of `continuation` returns to the code
+    /// after whichever site jumped, so a clause with `k` sites over a body with
+    /// `n` performs costs `k + n` copies rather than `k^n` (CIELO-39).
+    ///
+    /// The whole node's value is the value of the arm the dispatch reaches.
+    Resumption {
+        id: ResumptionId,
+        clause: LinearStmtId,
+        param: VarId,
+        continuation: LinearStmtId,
+    },
+    /// Enters the [`LinearStmt::Resumption`] with id `resumption`, coming back
+    /// into `next` with the continuation's value bound to `result`.
+    ///
+    /// `label` is this site's index in that resumption's dispatch. It is dense
+    /// per resumption, which is what lets the dispatch be an integer switch.
+    ResumeJump {
+        resumption: ResumptionId,
+        label: u32,
+        arg: LinearExprId,
+        result: VarId,
+        next: LinearStmtId,
     },
     Hole,
     Error,

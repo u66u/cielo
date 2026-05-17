@@ -7,8 +7,8 @@ use cielo_ir::walk::any_expr;
 use cielo_sema::SemanticTables;
 
 use super::types::{
-    ClauseConvention, ClauseResumeAnalysis, ResumeQualifier, ResumeStrategy, ResumeUseBound,
-    ResumeUseRange,
+    ClauseConvention, ClausePolicy, ClauseResumeAnalysis, PerformReach, ResumeQualifier,
+    ResumeStrategy, ResumeUseBound, ResumeUseRange,
 };
 
 pub(super) fn is_identity_return_of_var(
@@ -152,14 +152,206 @@ pub(super) fn analyze_clause_resume(
     }
 }
 
+/// The one place erasure and dispatch are chosen between.
+///
+/// `Err` is a clause nothing can lower. Only [`PerformReach::Runtime`] produces
+/// one: splicing the clause is what discharges a lexical perform, so there is
+/// no shape left to refuse on that side.
+pub(super) fn clause_policy(
+    program: &CoreProgram,
+    handler: &HandlerDef,
+    clause: &HandlerClause,
+    resume: ClauseResumeAnalysis,
+    reach: PerformReach,
+) -> Result<ClausePolicy, ResidualBlocker> {
+    match reach {
+        PerformReach::Lexical => Ok(erase_policy(program, clause, resume)),
+        PerformReach::Runtime => {
+            match residual_clause_blocker(program, handler, clause, resume) {
+                Some(blocker) => Err(blocker),
+                None => Ok(ClausePolicy::Dispatch),
+            }
+        }
+    }
+}
+
 /// Merging is only sound when every path resumes in tail position: an arm that
 /// performs or calls before resuming would have those effects hoisted past the
 /// join. One site already shares the continuation, so leave it inlined.
-pub(super) fn resume_strategy(resume: ClauseResumeAnalysis) -> ResumeStrategy {
-    if resume.tail_resumptive && resume.sites > 1 {
-        ResumeStrategy::Join
-    } else {
-        ResumeStrategy::Inline
+///
+/// A non-tail clause with several sites is the shape that expands as `k^n`.
+/// Defunctionalising shares the continuation without moving anything past it,
+/// so it is preferred over inlining wherever the sites can agree on one copy.
+fn erase_policy(
+    program: &CoreProgram,
+    clause: &HandlerClause,
+    resume: ClauseResumeAnalysis,
+) -> ClausePolicy {
+    if resume.sites <= 1 {
+        return ClausePolicy::Erase(ResumeStrategy::Inline);
+    }
+    if resume.tail_resumptive {
+        return ClausePolicy::Erase(ResumeStrategy::Join);
+    }
+    if defunctionalisable(program, clause) {
+        return ClausePolicy::Defunctionalise;
+    }
+    ClausePolicy::Erase(ResumeStrategy::Inline)
+}
+
+/// Whether one shared copy of the continuation can serve every `resume`.
+///
+/// Sharing makes the code after each site reachable from every *other* site, so
+/// anything a site reads after resuming has to be defined on all of them. The
+/// clause parameters are, being bound once before the clause branches; a
+/// variable bound on one site's path only is not, and reading it on another
+/// path is an uninitialised read that no later check catches.
+///
+/// Multi-shot is excluded upstream, and has to stay excluded: two live entries
+/// into one continuation copy would need the second to restore what the first
+/// consumed (CIELO-42).
+fn defunctionalisable(program: &CoreProgram, clause: &HandlerClause) -> bool {
+    let Some(resume_var) = clause.resume_param else {
+        return false;
+    };
+    let mut available = clause.params.iter().copied().collect::<HashSet<_>>();
+    available.insert(resume_var);
+    resume_sites(program, clause.body, resume_var)
+        .into_iter()
+        .all(|(result, next)| {
+            let mut allowed = available.clone();
+            allowed.insert(result);
+            !stmt_reads_outside(program, next, &allowed)
+        })
+}
+
+/// Every `resume` of `resume_var` under `root`, as the value it binds and the
+/// code that follows it.
+fn resume_sites(program: &CoreProgram, root: StmtId, resume_var: VarId) -> Vec<(VarId, StmtId)> {
+    let mut sites = Vec::new();
+    let mut stack = vec![root];
+    let mut seen = HashSet::new();
+    while let Some(stmt_id) = stack.pop() {
+        if !seen.insert(stmt_id) {
+            continue;
+        }
+        let Some(stmt) = program.stmt(stmt_id) else {
+            continue;
+        };
+        if let StmtKind::Resume {
+            result,
+            resume,
+            next,
+            ..
+        } = stmt.kind
+            && resume == resume_var
+        {
+            sites.push((result, next));
+        }
+        stack.extend(stmt.child_stmts());
+    }
+    sites
+}
+
+/// True when `root` reads a variable neither `bound` nor a binder on the way in
+/// introduces.
+///
+/// A `Handle`'s clauses are not `child_stmts`, so they are walked explicitly:
+/// a clause body reading an enclosing binding is exactly the capture this has
+/// to see, and missing it would admit a shared continuation that reads it
+/// undefined.
+fn stmt_reads_outside(program: &CoreProgram, root: StmtId, bound: &HashSet<VarId>) -> bool {
+    let Some(stmt) = program.stmt(root) else {
+        return false;
+    };
+    let extended = |binders: &[VarId]| {
+        let mut inner = bound.clone();
+        inner.extend(binders.iter().copied());
+        inner
+    };
+    let reads = |expr: &ExprId| reads_var_outside(program, *expr, bound);
+    match &stmt.kind {
+        StmtKind::Return(expr) => reads(expr),
+        StmtKind::Let {
+            binding,
+            value,
+            next,
+        } => reads(value) || stmt_reads_outside(program, *next, &extended(&[*binding])),
+        StmtKind::Val {
+            binding,
+            value,
+            next,
+        } => {
+            stmt_reads_outside(program, *value, bound)
+                || stmt_reads_outside(program, *next, &extended(&[*binding]))
+        }
+        StmtKind::Call {
+            result, args, next, ..
+        } => {
+            args.iter().any(reads) || stmt_reads_outside(program, *next, &extended(&[*result]))
+        }
+        StmtKind::Perform {
+            result, args, next, ..
+        } => {
+            args.iter().any(reads)
+                || stmt_reads_outside(
+                    program,
+                    *next,
+                    &extended(result.as_ref().map(std::slice::from_ref).unwrap_or_default()),
+                )
+        }
+        StmtKind::Resume {
+            result,
+            resume,
+            arg,
+            next,
+        } => {
+            !bound.contains(resume)
+                || reads(arg)
+                || stmt_reads_outside(program, *next, &extended(&[*result]))
+        }
+        StmtKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            reads(cond)
+                || stmt_reads_outside(program, *then_branch, bound)
+                || stmt_reads_outside(program, *else_branch, bound)
+        }
+        StmtKind::Match {
+            scrutinee,
+            arms,
+            default,
+        } => {
+            reads(scrutinee)
+                || arms
+                    .iter()
+                    .any(|arm| stmt_reads_outside(program, arm.body, &extended(&arm.binders)))
+                || default.is_some_and(|stmt| stmt_reads_outside(program, stmt, bound))
+        }
+        StmtKind::Handle {
+            handler,
+            body,
+            next,
+        } => {
+            let clauses = program.handlers().get(handler.index()).is_some_and(|def| {
+                stmt_reads_outside(program, def.return_body, &extended(&[def.return_param]))
+                    || def.clauses.iter().any(|clause| {
+                        let mut binders = clause.params.clone();
+                        binders.extend(clause.resume_param);
+                        stmt_reads_outside(program, clause.body, &extended(&binders))
+                    })
+            });
+            clauses
+                || stmt_reads_outside(program, *body, bound)
+                || next.is_some_and(|stmt| stmt_reads_outside(program, stmt, bound))
+        }
+        StmtKind::Stage { body, next, .. } => {
+            stmt_reads_outside(program, *body, bound)
+                || next.is_some_and(|stmt| stmt_reads_outside(program, stmt, bound))
+        }
+        StmtKind::Hole { .. } | StmtKind::Error(_) => false,
     }
 }
 
@@ -251,7 +443,8 @@ impl ResidualBlocker {
 }
 
 /// Whether `clause` can run as a dispatched function instead of being inlined.
-pub(super) fn residual_clause_blocker(
+/// Reached only through [`clause_policy`], so the two answers cannot drift.
+fn residual_clause_blocker(
     program: &CoreProgram,
     handler: &HandlerDef,
     clause: &HandlerClause,

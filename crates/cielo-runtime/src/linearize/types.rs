@@ -1,4 +1,4 @@
-use cielo_base::ids::{StmtId, VarId};
+use cielo_base::ids::{ResumptionId, StmtId, VarId};
 
 /// A clause context is a stack, not a single frame. A clause that performs
 /// another effect before resuming has that effect's clause spliced *inside* it,
@@ -11,12 +11,49 @@ pub(super) struct ResumeContext<'a> {
     pub(super) perform_result: Option<VarId>,
     pub(super) continuation: StmtId,
     pub(super) clause_convention: ClauseConvention,
-    pub(super) strategy: ResumeStrategy,
+    pub(super) policy: ClausePolicy,
+    /// The shared resumption every `resume` in this clause enters. `Some` for
+    /// exactly [`ClausePolicy::Defunctionalise`]; naming it here rather than
+    /// taking the innermost open one is what keeps an *outer* clause's `resume`
+    /// from being captured by an inner clause spliced around it (CIELO-54).
+    pub(super) resumption: Option<ResumptionId>,
     /// The context in force at the perform site this clause answers.
     pub(super) outer: Option<&'a ResumeContext<'a>>,
 }
 
-/// How a clause's `resume` sites reach the handled continuation.
+/// What lowering does with one handler clause: the single decision erasure and
+/// dispatch are both read off.
+///
+/// It used to be two decisions in two places — `resume_strategy` at the perform
+/// site chose how to erase, `residual_clause_blocker` at the handle site chose
+/// whether to dispatch — with nothing relating the answers. They are now the
+/// arms of one enum, picked by [`super::analysis::clause_policy`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum ClausePolicy {
+    /// Splice the clause and the continuation together at the perform site.
+    Erase(ResumeStrategy),
+    /// Splice the clause once and enter one shared copy of the continuation
+    /// from every `resume`, leaving it through an integer dispatch back to the
+    /// code after the site that entered it (CIELO-39).
+    Defunctionalise,
+    /// Leave the clause to the runtime dispatcher as a function whose value is
+    /// the resumption argument (CIELO-19).
+    Dispatch,
+}
+
+/// Where the performs a clause answers sit relative to the handle site, which
+/// is what decides whether erasure is on the table at all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum PerformReach {
+    /// Lexically inside the handled body. Splicing the clause in is what
+    /// discharges it, so no clause shape can be refused here.
+    Lexical,
+    /// Behind a call, or left over after inlining. Nothing but a runtime
+    /// dispatch reaches it.
+    Runtime,
+}
+
+/// How an erased clause's `resume` sites reach the handled continuation.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum ResumeStrategy {
     /// Re-lower the continuation at every site. A clause with `k` sites over a
@@ -125,6 +162,17 @@ impl ClauseConvention {
             Self::Pure => "Pure",
             Self::Direct => "Direct",
             Self::Control => "Control",
+        }
+    }
+}
+
+impl ClausePolicy {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::Erase(ResumeStrategy::Inline) => "erase, continuation re-lowered per resume",
+            Self::Erase(ResumeStrategy::Join) => "erase, resume sites merged into one join",
+            Self::Defunctionalise => "erase, one shared continuation with an integer dispatch",
+            Self::Dispatch => "runtime clause table",
         }
     }
 }

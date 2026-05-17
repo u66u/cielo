@@ -1806,6 +1806,17 @@ fn collect_call_conventions(
                 collect_call_conventions(program, *next_stmt, seen, out);
             }
         }
+        LinearStmt::Resumption {
+            clause,
+            continuation,
+            ..
+        } => {
+            collect_call_conventions(program, *clause, seen, out);
+            collect_call_conventions(program, *continuation, seen, out);
+        }
+        LinearStmt::ResumeJump { next, .. } => {
+            collect_call_conventions(program, *next, seen, out);
+        }
         LinearStmt::Return(_) | LinearStmt::Hole | LinearStmt::Error => {}
     }
 }

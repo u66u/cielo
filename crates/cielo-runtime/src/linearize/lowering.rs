@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use cielo_base::Span;
 use cielo_base::diagnostics::DiagnosticBag;
 use cielo_base::ids::{
-    EffectLabelId, ExprId, FuncId, LinearExprId, LinearFuncId, LinearStmtId, StmtId, SymbolId,
-    VarId,
+    EffectLabelId, ExprId, FuncId, LinearExprId, LinearFuncId, LinearStmtId, ResumptionId, StmtId,
+    SymbolId, VarId,
 };
 use cielo_ir::core::{CoreProgram, ExprKind, HandlerClause, HandlerDef, StmtKind};
 use cielo_ir::effect::{SortedEffectRow, is_thunkable};
@@ -16,12 +16,14 @@ use cielo_ir::linear::{
 use cielo_sema::SemanticTables;
 
 use super::analysis::{
-    ResidualBlocker, analyze_clause_resume, classify_clause_convention,
+    ResidualBlocker, analyze_clause_resume, classify_clause_convention, clause_policy,
     core_stmt_calls_performing_effect, fresh_var_base, is_identity_handler_return_clause,
-    is_identity_return_of_var, linear_stmt_contains_perform_effect, residual_clause_blocker,
-    resume_convention_reason, resume_strategy, stmt_effect_row_contains,
+    is_identity_return_of_var, linear_stmt_contains_perform_effect, resume_convention_reason,
+    stmt_effect_row_contains,
 };
-use super::types::{ClauseConvention, ResumeContext, ResumeQualifier, ResumeStrategy};
+use super::types::{
+    ClauseConvention, ClausePolicy, PerformReach, ResumeContext, ResumeQualifier, ResumeStrategy,
+};
 
 struct LoweringInput<'a> {
     program: &'a CoreProgram,
@@ -54,6 +56,10 @@ struct LoweringState<'a> {
     stmt_map: &'a mut [Option<LinearStmtId>],
     inline_budget_exhausted: bool,
     next_var: u32,
+    next_resumption: u32,
+    /// Sites handed out per resumption so far. The dispatch is an integer
+    /// switch, so the labels have to be dense from zero.
+    resume_labels: HashMap<ResumptionId, u32>,
 }
 
 impl LoweringState<'_> {
@@ -61,6 +67,19 @@ impl LoweringState<'_> {
         let var = VarId::from_u32(self.next_var);
         self.next_var += 1;
         var
+    }
+
+    fn fresh_resumption(&mut self) -> ResumptionId {
+        let id = ResumptionId::from_u32(self.next_resumption);
+        self.next_resumption += 1;
+        id
+    }
+
+    fn next_resume_label(&mut self, resumption: ResumptionId) -> u32 {
+        let next = self.resume_labels.entry(resumption).or_default();
+        let label = *next;
+        *next += 1;
+        label
     }
 
     /// True once expansion has been abandoned. Reported once so a deeply
@@ -125,6 +144,8 @@ pub(super) fn lower_program(
             stmt_map: &mut stmt_map,
             inline_budget_exhausted: false,
             next_var: fresh_var_base(program),
+            next_resumption: 0,
+            resume_labels: HashMap::new(),
         };
 
         for source_id in reachable {
@@ -472,13 +493,32 @@ fn lower_stmt_under_handlers(
                         clause.span,
                     );
                 }
-                let strategy = resume_strategy(resume_analysis);
+                // A lexical perform is discharged by splicing, so the policy is
+                // always some form of erasure and can never be `Err` here.
+                let policy = clause_policy(
+                    input.program,
+                    active,
+                    clause,
+                    resume_analysis,
+                    PerformReach::Lexical,
+                )
+                .expect("a lexically visible perform is always erasable");
+                if clause.resume_param.is_some() {
+                    state.diagnostics.note(
+                        "LINEARIZE_CLAUSE_POLICY",
+                        format!("handler clause policy: {}", policy.as_str()),
+                        clause.span,
+                    );
+                }
+                let resumption = matches!(policy, ClausePolicy::Defunctionalise)
+                    .then(|| state.fresh_resumption());
                 let clause_resume_ctx = clause.resume_param.map(|resume_var| ResumeContext {
                     resume_var,
                     perform_result: *result,
                     continuation: *next,
                     clause_convention,
-                    strategy,
+                    policy,
+                    resumption,
                     outer: resume_ctx,
                 });
                 let lowered_clause = lower_matching_clause(
@@ -489,9 +529,11 @@ fn lower_stmt_under_handlers(
                     clause_resume_ctx.as_ref(),
                     state,
                 );
-                match strategy {
-                    ResumeStrategy::Inline => lowered_clause,
-                    ResumeStrategy::Join => {
+                match policy {
+                    ClausePolicy::Erase(ResumeStrategy::Inline) | ClausePolicy::Dispatch => {
+                        lowered_clause
+                    }
+                    ClausePolicy::Erase(ResumeStrategy::Join) => {
                         let continuation =
                             lower_stmt_under_handlers(input, *next, handlers, state, None);
                         let binding = result.unwrap_or_else(|| state.fresh_var());
@@ -499,6 +541,20 @@ fn lower_stmt_under_handlers(
                             binding,
                             value: lowered_clause,
                             next: continuation,
+                        })
+                    }
+                    ClausePolicy::Defunctionalise => {
+                        // Lowered under the context in force at *this* perform,
+                        // exactly as each inlined copy would be: the clause's
+                        // own frame is popped, everything enclosing it is live.
+                        let continuation =
+                            lower_stmt_under_handlers(input, *next, handlers, state, resume_ctx);
+                        let param = result.unwrap_or_else(|| state.fresh_var());
+                        state.linear.push_stmt(LinearStmt::Resumption {
+                            id: resumption.expect("a defunctionalised clause reserves one"),
+                            clause: lowered_clause,
+                            param,
+                            continuation,
                         })
                     }
                 }
@@ -526,11 +582,26 @@ fn lower_stmt_under_handlers(
                 return lower_stmt_under_handlers(input, *next, handlers, state, resume_ctx);
             };
 
-            if matches!(active_ctx.strategy, ResumeStrategy::Join) {
+            if matches!(active_ctx.policy, ClausePolicy::Erase(ResumeStrategy::Join)) {
                 // Tail-resumptive by construction, so `next` is `return result`
                 // and the enclosing join already carries the continuation.
                 let arg_expr = lower_expr(input, *arg, state);
                 return state.linear.push_stmt(LinearStmt::Return(arg_expr));
+            }
+
+            if let Some(resumption) = active_ctx.resumption {
+                // Labels are handed out in lowering order, which is what makes
+                // them dense; the dispatch reads them back as case indices.
+                let label = state.next_resume_label(resumption);
+                let arg_expr = lower_expr(input, *arg, state);
+                let lowered_next = lower_stmt_under_handlers(input, *next, handlers, state, None);
+                return state.linear.push_stmt(LinearStmt::ResumeJump {
+                    resumption,
+                    label,
+                    arg: arg_expr,
+                    result: *result,
+                    next: lowered_next,
+                });
             }
 
             // The continuation belongs to the perform site, so it is lowered
@@ -748,10 +819,17 @@ fn residual_clauses(
 ) -> Result<Vec<LinearHandlerClause>, ResidualBlocker> {
     let mut lowered = Vec::with_capacity(handler.clauses.len());
     for clause in &handler.clauses {
+        // Recomputed from Core rather than carried over from the erasure pass:
+        // the clause the dispatcher gets is lowered separately, and the two
+        // lowerings are not interchangeable.
         let resume = analyze_clause_resume(input.program, clause);
-        if let Some(blocker) = residual_clause_blocker(input.program, handler, clause, resume) {
-            return Err(blocker);
-        }
+        clause_policy(
+            input.program,
+            handler,
+            clause,
+            resume,
+            PerformReach::Runtime,
+        )?;
         let resume_var = clause
             .resume_param
             .expect("a clause with no resume parameter is blocked as abortive");
