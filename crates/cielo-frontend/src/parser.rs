@@ -48,6 +48,7 @@ pub fn parse_source(source: &str, source_id: SourceId, interner: &mut Interner) 
     let builtins = BuiltinTypeSymbols::intern(interner);
     let effect_builtins = BuiltinEffectSymbols::intern(interner);
     let wildcard_symbol = interner.intern("_");
+    let fn_type_symbol = interner.intern("Fn");
     let lexed = lex(source, source_id, interner);
     let mut parser = Parser::new(
         lexed.tokens,
@@ -55,6 +56,7 @@ pub fn parse_source(source: &str, source_id: SourceId, interner: &mut Interner) 
         builtins,
         effect_builtins,
         wildcard_symbol,
+        fn_type_symbol,
     );
     let program = parser.parse_program();
     ParseOutput {
@@ -70,6 +72,9 @@ struct Parser {
     builtins: BuiltinTypeSymbols,
     effect_builtins: BuiltinEffectSymbols,
     wildcard_symbol: SymbolId,
+    /// `Fn` is not a keyword: a program that never writes a function type may
+    /// still use the name for something else.
+    fn_type_symbol: SymbolId,
 }
 
 impl Parser {
@@ -79,6 +84,7 @@ impl Parser {
         builtins: BuiltinTypeSymbols,
         effect_builtins: BuiltinEffectSymbols,
         wildcard_symbol: SymbolId,
+        fn_type_symbol: SymbolId,
     ) -> Self {
         Self {
             tokens,
@@ -87,6 +93,7 @@ impl Parser {
             builtins,
             effect_builtins,
             wildcard_symbol,
+            fn_type_symbol,
         }
     }
 
@@ -407,6 +414,9 @@ impl Parser {
 
         let start = self.current_span();
         let name = self.expect_identifier("Expected type name");
+        if name == self.fn_type_symbol && self.check_kind(TokenKind::LParen) {
+            return self.parse_fn_type(start);
+        }
         let mut args = Vec::new();
         if self.consume_kind(TokenKind::LBracket).is_some() {
             if !self.check_kind(TokenKind::RBracket) {
@@ -435,6 +445,30 @@ impl Parser {
         TypeExpr {
             kind: TypeExprKind::Path { name, args },
             span: span_join(start, self.prev_span()),
+        }
+    }
+
+    /// `Fn(A, B) -> R`, with `start` covering the `Fn` name already consumed.
+    fn parse_fn_type(&mut self, start: Span) -> TypeExpr {
+        self.expect_kind(TokenKind::LParen, "Expected `(` after `Fn`");
+        let mut params = Vec::new();
+        if !self.check_kind(TokenKind::RParen) {
+            loop {
+                params.push(self.parse_type_expr());
+                if self.consume_kind(TokenKind::Comma).is_none() {
+                    break;
+                }
+            }
+        }
+        self.expect_kind(TokenKind::RParen, "Expected `)` after `Fn` parameter types");
+        self.expect_kind(TokenKind::Arrow, "Expected `->` after `Fn(..)`");
+        let ret = self.parse_type_expr();
+        TypeExpr {
+            span: span_join(start, ret.span),
+            kind: TypeExprKind::Func {
+                params,
+                ret: Box::new(ret),
+            },
         }
     }
 
@@ -657,6 +691,7 @@ impl Parser {
             TokenKind::Keyword(Keyword::If) => self.parse_if_expr(),
             TokenKind::Keyword(Keyword::Match) => self.parse_match_expr(),
             TokenKind::Keyword(Keyword::Handle) => self.parse_handle_expr(),
+            TokenKind::Pipe | TokenKind::OrOr => self.parse_lambda_expr(),
             TokenKind::LBrace => {
                 let block = self.parse_block();
                 Expr {
@@ -700,6 +735,45 @@ impl Parser {
                     span,
                 }
             }
+        }
+    }
+
+    /// `|x, y| body`, where the body is either a block or a single expression.
+    ///
+    /// The empty parameter list arrives as one `||` token, since the lexer has
+    /// no way to tell it from the operator.
+    fn parse_lambda_expr(&mut self) -> Expr {
+        let start = self.current_span();
+        let params = if self.consume_kind(TokenKind::OrOr).is_some() {
+            Vec::new()
+        } else {
+            self.expect_kind(TokenKind::Pipe, "Expected `|` to open closure parameters");
+            let mut params = Vec::new();
+            if !self.check_kind(TokenKind::Pipe) {
+                loop {
+                    params.push(self.expect_identifier("Expected closure parameter name"));
+                    if self.consume_kind(TokenKind::Comma).is_none() {
+                        break;
+                    }
+                }
+            }
+            self.expect_kind(TokenKind::Pipe, "Expected `|` after closure parameters");
+            params
+        };
+
+        let body = if self.check_kind(TokenKind::LBrace) {
+            self.parse_block()
+        } else {
+            let tail = self.parse_expr(0);
+            BlockExpr {
+                statements: Vec::new(),
+                span: tail.span,
+                tail: Some(Box::new(tail)),
+            }
+        };
+        Expr {
+            span: span_join(start, body.span),
+            kind: ExprKind::Lambda { params, body },
         }
     }
 

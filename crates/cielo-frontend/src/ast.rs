@@ -158,7 +158,15 @@ pub struct TypeExpr {
 #[derive(Clone, Debug)]
 pub enum TypeExprKind {
     Builtin(BuiltinType),
-    Path { name: SymbolId, args: Vec<TypeExpr> },
+    Path {
+        name: SymbolId,
+        args: Vec<TypeExpr>,
+    },
+    /// `Fn(A, B) -> R`.
+    Func {
+        params: Vec<TypeExpr>,
+        ret: Box<TypeExpr>,
+    },
     Unit,
     Error(ErrorNode),
 }
@@ -250,6 +258,12 @@ pub enum ExprKind {
     Handle {
         body: Box<Expr>,
         handler: HandlerRef,
+    },
+    /// `|x, y| body`. The body is a block whether or not the source wrote
+    /// braces, so lowering has one shape to lift.
+    Lambda {
+        params: Vec<SymbolId>,
+        body: BlockExpr,
     },
     Error(ErrorNode),
 }
