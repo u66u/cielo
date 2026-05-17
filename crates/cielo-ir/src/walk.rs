@@ -273,6 +273,8 @@ impl IrExprNode for ExprNode {
             | ExprKind::PureCall { .. }
             | ExprKind::BuiltinCall { .. }
             | ExprKind::Field { .. }
+            | ExprKind::MakeClosure { .. }
+            | ExprKind::CallClosure { .. }
             | ExprKind::Error(_) => None,
         }
     }
@@ -350,6 +352,8 @@ impl IrExprNode for LinearExprNode {
             | LinearExpr::PureCall { .. }
             | LinearExpr::BuiltinCall { .. }
             | LinearExpr::Field { .. }
+            | LinearExpr::MakeClosure { .. }
+            | LinearExpr::CallClosure { .. }
             | LinearExpr::Error => None,
         }
     }
@@ -410,6 +414,8 @@ impl IrExprNode for CfgExprNode {
             | CfgExpr::PureCall { .. }
             | CfgExpr::BuiltinCall { .. }
             | CfgExpr::Field { .. }
+            | CfgExpr::MakeClosure { .. }
+            | CfgExpr::CallClosure { .. }
             | CfgExpr::Error => None,
         }
     }

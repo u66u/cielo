@@ -193,6 +193,13 @@ pub enum CoreTypeRef {
         name: SymbolId,
         args: Vec<CoreTypeRef>,
     },
+    /// `Fn(A, B) -> R`, the type of a closure value. No effect row: a closure
+    /// whose body performs is rejected at lowering, so every function value is
+    /// pure and the row would always be empty.
+    Func {
+        params: Vec<CoreTypeRef>,
+        ret: Box<CoreTypeRef>,
+    },
     Unknown,
 }
 
@@ -201,6 +208,9 @@ impl CoreTypeRef {
         match self {
             Self::Param(_) => true,
             Self::Applied { args, .. } => args.iter().any(Self::mentions_param),
+            Self::Func { params, ret } => {
+                params.iter().any(Self::mentions_param) || ret.mentions_param()
+            }
             Self::Unit | Self::Primitive(_) | Self::Named(_) | Self::Unknown => false,
         }
     }
@@ -209,6 +219,14 @@ impl CoreTypeRef {
     pub fn depth(&self) -> usize {
         match self {
             Self::Applied { args, .. } => 1 + args.iter().map(Self::depth).max().unwrap_or(0),
+            Self::Func { params, ret } => {
+                1 + params
+                    .iter()
+                    .chain(std::iter::once(ret.as_ref()))
+                    .map(Self::depth)
+                    .max()
+                    .unwrap_or(0)
+            }
             _ => 0,
         }
     }
@@ -219,6 +237,10 @@ impl CoreTypeRef {
             Self::Applied { name, args } => Self::Applied {
                 name: *name,
                 args: args.iter().map(|arg| arg.substitute(bindings)).collect(),
+            },
+            Self::Func { params, ret } => Self::Func {
+                params: params.iter().map(|arg| arg.substitute(bindings)).collect(),
+                ret: Box::new(ret.substitute(bindings)),
             },
             other => other.clone(),
         }
@@ -269,6 +291,23 @@ pub enum ExprKind {
         variant: SymbolId,
         fields: Vec<ExprId>,
     },
+    /// A closure value: the lambda-lifted body plus its captured environment.
+    ///
+    /// Captures are by value. Cielo values are immutable, so a by-reference
+    /// capture could observe nothing a copy cannot, and the copy is what lets
+    /// the environment outlive the frame that built it with no escape proof.
+    MakeClosure {
+        func: FuncId,
+        captures: Vec<ExprId>,
+    },
+    /// A call through a value rather than a statically-known `FuncId`.
+    ///
+    /// `callee` is read, not consumed: one closure can be called any number of
+    /// times, so the call may not release it.
+    CallClosure {
+        callee: ExprId,
+        args: Vec<ExprId>,
+    },
     Error(ErrorNode),
 }
 
@@ -287,6 +326,9 @@ impl ExprKind {
             Self::Binary { lhs, rhs, .. } => {
                 smallvec![(*lhs, OperandRole::Read), (*rhs, OperandRole::Read)]
             }
+            Self::CallClosure { callee, args } => std::iter::once((*callee, OperandRole::Read))
+                .chain(args.iter().map(|arg| (*arg, OperandRole::Owned)))
+                .collect(),
             Self::BuiltinCall { args: operands, .. }
             | Self::PureCall { args: operands, .. }
             | Self::MakeStruct {
@@ -294,6 +336,9 @@ impl ExprKind {
             }
             | Self::MakeEnum {
                 fields: operands, ..
+            }
+            | Self::MakeClosure {
+                captures: operands, ..
             } => operands
                 .iter()
                 .map(|operand| (*operand, OperandRole::Owned))
@@ -318,6 +363,8 @@ impl ExprKind {
             Self::BuiltinCall { .. } => "builtin",
             Self::MakeStruct { .. } => "mk_struct",
             Self::MakeEnum { .. } => "mk_enum",
+            Self::MakeClosure { .. } => "mk_closure",
+            Self::CallClosure { .. } => "call_closure",
             Self::Error(_) => "err",
         }
     }
@@ -341,6 +388,8 @@ impl ExprKind {
                 ty.as_u32().hash(hasher);
                 variant.as_u32().hash(hasher);
             }
+            Self::MakeClosure { func, .. } => func.as_u32().hash(hasher),
+            Self::CallClosure { .. } => {}
             Self::Error(error) => {
                 error.span.start.hash(hasher);
                 error.span.end.hash(hasher);

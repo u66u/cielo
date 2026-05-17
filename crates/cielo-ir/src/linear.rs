@@ -229,6 +229,17 @@ pub enum LinearExpr {
         variant: SymbolId,
         fields: Vec<LinearExprId>,
     },
+    /// See [`crate::core::ExprKind::MakeClosure`]. `callee_fn` is the dense id
+    /// of the lifted body; `callee` is only its name for diagnostics.
+    MakeClosure {
+        callee: SymbolId,
+        callee_fn: LinearFuncId,
+        captures: Vec<LinearExprId>,
+    },
+    CallClosure {
+        callee: LinearExprId,
+        args: Vec<LinearExprId>,
+    },
     Error,
 }
 
@@ -244,6 +255,9 @@ impl LinearExpr {
             Self::Binary { lhs, rhs, .. } => {
                 smallvec![(*lhs, OperandRole::Read), (*rhs, OperandRole::Read)]
             }
+            Self::CallClosure { callee, args } => std::iter::once((*callee, OperandRole::Read))
+                .chain(args.iter().map(|arg| (*arg, OperandRole::Owned)))
+                .collect(),
             Self::BuiltinCall { args: operands, .. }
             | Self::PureCall { args: operands, .. }
             | Self::MakeStruct {
@@ -251,6 +265,9 @@ impl LinearExpr {
             }
             | Self::MakeEnum {
                 fields: operands, ..
+            }
+            | Self::MakeClosure {
+                captures: operands, ..
             } => operands
                 .iter()
                 .map(|operand| (*operand, OperandRole::Owned))
@@ -273,6 +290,8 @@ impl LinearExpr {
             Self::BuiltinCall { .. } => "builtin",
             Self::MakeStruct { .. } => "mk_struct",
             Self::MakeEnum { .. } => "mk_enum",
+            Self::MakeClosure { .. } => "mk_closure",
+            Self::CallClosure { .. } => "call_closure",
             Self::Error => "err",
         }
     }
@@ -294,6 +313,8 @@ impl LinearExpr {
                 ty.as_u32().hash(hasher);
                 variant.as_u32().hash(hasher);
             }
+            Self::MakeClosure { callee_fn, .. } => callee_fn.as_u32().hash(hasher),
+            Self::CallClosure { .. } => {}
             Self::Error => {}
         }
     }

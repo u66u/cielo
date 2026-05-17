@@ -335,10 +335,17 @@ impl CfgProgram {
                 self.check_expr_reads(*lhs, defined, block, errors);
                 self.check_expr_reads(*rhs, defined, block, errors);
             }
+            CfgExpr::CallClosure { callee, args } => {
+                self.check_expr_reads(*callee, defined, block, errors);
+                for arg in args {
+                    self.check_expr_reads(*arg, defined, block, errors);
+                }
+            }
             CfgExpr::PureCall { args, .. }
             | CfgExpr::BuiltinCall { args, .. }
             | CfgExpr::MakeStruct { fields: args, .. }
-            | CfgExpr::MakeEnum { fields: args, .. } => {
+            | CfgExpr::MakeEnum { fields: args, .. }
+            | CfgExpr::MakeClosure { captures: args, .. } => {
                 for arg in args {
                     self.check_expr_reads(*arg, defined, block, errors);
                 }
@@ -506,6 +513,18 @@ pub enum CfgExpr {
         variant: SymbolId,
         fields: Vec<CfgExprId>,
     },
+    /// See [`crate::core::ExprKind::MakeClosure`]. The backend emits one
+    /// uniform-ABI adapter per distinct `callee_fn`, so the capture count has
+    /// to agree across every site that names the same lifted body.
+    MakeClosure {
+        callee: SymbolId,
+        callee_fn: CfgFuncId,
+        captures: Vec<CfgExprId>,
+    },
+    CallClosure {
+        callee: CfgExprId,
+        args: Vec<CfgExprId>,
+    },
     Error,
 }
 
@@ -522,6 +541,9 @@ impl CfgExpr {
             Self::Binary { lhs, rhs, .. } => {
                 smallvec![(*lhs, OperandRole::Read), (*rhs, OperandRole::Read)]
             }
+            Self::CallClosure { callee, args } => std::iter::once((*callee, OperandRole::Read))
+                .chain(args.iter().map(|arg| (*arg, OperandRole::Owned)))
+                .collect(),
             Self::BuiltinCall { args: operands, .. }
             | Self::PureCall { args: operands, .. }
             | Self::MakeStruct {
@@ -529,6 +551,9 @@ impl CfgExpr {
             }
             | Self::MakeEnum {
                 fields: operands, ..
+            }
+            | Self::MakeClosure {
+                captures: operands, ..
             } => operands
                 .iter()
                 .map(|operand| (*operand, OperandRole::Owned))
@@ -551,6 +576,8 @@ impl CfgExpr {
             Self::BuiltinCall { .. } => "builtin",
             Self::MakeStruct { .. } => "mk_struct",
             Self::MakeEnum { .. } => "mk_enum",
+            Self::MakeClosure { .. } => "mk_closure",
+            Self::CallClosure { .. } => "call_closure",
             Self::Error => "err",
         }
     }
@@ -572,6 +599,8 @@ impl CfgExpr {
                 ty.as_u32().hash(hasher);
                 variant.as_u32().hash(hasher);
             }
+            Self::MakeClosure { callee_fn, .. } => callee_fn.as_u32().hash(hasher),
+            Self::CallClosure { .. } => {}
             Self::Error => {}
         }
     }
@@ -620,6 +649,8 @@ fn ctor_field_key(program: &CfgProgram, expression: CfgExprId) -> Option<CtorFie
         | CfgExpr::PureCall { .. }
         | CfgExpr::BuiltinCall { .. }
         | CfgExpr::Field { .. }
+        | CfgExpr::MakeClosure { .. }
+        | CfgExpr::CallClosure { .. }
         | CfgExpr::Error => None,
     }
 }
@@ -725,7 +756,9 @@ impl CfgExpr {
             | Self::PureCall { .. }
             | Self::BuiltinCall { .. }
             | Self::MakeStruct { .. }
-            | Self::MakeEnum { .. } => true,
+            | Self::MakeEnum { .. }
+            | Self::MakeClosure { .. }
+            | Self::CallClosure { .. } => true,
             // `Unary` and `Binary` are the `cv_*` scalar helpers, and literals
             // are immortal statics.
             Self::Value(_) | Self::Literal(_) | Self::Unary { .. } | Self::Binary { .. } => false,

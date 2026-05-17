@@ -95,8 +95,14 @@ fn collect_expr_callees(
     out: &mut HashSet<FuncId>,
 ) {
     walk_exprs_from(program, expr_id, seen_exprs, &mut |_, expr| {
-        if let ExprKind::PureCall { callee, .. } = &expr.kind {
-            out.insert(*callee);
+        match &expr.kind {
+            // A lifted closure body is only ever named here. Missing it drops
+            // the function and leaves the construction site pointing at
+            // whichever function took the freed dense slot (CIELO-52).
+            ExprKind::PureCall { callee, .. } | ExprKind::MakeClosure { func: callee, .. } => {
+                out.insert(*callee);
+            }
+            _ => {}
         }
         Walk::Descend
     });
@@ -172,7 +178,9 @@ pub fn remap_program_function_ids(program: &mut CoreProgram, remap: &[Option<Fun
         let Some(expr) = program.expr_mut(expr_id) else {
             continue;
         };
-        if let ExprKind::PureCall { callee, .. } = &mut expr.kind {
+        if let ExprKind::PureCall { callee, .. } | ExprKind::MakeClosure { func: callee, .. } =
+            &mut expr.kind
+        {
             *callee = remap_func_id(remap, *callee).unwrap_or(poison);
         }
     }
