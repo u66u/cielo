@@ -2106,11 +2106,14 @@ fn eval_unary(op: UnaryOp, value: OracleValue) -> Option<OracleValue> {
     }
 }
 
-/// `None` means "no oracle for this case" and the harness skips it, which is
-/// the only honest answer for arithmetic the C runtime traps on: it dies by
-/// signal rather than producing a value to compare against. Wrapping here would
-/// assert a result the compiled program never returns. `i64::MIN % -1` is the
-/// one exception -- cv_mod defines it as 0 instead of trapping.
+/// `None` is the only honest answer for arithmetic the C runtime traps on: it
+/// dies by signal rather than producing a value to compare against, and
+/// wrapping here would assert a result the compiled program never returns.
+///
+/// `None` does not skip the case -- every caller panics on it. A generator that
+/// can reach overflow therefore fails the suite rather than quietly dropping
+/// cases, which is why the operand ranges below are bounded by construction.
+/// `i64::MIN % -1` is the one exception: cv_mod defines it as 0.
 fn eval_binary(op: BinaryOp, lhs: OracleValue, rhs: OracleValue) -> Option<OracleValue> {
     match (op, lhs, rhs) {
         (BinaryOp::Add, OracleValue::Int(lhs), OracleValue::Int(rhs)) => {
