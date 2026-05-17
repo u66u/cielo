@@ -806,11 +806,18 @@ impl<'a> Lowerer<'a> {
                     self.open_resumptions.insert(resumption, shadowed);
                 }
 
-                // A label the clause never handed out is unreachable, so the
-                // default stands in for it rather than the table growing holes.
+                // Sized by the largest label, not by how many arms came back: a
+                // site the clause body never reached leaves a hole, and a table
+                // one short would send the site above it to the default instead.
                 let default = self.cfg.push_block(Vec::new(), Some(id));
                 self.cfg.set_terminator(default, CfgTerminator::Unreachable);
-                let mut targets = vec![default; open.arms.len()];
+                let width = open
+                    .arms
+                    .iter()
+                    .map(|(label, _)| *label as usize + 1)
+                    .max()
+                    .unwrap_or(0);
+                let mut targets = vec![default; width];
                 for (label, target) in open.arms {
                     if let Some(slot) = targets.get_mut(label as usize) {
                         *slot = target;

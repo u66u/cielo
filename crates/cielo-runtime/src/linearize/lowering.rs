@@ -530,6 +530,9 @@ fn lower_stmt_under_handlers(
                     state,
                 );
                 match policy {
+                    // `Dispatch` cannot be chosen here, and splicing is the
+                    // right answer for it if it ever is: a lexical perform the
+                    // clause is spliced into is discharged either way.
                     ClausePolicy::Erase(ResumeStrategy::Inline) | ClausePolicy::Dispatch => {
                         lowered_clause
                     }

@@ -166,12 +166,10 @@ pub(super) fn clause_policy(
 ) -> Result<ClausePolicy, ResidualBlocker> {
     match reach {
         PerformReach::Lexical => Ok(erase_policy(program, clause, resume)),
-        PerformReach::Runtime => {
-            match residual_clause_blocker(program, handler, clause, resume) {
-                Some(blocker) => Err(blocker),
-                None => Ok(ClausePolicy::Dispatch),
-            }
-        }
+        PerformReach::Runtime => match residual_clause_blocker(program, handler, clause, resume) {
+            Some(blocker) => Err(blocker),
+            None => Ok(ClausePolicy::Dispatch),
+        },
     }
 }
 
@@ -193,6 +191,12 @@ fn erase_policy(
     if resume.tail_resumptive {
         return ClausePolicy::Erase(ResumeStrategy::Join);
     }
+    // Two sites on one path would enter the shared continuation twice, which is
+    // a back edge into it rather than a second copy of it. v1 rejects multi-shot
+    // anyway; inlining at least keeps the graph acyclic while it does.
+    if matches!(resume.qualifier, ResumeQualifier::Multi) {
+        return ClausePolicy::Erase(ResumeStrategy::Inline);
+    }
     if defunctionalisable(program, clause) {
         return ClausePolicy::Defunctionalise;
     }
@@ -209,9 +213,7 @@ fn erase_policy(
 /// site's path only is not, and reading it after the dispatch is an
 /// uninitialised read that nothing downstream can recover from.
 ///
-/// Multi-shot is excluded upstream, and has to stay excluded: two live entries
-/// into one continuation copy would need the second to restore what the first
-/// consumed (CIELO-42).
+/// Single-shot is [`erase_policy`]'s to enforce, not this predicate's.
 fn defunctionalisable(program: &CoreProgram, clause: &HandlerClause) -> bool {
     let Some(resume_var) = clause.resume_param else {
         return false;
@@ -374,9 +376,7 @@ fn stmt_reads_outside(program: &CoreProgram, root: StmtId, bound: &HashSet<VarId
         }
         StmtKind::Call {
             result, args, next, ..
-        } => {
-            args.iter().any(reads) || stmt_reads_outside(program, *next, &extended(&[*result]))
-        }
+        } => args.iter().any(reads) || stmt_reads_outside(program, *next, &extended(&[*result])),
         StmtKind::Perform {
             result, args, next, ..
         } => {
@@ -384,7 +384,12 @@ fn stmt_reads_outside(program: &CoreProgram, root: StmtId, bound: &HashSet<VarId
                 || stmt_reads_outside(
                     program,
                     *next,
-                    &extended(result.as_ref().map(std::slice::from_ref).unwrap_or_default()),
+                    &extended(
+                        result
+                            .as_ref()
+                            .map(std::slice::from_ref)
+                            .unwrap_or_default(),
+                    ),
                 )
         }
         StmtKind::Resume {
