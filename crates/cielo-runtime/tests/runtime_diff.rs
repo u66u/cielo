@@ -114,17 +114,23 @@ impl ExprGen<'_> {
         match self.rng.next_bounded_u64(6) {
             0 => self.int_leaf(),
             1 => format!("(0 - {})", self.int_expr(depth - 1)),
-            // Magnitudes stay small so overflow is rare rather than impossible:
-            // an overflowing case traps in C and the oracle declines, which
-            // silently drops it, so widening the leaves would buy coverage of
-            // nothing while shrinking the set of cases actually compared.
+            // Every generated operation must stay inside the domain the oracle
+            // can judge: it returns None on anything the C runtime traps on,
+            // and `evaluator_oracle_exit_code` treats None as a test failure
+            // rather than a skip. Multiplication is the only operator here that
+            // squares magnitudes -- a variable bound to a nested product and
+            // then multiplied again reaches i64 in three levels -- so its
+            // operands are folded into a range whose product cannot overflow.
+            // Small leaves alone do not bound this; bindings feed back in.
             2 => {
                 let (lhs, rhs) = (self.int_expr(depth - 1), self.int_expr(depth - 1));
-                let op = ["+", "-", "*"][self.rng.next_bounded_u64(3) as usize];
-                format!("({lhs} {op} {rhs})")
+                match self.rng.next_bounded_u64(3) {
+                    0 => format!("({lhs} + {rhs})"),
+                    1 => format!("({lhs} - {rhs})"),
+                    _ => format!("((({lhs}) % 1000) * (({rhs}) % 1000))"),
+                }
             }
-            // A generated divisor is shifted away from zero: a trapping divide
-            // makes the oracle decline to judge, which silently drops the case.
+            // Same reason, for the divisor: a zero divisor traps.
             3 => {
                 let lhs = self.int_expr(depth - 1);
                 let rhs = self.int_expr(depth - 1);
@@ -1164,6 +1170,53 @@ fn runtime_exit_matches_evaluator_oracle_for_generated_expressions() {
     }
 }
 
+/// Signed overflow is undefined in C, so a wrapped result is not merely the
+/// wrong answer -- the optimiser is entitled to assume it cannot happen and
+/// miscompile around it. These run at -O2 because that is where the assumption
+/// bites. Constant operands are deliberate: CT folding must decline to fold an
+/// overflowing expression, or the trap never reaches the emitted C.
+#[test]
+fn integer_overflow_traps_instead_of_wrapping() {
+    if !c_compiler_available() {
+        eprintln!("skipping overflow trap test: no C compiler found");
+        return;
+    }
+
+    const INT64_MIN_EXPR: &str = "0 - 9223372036854775807 - 1";
+    let cases = [
+        ("add", "9223372036854775807".to_owned(), "a + 1".to_owned()),
+        ("sub", INT64_MIN_EXPR.to_owned(), "a - 1".to_owned()),
+        ("mul", "9223372036854775807".to_owned(), "a * 2".to_owned()),
+        ("neg", INT64_MIN_EXPR.to_owned(), "-a".to_owned()),
+        ("div", INT64_MIN_EXPR.to_owned(), "a / (0 - 1)".to_owned()),
+    ];
+
+    let compiler = PassHarness::new(PassConfig::default());
+    for (idx, (name, binding, faulting)) in cases.iter().enumerate() {
+        let source =
+            format!("fn main() -> Int {{\n  let a = {binding};\n  let b = {faulting};\n  b\n}}\n");
+        let mut interner = Interner::new();
+        let compiled = compiler.compile_source_to_c(
+            source.as_str(),
+            SourceId::from_u32(50_000 + idx as u32),
+            &mut interner,
+        );
+        assert!(
+            !compiled.residual.diagnostics().has_errors(),
+            "overflow case {name} should compile cleanly, not be rejected:\n{source}"
+        );
+        let (code, stderr, _) = compile_and_run_c_at_o2(name, compiled.c_source.as_str());
+        assert!(
+            code.is_none(),
+            "overflow case {name} returned {code:?} instead of trapping:\n{source}"
+        );
+        assert!(
+            stderr.contains("overflow"),
+            "overflow case {name} trapped without naming overflow: {stderr}"
+        );
+    }
+}
+
 #[test]
 fn scoped_perform_does_not_dispatch_to_wrong_capability() {
     if !c_compiler_available() {
@@ -2193,6 +2246,20 @@ fn assert_arc_balanced(case_name: &str, c_source: &str) {
 
 /// Exit code (`None` when a signal killed it), stderr, stdout.
 fn compile_and_run_c(case_name: &str, c_source: &str) -> (Option<i32>, String, String) {
+    compile_and_run_c_with(case_name, c_source, &[])
+}
+
+/// Undefined behaviour is mostly harmless until the optimiser acts on it, so
+/// checks for it have to be built the way a release build would be.
+fn compile_and_run_c_at_o2(case_name: &str, c_source: &str) -> (Option<i32>, String, String) {
+    compile_and_run_c_with(case_name, c_source, &["-O2"])
+}
+
+fn compile_and_run_c_with(
+    case_name: &str,
+    c_source: &str,
+    extra_args: &[&str],
+) -> (Option<i32>, String, String) {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock should be monotonic enough for temp dir naming")
@@ -2211,6 +2278,7 @@ fn compile_and_run_c(case_name: &str, c_source: &str) -> (Option<i32>, String, S
     let compile = Command::new(c_compiler_command())
         .arg("-std=c11")
         .arg("-DCIELO_ARC_STATS")
+        .args(extra_args)
         .arg(c_path.as_path())
         .arg("-o")
         .arg(bin_path.as_path())
