@@ -234,11 +234,11 @@ fn merges_tail_resume_sites_into_one_join() {
 }
 
 /// Merging is unsound when an arm consumes its resume's result: the join would
-/// run the continuation past the code that needs its value. Such a clause keeps
-/// the inlining path, and stays super-linear, which is what the budget exists
-/// to catch.
+/// run the continuation past the code that needs its value. Defunctionalising
+/// shares one copy of the continuation without moving anything past it, so this
+/// clause is linear too, through the integer dispatch rather than a join.
 #[test]
-fn leaves_a_clause_that_consumes_its_resume_result_alone() {
+fn defunctionalises_a_clause_that_consumes_its_resume_result() {
     let counts: Vec<usize> = [2, 3, 4]
         .into_iter()
         .map(|performs| {
@@ -265,19 +265,57 @@ fn main() -> Int {{
 
     let steps = growth_steps(&counts);
     assert!(
+        steps.windows(2).all(|pair| pair[0] == pair[1]),
+        "one shared continuation makes growth linear in the perform count, got {counts:?}"
+    );
+}
+
+/// The half of the sharing condition that has no cheap fix: `g` is bound on one
+/// site's path only, and every site reaches every arm through the shared
+/// continuation, so reading it in the other arm would read it undefined. Such a
+/// clause keeps the inlining path and stays super-linear.
+#[test]
+fn leaves_a_clause_that_carries_a_branch_local_past_its_resume_alone() {
+    let counts: Vec<usize> = [2, 3, 4]
+        .into_iter()
+        .map(|performs| {
+            let ticks: String = (1..=performs)
+                .map(|nth| format!("    do St.tick({nth});\n"))
+                .collect();
+            linearize_source(&format!(
+                r#"
+effect St {{ fn tick(n: Int) -> Int }}
+
+fn main() -> Int {{
+  let r = handle {{
+{ticks}    7
+  }} with St {{
+    | tick(n, resume) => if n > 0 {{ let g = n * 3; let y = resume(g); y + g }} else {{ let z = resume(2); z + 2 }}
+  }};
+  r
+}}
+"#
+            ))
+            .stmts
+        })
+        .collect();
+
+    let steps = growth_steps(&counts);
+    assert!(
         steps[1] > steps[0],
-        "a non-tail clause must keep re-lowering the continuation, got {counts:?}"
+        "a site that carries a branch-local past its resume must keep re-lowering, got {counts:?}"
     );
 }
 
 /// The other half of the merge blocker, and the only shape that reaches
 /// `is_tail_resumptive_stmt`'s `Perform` arm: an arm that performs an outer
 /// effect before resuming. Joining would hoist that perform past the
-/// continuation. Until CIELO-54 this could not be asserted end to end, because
-/// the outer clause's continuation was spliced in ahead of the inner `resume`
-/// and lost the context naming it.
+/// continuation; entering one shared copy of it does not, so this defunctionalises.
+/// Until CIELO-54 this could not be asserted end to end, because the outer
+/// clause's continuation was spliced in ahead of the inner `resume` and lost the
+/// context naming it.
 #[test]
-fn leaves_a_clause_that_performs_before_resuming_alone() {
+fn defunctionalises_a_clause_that_performs_before_resuming() {
     let counts: Vec<usize> = [2, 3, 4]
         .into_iter()
         .map(|performs| {
@@ -318,8 +356,8 @@ fn main() -> Int {{
 
     let steps = growth_steps(&counts);
     assert!(
-        steps[1] > steps[0],
-        "a clause that performs before resuming must keep re-lowering the continuation, got {counts:?}"
+        steps.windows(2).all(|pair| pair[0] == pair[1]),
+        "one shared continuation makes growth linear in the perform count, got {counts:?}"
     );
 }
 

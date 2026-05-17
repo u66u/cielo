@@ -203,9 +203,11 @@ fn erase_policy(
 ///
 /// Sharing makes the code after each site reachable from every *other* site, so
 /// anything a site reads after resuming has to be defined on all of them. The
-/// clause parameters are, being bound once before the clause branches; a
-/// variable bound on one site's path only is not, and reading it on another
-/// path is an uninitialised read that no later check catches.
+/// clause parameters are, being bound once before the clause branches; so is
+/// anything bound before the first branch, and the resumption's own value,
+/// which arrives as the dispatch block's parameter. A variable bound on one
+/// site's path only is not, and reading it after the dispatch is an
+/// uninitialised read that nothing downstream can recover from.
 ///
 /// Multi-shot is excluded upstream, and has to stay excluded: two live entries
 /// into one continuation copy would need the second to restore what the first
@@ -214,43 +216,128 @@ fn defunctionalisable(program: &CoreProgram, clause: &HandlerClause) -> bool {
     let Some(resume_var) = clause.resume_param else {
         return false;
     };
-    let mut available = clause.params.iter().copied().collect::<HashSet<_>>();
-    available.insert(resume_var);
-    resume_sites(program, clause.body, resume_var)
-        .into_iter()
-        .all(|(result, next)| {
-            let mut allowed = available.clone();
-            allowed.insert(result);
-            !stmt_reads_outside(program, next, &allowed)
-        })
+    let mut shared = clause.params.iter().copied().collect::<HashSet<_>>();
+    shared.insert(resume_var);
+    sites_can_share(program, clause.body, resume_var, &shared, false).is_some()
 }
 
-/// Every `resume` of `resume_var` under `root`, as the value it binds and the
-/// code that follows it.
-fn resume_sites(program: &CoreProgram, root: StmtId, resume_var: VarId) -> Vec<(VarId, StmtId)> {
-    let mut sites = Vec::new();
-    let mut stack = vec![root];
-    let mut seen = HashSet::new();
-    while let Some(stmt_id) = stack.pop() {
-        if !seen.insert(stmt_id) {
-            continue;
+/// `None` when some code that runs after a `resume` reads a variable bound on
+/// one site's path only; otherwise whether `stmt_id` holds a site at all.
+///
+/// `shared` grows only while `branched` is false, which is the whole
+/// approximation: a binding before the clause's first `if` or `match` reaches
+/// every site, one after it may not. That rejects a binding that happens to
+/// dominate every site from inside a branch, which costs an inlining rather
+/// than an answer.
+///
+/// The interesting node is `Val`, not `Resume`: lowering always gives a
+/// `resume` the identity continuation and leaves the code that consumes its
+/// value in the enclosing `Val`. Checking `Resume::next` alone reads as a
+/// clean pass on every clause there is.
+fn sites_can_share(
+    program: &CoreProgram,
+    stmt_id: StmtId,
+    resume_var: VarId,
+    shared: &HashSet<VarId>,
+    branched: bool,
+) -> Option<bool> {
+    let stmt = program.stmt(stmt_id)?;
+    let extended = |var: VarId| {
+        let mut inner = shared.clone();
+        inner.insert(var);
+        inner
+    };
+    match &stmt.kind {
+        StmtKind::Return(_) | StmtKind::Hole { .. } | StmtKind::Error(_) => Some(false),
+        StmtKind::Let { binding, next, .. } => {
+            let inner = if branched {
+                shared.clone()
+            } else {
+                extended(*binding)
+            };
+            sites_can_share(program, *next, resume_var, &inner, branched)
         }
-        let Some(stmt) = program.stmt(stmt_id) else {
-            continue;
-        };
-        if let StmtKind::Resume {
+        StmtKind::Call { result, next, .. } => {
+            let inner = if branched {
+                shared.clone()
+            } else {
+                extended(*result)
+            };
+            sites_can_share(program, *next, resume_var, &inner, branched)
+        }
+        StmtKind::Perform { result, next, .. } => {
+            let inner = match result.filter(|_| !branched) {
+                Some(result) => extended(result),
+                None => shared.clone(),
+            };
+            sites_can_share(program, *next, resume_var, &inner, branched)
+        }
+        StmtKind::Val {
+            binding,
+            value,
+            next,
+        } => {
+            let in_value = sites_can_share(program, *value, resume_var, shared, branched)?;
+            // The resumption's value arrives as a block parameter, so it is the
+            // one thing a site may still read after the dispatch.
+            let after = extended(*binding);
+            if in_value && stmt_reads_outside(program, *next, &after) {
+                return None;
+            }
+            let inner = if in_value || !branched {
+                after
+            } else {
+                shared.clone()
+            };
+            let in_next = sites_can_share(program, *next, resume_var, &inner, branched)?;
+            Some(in_value || in_next)
+        }
+        StmtKind::Resume {
             result,
             resume,
             next,
             ..
-        } = stmt.kind
-            && resume == resume_var
-        {
-            sites.push((result, next));
+        } => {
+            let here = *resume == resume_var;
+            if here && stmt_reads_outside(program, *next, &extended(*result)) {
+                return None;
+            }
+            let in_next =
+                sites_can_share(program, *next, resume_var, &extended(*result), branched)?;
+            Some(here || in_next)
         }
-        stack.extend(stmt.child_stmts());
+        StmtKind::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            let in_then = sites_can_share(program, *then_branch, resume_var, shared, true)?;
+            let in_else = sites_can_share(program, *else_branch, resume_var, shared, true)?;
+            Some(in_then || in_else)
+        }
+        StmtKind::Match { arms, default, .. } => {
+            let mut found = false;
+            for arm in arms {
+                found |= sites_can_share(program, arm.body, resume_var, shared, true)?;
+            }
+            if let Some(default) = default {
+                found |= sites_can_share(program, *default, resume_var, shared, true)?;
+            }
+            Some(found)
+        }
+        // A nested `handle` splices its clause bodies around whatever follows,
+        // so a site under one is reached through code this walk does not model.
+        StmtKind::Handle { body, next, .. } | StmtKind::Stage { body, next, .. } => {
+            let in_body = sites_can_share(program, *body, resume_var, shared, true)?;
+            if in_body {
+                return None;
+            }
+            match next {
+                Some(next) => sites_can_share(program, *next, resume_var, shared, branched),
+                None => Some(false),
+            }
+        }
     }
-    sites
 }
 
 /// True when `root` reads a variable neither `bound` nor a binder on the way in

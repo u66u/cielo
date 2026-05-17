@@ -798,7 +798,7 @@ impl<'a> Lowerer<'a> {
                     },
                 );
                 let clause = self.lower_stmt(clause, exit, scope);
-                let mut open = self
+                let open = self
                     .open_resumptions
                     .remove(&resumption)
                     .expect("the clause body cannot close its own resumption");
@@ -810,7 +810,6 @@ impl<'a> Lowerer<'a> {
                 // default stands in for it rather than the table growing holes.
                 let default = self.cfg.push_block(Vec::new(), Some(id));
                 self.cfg.set_terminator(default, CfgTerminator::Unreachable);
-                open.arms.sort_unstable_by_key(|(label, _)| *label);
                 let mut targets = vec![default; open.arms.len()];
                 for (label, target) in open.arms {
                     if let Some(slot) = targets.get_mut(label as usize) {

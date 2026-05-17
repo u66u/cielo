@@ -527,6 +527,73 @@ fn main() -> Int {
 "#,
         },
         DiffCase {
+            // Two resume sites, neither in tail position. One shared copy of the
+            // continuation serves both, and the `Switch` at the end of it has to
+            // send each perform back to the arm belonging to the site that
+            // entered it -- picking the other arm still runs, and still returns
+            // an integer (CIELO-39).
+            name: "defunctionalised_resume_sites",
+            source: r#"
+effect St { fn tick(n: Int) -> Int }
+
+fn main() -> Int {
+  handle {
+    let a = do St.tick(1);
+    let b = do St.tick(0);
+    7 + a + b
+  } with St {
+    | tick(n, resume) => if n > 0 { let y = resume(10); y + 1 } else { let z = resume(20); z * 2 }
+  }
+}
+"#,
+        },
+        DiffCase {
+            // `g` is bound on one site's path only and read after that site, so
+            // one shared continuation would leave the other site's arm reading
+            // it undefined. The clause has to stay inlined; before the sharing
+            // condition looked past `Resume`'s own continuation it did not, and
+            // the CFG failed its definedness check (CIELO-39).
+            name: "resume_site_carrying_a_branch_local",
+            source: r#"
+effect St { fn tick(n: Int) -> Int }
+
+fn main() -> Int {
+  handle {
+    let a = do St.tick(1);
+    let b = do St.tick(0);
+    7 + a + b
+  } with St {
+    | tick(n, resume) => if n > 0 { let g = n * 3; let y = resume(g); y + g } else { let z = resume(20); z * 2 }
+  }
+}
+"#,
+        },
+        DiffCase {
+            // The same shape with the sites reached through a nested match, so
+            // the dispatch has three arms and the clause branches on a value
+            // bound before the split.
+            name: "defunctionalised_resume_sites_three_way",
+            source: r#"
+effect St { fn tick(n: Int) -> Int }
+
+fn main() -> Int {
+  handle {
+    let a = do St.tick(2);
+    let b = do St.tick(1);
+    let c = do St.tick(0);
+    a + b + c
+  } with St {
+    | tick(n, resume) => if n > 1 {
+        let x = resume(100);
+        x + n
+      } else {
+        if n > 0 { let y = resume(10); y * 2 } else { let z = resume(1); z - 3 }
+      }
+  }
+}
+"#,
+        },
+        DiffCase {
             // Two enums declare `Empty`, so the variant tags collide. Both the
             // oracle and the emitted C dispatch on the tag alone, which is only
             // sound because each value reaches a match on its own enum.
@@ -883,6 +950,36 @@ fn main() -> Int {
   let s: Shape = if seed > 2 { Circle(seed) } else { Empty };
   let b: Buffer = if seed > 2 { Full(seed) } else { Empty };
   shape_code(s) + buffer_code(b)
+}
+"#,
+        ),
+        (
+            // Two resume sites share one copy of the continuation, so the boxed
+            // value crosses an integer dispatch on its way back into the clause.
+            // ARC has to keep that edge balanced whichever arm the switch picks
+            // (CIELO-39).
+            "ctor_through_defunctionalised_resume",
+            r#"
+effect St { fn tick(n: Int) -> Int }
+enum Box { B(Int) }
+fn unbox(b: Box) -> Int {
+  match b { B(x) => x }
+}
+fn main() -> Int {
+  let seed = @runtime { 1 };
+  handle {
+    let a = do St.tick(seed);
+    let b = do St.tick(0);
+    unbox(B(a)) + unbox(B(b))
+  } with St {
+    | tick(n, resume) => if n > 0 {
+        let y = resume(unbox(B(10)));
+        y + 1
+      } else {
+        let z = resume(unbox(B(20)));
+        z * 2
+      }
+  }
 }
 "#,
         ),
