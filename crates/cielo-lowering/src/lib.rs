@@ -150,6 +150,10 @@ struct Lowerer {
     /// Type parameters of the function whose body is being lowered, so a `let`
     /// annotation naming one lowers to `Param` rather than `Named`.
     type_params: Vec<SymbolId>,
+    /// Name symbol of the function whose body is being lowered. A lifted
+    /// closure body borrows it: codegen keys function names on the dense id,
+    /// and handler specialization already clones bodies that share a symbol.
+    enclosing_fn_name: SymbolId,
     config: LowerConfig,
 }
 
@@ -178,6 +182,7 @@ impl Lowerer {
             handler_decls: HashMap::new(),
             active_resume_vars: HashSet::new(),
             type_params: Vec::new(),
+            enclosing_fn_name: SymbolId::INVALID,
             config,
         }
     }
@@ -323,6 +328,7 @@ impl Lowerer {
             }
 
             self.type_params.clone_from(&function.type_params);
+            self.enclosing_fn_name = function.name;
             let expected = function
                 .return_type
                 .as_ref()
@@ -1001,6 +1007,17 @@ impl Lowerer {
                             expr.span,
                         );
                         ExprKind::Error(error)
+                    } else if let Some(var) = locals.get(&symbol).copied() {
+                        // A local wins over a function of the same name here for
+                        // the same reason it does in `Var` position.
+                        let callee = self.push_expr(ExprKind::Var(var), callee.span);
+                        ExprKind::CallClosure {
+                            callee,
+                            args: args
+                                .iter()
+                                .map(|arg| self.lower_expr(arg, locals, None))
+                                .collect(),
+                        }
                     } else if let Some(func_id) = self.functions_by_name.get(&symbol) {
                         let is_effectful = self
                             .program
@@ -1080,13 +1097,18 @@ impl Lowerer {
                         ExprKind::Error(error)
                     }
                 } else {
-                    let error = self.diagnostics.error_node(
-                        "LOWER_COMPLEX_CALLEE",
-                        "Only direct calls by function name are supported in v0 lowering",
-                        expr.span,
-                    );
-                    ExprKind::Error(error)
+                    let callee = self.lower_expr(callee, locals, None);
+                    ExprKind::CallClosure {
+                        callee,
+                        args: args
+                            .iter()
+                            .map(|arg| self.lower_expr(arg, locals, None))
+                            .collect(),
+                    }
                 }
+            }
+            AstExprKind::Lambda { params, body } => {
+                self.lower_lambda(params, body, locals, expr.span)
             }
             AstExprKind::If { .. }
             | AstExprKind::Match { .. }
@@ -1103,6 +1125,118 @@ impl Lowerer {
             AstExprKind::Error(error) => ExprKind::Error(error.clone()),
         };
         self.push_expr(kind, expr.span)
+    }
+
+    /// Lifts `|params| body` into a top-level function and yields the closure
+    /// value naming it.
+    ///
+    /// Captures are the identifiers the body mentions that resolve to an
+    /// enclosing binding. Deliberately over-approximated: a name the body
+    /// rebinds before its first use is captured and then unused, which costs
+    /// one retain, whereas under-approximating would leave the lifted body
+    /// reading a variable nothing binds.
+    fn lower_lambda(
+        &mut self,
+        params: &[SymbolId],
+        body: &ast::BlockExpr,
+        locals: &HashMap<SymbolId, VarId>,
+        span: Span,
+    ) -> ExprKind {
+        let mut mentioned = HashSet::new();
+        collect_block_symbols(body, &mut mentioned);
+        let mut captured = mentioned
+            .into_iter()
+            .filter(|symbol| !params.contains(symbol) && locals.contains_key(symbol))
+            .collect::<Vec<_>>();
+        captured.sort_unstable_by_key(|symbol| symbol.as_u32());
+        // A closure is exactly the construct that would make `resume` a value,
+        // which is what the no-runtime-control-operator result rests on.
+        captured.retain(|symbol| {
+            let escapes = locals
+                .get(symbol)
+                .is_some_and(|var| self.active_resume_vars.contains(var));
+            if escapes {
+                self.diagnostics.error(
+                    "LOWER_RESUME_VALUE_ESCAPE",
+                    "`resume` cannot be captured or passed as a value in v1",
+                    span,
+                );
+            }
+            !escapes
+        });
+
+        let mut body_locals = HashMap::new();
+        let mut lifted_params = Vec::with_capacity(captured.len() + params.len());
+        let mut capture_args = Vec::with_capacity(captured.len());
+        for symbol in &captured {
+            let var = self.fresh_var();
+            body_locals.insert(*symbol, var);
+            lifted_params.push(var);
+            let outer = locals[symbol];
+            capture_args.push(self.push_expr(ExprKind::Var(outer), span));
+        }
+        for symbol in params {
+            let var = self.fresh_var();
+            body_locals.insert(*symbol, var);
+            lifted_params.push(var);
+        }
+
+        let param_count = lifted_params.len();
+        let placeholder = self.make_dummy_body(span);
+        let func = self.program.add_function(FunctionDecl {
+            name: self.enclosing_fn_name,
+            params: lifted_params,
+            // Nothing writes a lambda's parameter or result types. Typecheck
+            // infers them; ownership classifies a lifted body's parameters
+            // managed, which is the direction that cannot corrupt memory.
+            param_types: vec![CoreTypeRef::Unknown; param_count],
+            return_type: CoreTypeRef::Unknown,
+            declared_effects: SortedEffectRow::new(Vec::new()),
+            body: placeholder,
+            ct_only: false,
+            span,
+        });
+        let lowered_body = self.lower_block(body, &mut body_locals, None);
+        if let Some(decl) = self.program.function_mut(func) {
+            decl.body = lowered_body;
+        }
+        if self.stmt_performs_effect(lowered_body) {
+            let error = self.diagnostics.error_node(
+                "LOWER_EFFECTFUL_CLOSURE",
+                "A closure body may not perform an effect or call an effectful function: a call through a value carries no effect row",
+                span,
+            );
+            return ExprKind::Error(error);
+        }
+
+        ExprKind::MakeClosure {
+            func,
+            captures: capture_args,
+        }
+    }
+
+    /// True when the statement graph reaches an operation with effects. A
+    /// closure's effects would have to travel with the value, and
+    /// `CallClosure` has nowhere to carry them; a handler *inside* the body
+    /// does not help, since the perform below it is what is rejected.
+    fn stmt_performs_effect(&self, root: cielo_base::StmtId) -> bool {
+        let mut seen = HashSet::new();
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let Some(stmt) = self.program.stmt(id) else {
+                continue;
+            };
+            match &stmt.kind {
+                StmtKind::Perform { .. } | StmtKind::Resume { .. } => return true,
+                StmtKind::Call { effects, .. } if !effects.is_empty() => return true,
+                _ => {}
+            }
+            stack.extend(stmt.child_stmts());
+        }
+        false
     }
 
     /// Picks the enum an unqualified variant name belongs to. A name declared
@@ -1254,6 +1388,85 @@ impl Lowerer {
     }
 }
 
+/// Every identifier a block mentions, binders included. Callers intersect the
+/// result with an enclosing scope, so a name bound only inside drops out.
+fn collect_block_symbols(block: &ast::BlockExpr, out: &mut HashSet<SymbolId>) {
+    for stmt in &block.statements {
+        match stmt {
+            AstStmt::Let { value, .. } => collect_expr_symbols(value, out),
+            AstStmt::Expr { value, .. } => collect_expr_symbols(value, out),
+            AstStmt::Perform { args, .. } => {
+                for arg in args {
+                    collect_expr_symbols(arg, out);
+                }
+            }
+            AstStmt::Error(_) => {}
+        }
+    }
+    if let Some(tail) = &block.tail {
+        collect_expr_symbols(tail, out);
+    }
+}
+
+fn collect_expr_symbols(expr: &ast::Expr, out: &mut HashSet<SymbolId>) {
+    match &expr.kind {
+        AstExprKind::Var(name) => {
+            out.insert(*name);
+        }
+        AstExprKind::Int(_) | AstExprKind::Bool(_) | AstExprKind::String(_) => {}
+        AstExprKind::Call { callee, args } => {
+            collect_expr_symbols(callee, out);
+            for arg in args {
+                collect_expr_symbols(arg, out);
+            }
+        }
+        AstExprKind::Field { base, .. } => collect_expr_symbols(base, out),
+        AstExprKind::Binary { lhs, rhs, .. } => {
+            collect_expr_symbols(lhs, out);
+            collect_expr_symbols(rhs, out);
+        }
+        AstExprKind::Unary { expr, .. } => collect_expr_symbols(expr, out),
+        AstExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            collect_expr_symbols(cond, out);
+            collect_block_symbols(then_branch, out);
+            if let Some(block) = else_branch {
+                collect_block_symbols(block, out);
+            }
+        }
+        AstExprKind::Match {
+            scrutinee,
+            clauses,
+            default,
+        } => {
+            collect_expr_symbols(scrutinee, out);
+            for clause in clauses {
+                collect_block_symbols(&clause.body, out);
+            }
+            if let Some(block) = default {
+                collect_block_symbols(block, out);
+            }
+        }
+        AstExprKind::Block(block) => collect_block_symbols(block, out),
+        AstExprKind::StageBlock { block, .. } => collect_block_symbols(block, out),
+        AstExprKind::Handle { body, handler } => {
+            collect_expr_symbols(body, out);
+            if let ast::HandlerRef::Inline { clauses, .. } = handler {
+                for clause in clauses {
+                    collect_block_symbols(&clause.body, out);
+                }
+            }
+        }
+        // A nested lambda's own captures come from this body, so its free
+        // names have to reach the outer capture list too.
+        AstExprKind::Lambda { body, .. } => collect_block_symbols(body, out),
+        AstExprKind::Error(_) => {}
+    }
+}
+
 /// The ADT a declared type names, if any. A type parameter yields `None`: at
 /// lowering time nothing pins it down.
 fn expected_adt(ty: &CoreTypeRef) -> Option<SymbolId> {
@@ -1291,6 +1504,13 @@ fn lower_type_ref(ty: &TypeExpr, type_params: &[SymbolId]) -> CoreTypeRef {
                 .iter()
                 .map(|arg| lower_type_ref(arg, type_params))
                 .collect(),
+        },
+        TypeExprKind::Func { params, ret } => CoreTypeRef::Func {
+            params: params
+                .iter()
+                .map(|param| lower_type_ref(param, type_params))
+                .collect(),
+            ret: Box::new(lower_type_ref(ret, type_params)),
         },
         TypeExprKind::Error(_) => CoreTypeRef::Unknown,
     }
