@@ -108,6 +108,20 @@ fn collect_expr_callees(
     });
 }
 
+/// Functions that are the lifted body of a closure. Nothing on the declaration
+/// says so: a construction site naming it is the only evidence, and the whole
+/// arena is scanned because a dead site still names a live function.
+pub fn closure_body_functions(program: &CoreProgram) -> HashSet<FuncId> {
+    program
+        .exprs()
+        .iter()
+        .filter_map(|expr| match expr.kind {
+            ExprKind::MakeClosure { func, .. } => Some(func),
+            _ => None,
+        })
+        .collect()
+}
+
 pub fn dense_remap(total_functions: usize, reachable: &[FuncId]) -> Vec<Option<FuncId>> {
     let mut remap = vec![None; total_functions];
     for (dense_idx, source_id) in reachable.iter().copied().enumerate() {

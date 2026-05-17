@@ -14,10 +14,12 @@ pub fn classify_type_kind(kind: &TypeKind) -> OwnershipClass {
             | PrimitiveType::Float
             | PrimitiveType::Char => OwnershipClass::Trivial,
         },
-        TypeKind::Struct { .. } | TypeKind::Enum { .. } => OwnershipClass::Managed,
-        TypeKind::Function(_) | TypeKind::TypeParam(_) | TypeKind::Error => {
-            OwnershipClass::BorrowedView
+        // A function value is a refcounted closure record, whatever it points
+        // at: the environment it owns has to be released with it.
+        TypeKind::Struct { .. } | TypeKind::Enum { .. } | TypeKind::Function(_) => {
+            OwnershipClass::Managed
         }
+        TypeKind::TypeParam(_) | TypeKind::Error => OwnershipClass::BorrowedView,
     }
 }
 
@@ -31,7 +33,9 @@ pub fn classify_core_type_ref(ty: &CoreTypeRef) -> OwnershipClass {
             | cielo_ir::core::PrimitiveTypeRef::Float
             | cielo_ir::core::PrimitiveTypeRef::Char => OwnershipClass::Trivial,
         },
-        CoreTypeRef::Named(_) | CoreTypeRef::Applied { .. } => OwnershipClass::Managed,
+        CoreTypeRef::Named(_) | CoreTypeRef::Applied { .. } | CoreTypeRef::Func { .. } => {
+            OwnershipClass::Managed
+        }
         // A type parameter is only seen on an unspecialized signature, whose
         // instances carry the real ownership class.
         CoreTypeRef::Param(_) | CoreTypeRef::Unknown => OwnershipClass::BorrowedView,

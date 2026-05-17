@@ -23,7 +23,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::facts::{CallSite, SemanticTables};
 use crate::ownership::{classify_core_type_ref, classify_type_kind};
-use crate::ty::{EnumVariant, PrimitiveType, StructField, TypeKind, TypeStore};
+use crate::ty::{EnumVariant, FunctionType, PrimitiveType, StructField, TypeKind, TypeStore};
 use cielo_base::Span;
 use cielo_base::densemap::DenseMap;
 use cielo_base::diagnostics::DiagnosticBag;
@@ -34,6 +34,7 @@ use cielo_ir::core::{
     CoreProgram, CoreTypeRef, ExprKind, Literal, OpCategory, PrimitiveTypeRef, StmtKind, UnaryOp,
 };
 use cielo_ir::effect::SortedEffectRow;
+use cielo_ir::function_graph::closure_body_functions;
 use cielo_ir::ownership::OwnershipClass;
 
 macro_rules! define_primitive_type_ids {
@@ -134,6 +135,10 @@ struct FunctionTemplate {
     /// Type-parameter names in first-occurrence order across the signature.
     generic_names: Vec<SymbolId>,
     inferred_ret_var: Option<InferVarId>,
+    /// One slot per parameter whose type is `Unknown`, which is how a lifted
+    /// closure body arrives: nothing writes a lambda's parameter types, so
+    /// they are inferred from the body exactly like a missing return type.
+    inferred_param_vars: Vec<Option<InferVarId>>,
 }
 
 /// A call whose callee is generic, held until inference finishes: the
@@ -407,6 +412,7 @@ struct TypeChecker<'a> {
     /// only where the owning enum is not already known.
     variant_owners: HashMap<SymbolId, Vec<SymbolId>>,
     instances: HashMap<(SymbolId, Vec<TypeId>), TypeId>,
+    function_instances: HashMap<(Vec<TypeId>, TypeId), TypeId>,
     effect_signatures: EffectSignatureTable,
     function_templates: Vec<FunctionTemplate>,
     infer: InferState,
@@ -442,6 +448,7 @@ impl<'a> TypeChecker<'a> {
             enum_ctors: HashMap::new(),
             variant_owners: HashMap::new(),
             instances: HashMap::new(),
+            function_instances: HashMap::new(),
             effect_signatures: EffectSignatureTable::new(),
             function_templates: Vec::new(),
             infer: InferState::default(),
@@ -669,6 +676,14 @@ impl<'a> TypeChecker<'a> {
                     .collect::<Option<Vec<_>>>()?;
                 self.adt_instance(*name, args, span, depth)
             }
+            CoreTypeRef::Func { params, ret } => {
+                let params = params
+                    .iter()
+                    .map(|param| self.concrete_type_ref(param, subst, span, depth))
+                    .collect::<Option<Vec<_>>>()?;
+                let ret = self.concrete_type_ref(ret, subst, span, depth)?;
+                Some(self.function_instance(params, ret))
+            }
             CoreTypeRef::Unknown => None,
         }
     }
@@ -695,8 +710,41 @@ impl<'a> TypeChecker<'a> {
                     .collect();
                 self.infer.app(*name, args)
             }
+            // A function type has no `App` form, so an open component collapses
+            // to the error type rather than staying a variable: a closure type
+            // is only ever checked structurally against another written one.
+            CoreTypeRef::Func { params, ret } => {
+                let params = params
+                    .iter()
+                    .map(|param| {
+                        let ty = self.infer_type_ref(param, subst);
+                        self.materialize_ty(ty)
+                    })
+                    .collect::<Vec<_>>();
+                let ret = self.infer_type_ref(ret, subst);
+                let ret = self.materialize_ty(ret);
+                InferTy::Concrete(self.function_instance(params, ret))
+            }
             CoreTypeRef::Unknown => InferTy::Concrete(self.error_type),
         }
+    }
+
+    /// Interns `Fn(params) -> ret`, deduplicated by structure. `unify` compares
+    /// concrete types by id, so two written occurrences of one function type
+    /// have to land on the same `TypeId` or a closure never matches its
+    /// parameter.
+    fn function_instance(&mut self, params: Vec<TypeId>, ret: TypeId) -> TypeId {
+        let key = (params.clone(), ret);
+        if let Some(existing) = self.function_instances.get(&key).copied() {
+            return existing;
+        }
+        let id = self.store.intern(TypeKind::Function(FunctionType {
+            params,
+            ret,
+            effects: SortedEffectRow::empty(),
+        }));
+        self.function_instances.insert(key, id);
+        id
     }
 
     fn primitive_type(&self, primitive: PrimitiveTypeRef) -> TypeId {
@@ -764,6 +812,7 @@ impl<'a> TypeChecker<'a> {
                 },
                 generic_names,
                 inferred_ret_var: None,
+                inferred_param_vars: vec![None; function.param_types.len()],
             });
         }
         self.function_templates = templates;
@@ -776,6 +825,13 @@ impl<'a> TypeChecker<'a> {
         let (name, args) = match ty {
             CoreTypeRef::Named(name) => (*name, [].as_slice()),
             CoreTypeRef::Applied { name, args } => (*name, args.as_slice()),
+            CoreTypeRef::Func { params, ret } => {
+                for param in params {
+                    self.check_signature_type(param, span);
+                }
+                self.check_signature_type(ret, span);
+                return;
+            }
             CoreTypeRef::Unit
             | CoreTypeRef::Primitive(_)
             | CoreTypeRef::Param(_)
@@ -807,9 +863,16 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn run(mut self, conformance: EffectConformance) -> SemanticTables {
-        for template in &mut self.function_templates {
-            if template.ret.is_none() {
-                template.inferred_ret_var = Some(self.infer.fresh_var());
+        for index in 0..self.function_templates.len() {
+            if self.function_templates[index].ret.is_none() {
+                let var = self.infer.fresh_var();
+                self.function_templates[index].inferred_ret_var = Some(var);
+            }
+            for slot in 0..self.function_templates[index].params.len() {
+                if self.function_templates[index].params[slot] == CoreTypeRef::Unknown {
+                    let var = self.infer.fresh_var();
+                    self.function_templates[index].inferred_param_vars[slot] = Some(var);
+                }
             }
         }
 
@@ -856,6 +919,18 @@ impl<'a> TypeChecker<'a> {
                     .unwrap_or(OwnershipClass::BorrowedView)
             })
             .collect();
+        // A closure allocates, and a call through one hands back whatever the
+        // lifted body returns. Neither type is pinned down when the context
+        // leaves it open, and an unmanaged answer there leaks the allocation.
+        for (index, expr) in self.program.exprs().iter().enumerate() {
+            if matches!(
+                expr.kind,
+                ExprKind::MakeClosure { .. } | ExprKind::CallClosure { .. }
+            ) && let Some(slot) = sema.ownership_of_expr.get_mut(index)
+            {
+                *slot = OwnershipClass::Managed;
+            }
+        }
         sema.ownership_of_var = self.classify_var_ownership(&sema);
 
         sema.field_index_of_expr = std::mem::take(&mut self.field_indices);
@@ -898,13 +973,24 @@ impl<'a> TypeChecker<'a> {
     fn classify_var_ownership(&self, sema: &SemanticTables) -> DenseMap<VarId, OwnershipClass> {
         let mut out = DenseMap::default();
 
-        for function in self.program.functions() {
+        let closure_bodies = closure_body_functions(self.program);
+        for (index, function) in self.program.functions().iter().enumerate() {
+            // A lifted closure body's parameter types are written nowhere, and
+            // its arguments arrive through the same sink ABI as any other
+            // call's. Managed is the only safe answer: retain and release are
+            // no-ops on an unmanaged runtime tag, while skipping them on a
+            // managed value drops a reference someone else still holds.
+            let lifted = closure_bodies.contains(&FuncId::new(index));
             for (idx, param) in function.params.iter().copied().enumerate() {
-                let ownership = function
-                    .param_types
-                    .get(idx)
-                    .map(classify_core_type_ref)
-                    .unwrap_or(OwnershipClass::BorrowedView);
+                let ownership = if lifted {
+                    OwnershipClass::Managed
+                } else {
+                    function
+                        .param_types
+                        .get(idx)
+                        .map(classify_core_type_ref)
+                        .unwrap_or(OwnershipClass::BorrowedView)
+                };
                 assign_var_ownership(&mut out, param, ownership);
             }
         }
@@ -994,11 +1080,14 @@ impl<'a> TypeChecker<'a> {
 
         let mut env = Env::new();
         for (idx, param_var) in params.iter().copied().enumerate() {
-            let param_ty = template
-                .params
-                .get(idx)
-                .map(|tpl| self.infer_type_ref(tpl, &generic_inst))
-                .unwrap_or(InferTy::Concrete(self.error_type));
+            let param_ty = match template.inferred_param_vars.get(idx).copied().flatten() {
+                Some(var) => InferTy::Var(var),
+                None => template
+                    .params
+                    .get(idx)
+                    .map(|tpl| self.infer_type_ref(tpl, &generic_inst))
+                    .unwrap_or(InferTy::Concrete(self.error_type)),
+            };
             env.insert(param_var, self.mono_scheme(param_ty));
         }
 
@@ -1686,6 +1775,7 @@ impl<'a> TypeChecker<'a> {
             CoreTypeRef::Named(_)
             | CoreTypeRef::Param(_)
             | CoreTypeRef::Applied { .. }
+            | CoreTypeRef::Func { .. }
             | CoreTypeRef::Unknown => self.error_type,
         }
     }
@@ -1951,10 +2041,74 @@ impl<'a> TypeChecker<'a> {
                 let ctor = self.enum_ctors.get(&(*ty, *variant)).cloned();
                 self.infer_ctor_expr(ctor, fields, env, expr.span, ENUM_CTOR_CODES)
             }
+            // The lifted body's own parameter and result types are inferred
+            // inside it, and inference does not cross a function boundary, so
+            // the closure's type is whatever its context pins it to.
+            ExprKind::MakeClosure { captures, .. } => {
+                for capture in captures {
+                    let _ = self.infer_expr(*capture, env);
+                }
+                self.infer.fresh_ty()
+            }
+            ExprKind::CallClosure { callee, args } => {
+                self.infer_call_closure(*callee, args, env, expr.span)
+            }
             ExprKind::Error(_) => InferTy::Concrete(self.error_type),
         };
 
         self.record_expr_type(expr_id, inferred, expr.span)
+    }
+
+    /// Checks a call through a value. A callee whose type is still open is left
+    /// alone: the closure's own signature is inferred in a separate function
+    /// walk, so nothing here can constrain it, and the emitted adapter checks
+    /// arity at runtime.
+    fn infer_call_closure(
+        &mut self,
+        callee: ExprId,
+        args: &[ExprId],
+        env: &Env,
+        span: Span,
+    ) -> InferTy {
+        let callee_ty = self.infer_expr(callee, env);
+        let arg_tys = args
+            .iter()
+            .map(|arg| self.infer_expr(*arg, env))
+            .collect::<Vec<_>>();
+        let Some(resolved) = self.infer.resolve_concrete(callee_ty) else {
+            return self.infer.fresh_ty();
+        };
+        let Some(TypeKind::Function(signature)) = self.store.get(resolved).cloned() else {
+            if resolved != self.error_type {
+                self.diagnostics.error(
+                    "TYPE_NOT_CALLABLE",
+                    "This value is not a function and cannot be called",
+                    span,
+                );
+            }
+            return InferTy::Concrete(self.error_type);
+        };
+        if signature.params.len() != arg_tys.len() {
+            self.diagnostics.error(
+                "TYPE_BAD_CLOSURE_ARITY",
+                format!(
+                    "Closure argument count mismatch: expected {}, got {}",
+                    signature.params.len(),
+                    arg_tys.len()
+                ),
+                span,
+            );
+        }
+        for (arg_ty, param) in arg_tys.iter().zip(signature.params.iter()) {
+            let _ = self.unify_with(
+                *arg_ty,
+                InferTy::Concrete(*param),
+                span,
+                "TYPE_CLOSURE_ARG_MISMATCH",
+                "Closure argument type mismatch",
+            );
+        }
+        InferTy::Concrete(signature.ret)
     }
 
     fn infer_ctor_expr(
@@ -2250,6 +2404,12 @@ fn collect_type_params(ty: &CoreTypeRef, out: &mut Vec<SymbolId>) {
             for arg in args {
                 collect_type_params(arg, out);
             }
+        }
+        CoreTypeRef::Func { params, ret } => {
+            for param in params {
+                collect_type_params(param, out);
+            }
+            collect_type_params(ret, out);
         }
         CoreTypeRef::Unit
         | CoreTypeRef::Primitive(_)
