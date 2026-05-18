@@ -425,11 +425,22 @@ fn collect_expr_call_sites(
             collect_expr_call_sites(program, *lhs, seen, out);
             collect_expr_call_sites(program, *rhs, seen, out);
         }
+        ExprKind::CallClosure { callee, args } => {
+            collect_expr_call_sites(program, *callee, seen, out);
+            for arg in args {
+                collect_expr_call_sites(program, *arg, seen, out);
+            }
+        }
         // A builtin is not a user function, so it is never specialized; its
-        // arguments still can be.
+        // arguments still can be. A lifted closure body has no written
+        // signature to substitute into, so it is not a specialization site
+        // either -- every argument reaches it as a tagged runtime value.
         ExprKind::BuiltinCall { args: fields, .. }
         | ExprKind::MakeStruct { fields, .. }
-        | ExprKind::MakeEnum { fields, .. } => {
+        | ExprKind::MakeEnum { fields, .. }
+        | ExprKind::MakeClosure {
+            captures: fields, ..
+        } => {
             for field in fields {
                 collect_expr_call_sites(program, *field, seen, out);
             }
@@ -674,6 +685,17 @@ impl BodyCloner<'_> {
                 ty,
                 variant,
                 fields: self.clone_exprs(fields),
+            },
+            // The lifted body is shared with the template rather than cloned:
+            // it has no signature to substitute into, and every argument
+            // reaches it as a tagged runtime value.
+            ExprKind::MakeClosure { func, captures } => ExprKind::MakeClosure {
+                func,
+                captures: self.clone_exprs(captures),
+            },
+            ExprKind::CallClosure { callee, args } => ExprKind::CallClosure {
+                callee: self.clone_expr(callee),
+                args: self.clone_exprs(args),
             },
             ExprKind::Error(error) => ExprKind::Error(error),
         };

@@ -601,6 +601,26 @@ impl<'a> Rewriter<'a> {
                 );
                 expr_id
             }
+            ExprKind::MakeClosure { func, captures } => {
+                let captures = captures
+                    .into_iter()
+                    .map(|capture| self.rewrite_expr(capture))
+                    .collect::<Vec<_>>();
+                self.set_expr(expr_id, ExprKind::MakeClosure { func, captures });
+                expr_id
+            }
+            // Not inlined even when the callee is a known closure: the value
+            // could be any closure at run time, and only the construction site
+            // that flows here says which.
+            ExprKind::CallClosure { callee, args } => {
+                let callee = self.rewrite_expr(callee);
+                let args = args
+                    .into_iter()
+                    .map(|arg| self.rewrite_expr(arg))
+                    .collect::<Vec<_>>();
+                self.set_expr(expr_id, ExprKind::CallClosure { callee, args });
+                expr_id
+            }
         };
 
         self.expr_memo.insert(expr_id, rewritten);
@@ -692,7 +712,13 @@ impl<'a> Rewriter<'a> {
                     },
                 }))
             }
-            ExprKind::PureCall { .. } | ExprKind::BuiltinCall { .. } | ExprKind::Error(_) => None,
+            // A closure allocates, so substituting one into two use sites of a
+            // parameter would build it twice.
+            ExprKind::PureCall { .. }
+            | ExprKind::BuiltinCall { .. }
+            | ExprKind::MakeClosure { .. }
+            | ExprKind::CallClosure { .. }
+            | ExprKind::Error(_) => None,
         }?;
         memo.insert(expr_id, cloned);
         Some(cloned)
@@ -862,9 +888,13 @@ fn expr_has_observable_effect(program: &CoreProgram, expr_id: ExprId) -> bool {
                 stack.push(*lhs);
                 stack.push(*rhs);
             }
+            // Nothing here says which closure the callee is, so the body that
+            // would have to be inspected for an observable builtin is unknown.
+            ExprKind::CallClosure { .. } => return true,
             ExprKind::PureCall { args, .. }
             | ExprKind::MakeStruct { fields: args, .. }
-            | ExprKind::MakeEnum { fields: args, .. } => stack.extend(args.iter().copied()),
+            | ExprKind::MakeEnum { fields: args, .. }
+            | ExprKind::MakeClosure { captures: args, .. } => stack.extend(args.iter().copied()),
             ExprKind::Var(_) | ExprKind::Literal(_) | ExprKind::Error(_) => {}
         }
     }
@@ -1077,6 +1107,8 @@ fn expr_is_inlineable(
             ExprKind::PureCall { .. }
             | ExprKind::BuiltinCall { .. }
             | ExprKind::Field { .. }
+            | ExprKind::MakeClosure { .. }
+            | ExprKind::CallClosure { .. }
             | ExprKind::Error(_) => {
                 return false;
             }

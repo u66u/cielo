@@ -214,9 +214,13 @@ impl CallEvaluator<'_> {
                 self.eval_call(*callee, args.as_slice())
             }
             // Builtins are runtime-only: folding one would discard its output.
+            // A closure is not a literal, so neither building nor calling one
+            // has a compile-time value to report.
             ExprKind::MakeStruct { .. }
             | ExprKind::MakeEnum { .. }
             | ExprKind::BuiltinCall { .. }
+            | ExprKind::MakeClosure { .. }
+            | ExprKind::CallClosure { .. }
             | ExprKind::Error(_) => None,
         }
     }

@@ -627,7 +627,11 @@ fn infer_expr_runtime_reason(bta: &BtaTables, kind: &ExprKind) -> Option<Reason>
         }
         // Output is observable, so a builtin stays runtime however static its
         // arguments are. Inheriting from operands would fold the call away.
-        ExprKind::BuiltinCall { .. } => return Some(Reason::UnclassifiedRuntime),
+        // A closure has no compile-time value either: `ct_eval` yields
+        // literals, and neither a function value nor a call through one is one.
+        ExprKind::BuiltinCall { .. }
+        | ExprKind::MakeClosure { .. }
+        | ExprKind::CallClosure { .. } => return Some(Reason::UnclassifiedRuntime),
         _ => {}
     }
     kind.child_exprs()

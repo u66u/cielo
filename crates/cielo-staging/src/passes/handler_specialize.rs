@@ -1159,6 +1159,20 @@ impl<'a> NormalizedGraphBuilder<'a> {
                     .map(|field| self.normalize_expr(*field, scope))
                     .collect(),
             },
+            ExprKind::MakeClosure { func, captures } => ExprKind::MakeClosure {
+                func: *func,
+                captures: captures
+                    .iter()
+                    .map(|capture| self.normalize_expr(*capture, scope))
+                    .collect(),
+            },
+            ExprKind::CallClosure { callee, args } => ExprKind::CallClosure {
+                callee: self.normalize_expr(*callee, scope),
+                args: args
+                    .iter()
+                    .map(|arg| self.normalize_expr(*arg, scope))
+                    .collect(),
+            },
             ExprKind::Error(_) => ExprKind::Error(normalized_error_node()),
         };
 
@@ -1422,6 +1436,14 @@ impl<'a> GraphCloner<'a> {
                 ty,
                 variant,
                 fields: self.clone_expr_list(fields),
+            },
+            ExprKind::MakeClosure { func, captures } => ExprKind::MakeClosure {
+                func: self.remap_callee(func),
+                captures: self.clone_expr_list(captures),
+            },
+            ExprKind::CallClosure { callee, args } => ExprKind::CallClosure {
+                callee: self.clone_expr(callee),
+                args: self.clone_expr_list(args),
             },
             ExprKind::Error(error) => ExprKind::Error(error),
         };
