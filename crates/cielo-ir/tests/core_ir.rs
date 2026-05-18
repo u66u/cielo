@@ -54,6 +54,15 @@ fn a_dropped_callee_leaves_no_call_site_aliasing_a_live_function() {
             args: Vec::new(),
         },
     });
+    // A closure names its lifted body by `FuncId` too, so the same aliasing is
+    // available to it.
+    let closure = program.push_expr(ExprNode {
+        span: Span::synthetic(),
+        kind: ExprKind::MakeClosure {
+            func: FuncId::new(2),
+            captures: Vec::new(),
+        },
+    });
 
     // f2 is dropped; f3 takes its dense slot.
     let remap = vec![
@@ -81,5 +90,13 @@ fn a_dropped_callee_leaves_no_call_site_aliasing_a_live_function() {
         callee.index() >= live_functions,
         "dropped pure callee must not resolve to a live function, got f{}",
         callee.as_u32()
+    );
+    let ExprKind::MakeClosure { func, .. } = &program.expr(closure).expect("closure").kind else {
+        panic!("expected a closure construction");
+    };
+    assert!(
+        func.index() >= live_functions,
+        "dropped closure body must not resolve to a live function, got f{}",
+        func.as_u32()
     );
 }

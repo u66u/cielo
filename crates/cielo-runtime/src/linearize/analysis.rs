@@ -512,7 +512,10 @@ pub(super) enum ResidualBlocker {
     /// Replaying the continuation needs a cloned environment (CIELO-42).
     MultiShot,
     /// The clause reads a variable bound outside it. A dispatched clause runs
-    /// in its own frame, so that read needs an environment (CIELO-25).
+    /// in its own frame, and `CieloEvidence.captures` is still NULL, so there
+    /// is nowhere for that environment to live. Closures (CIELO-25) give the
+    /// runtime a value that owns one; hanging it off the evidence is what would
+    /// lift this.
     CapturesEnvironment,
     /// The clause can reach the effect it discharges. Its own frame is still on
     /// the handler stack while it runs, so that perform would dispatch straight
