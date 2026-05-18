@@ -77,6 +77,7 @@ pub fn emit(
         out.push_str(";\n");
     }
     out.push('\n');
+    emit_closure_adapters(&mut out, program, &names);
     emit_clause_tables(&mut out, program, &names);
     for function in &program.functions {
         emit_function(
@@ -172,6 +173,85 @@ fn emit_clause_tables(out: &mut String, program: &CfgProgram, names: &HashMap<Cf
         }
         out.push_str("};\n\n");
     }
+}
+
+fn closure_adapter_name(function: CfgFuncId) -> String {
+    format!("cielo_closure_fn_{}", function.as_u32())
+}
+
+/// One adapter per lifted closure body: the uniform `CieloClosureFn` signature
+/// outside, the body's own parameter list inside.
+///
+/// The capture count comes from the construction sites, not the declaration,
+/// which is why the adapter re-checks it: every site naming one body was built
+/// from one lambda and passes the same number, and a disagreement would
+/// otherwise read past the end of the environment.
+fn emit_closure_adapters(
+    out: &mut String,
+    program: &CfgProgram,
+    names: &HashMap<CfgFuncId, String>,
+) {
+    let adapters = closure_capture_counts(program);
+    for (function, captures) in &adapters {
+        let (function, captures) = (*function, *captures);
+        let arity = program
+            .functions
+            .get(function.index())
+            .map(|node| node.params.len().saturating_sub(captures))
+            .unwrap_or(0);
+        let callee = names
+            .get(&function)
+            .cloned()
+            .unwrap_or_else(|| format!("cielo_missing_fn_{}", function.as_u32()));
+        writeln!(
+            out,
+            "static CieloValue {}(size_t capture_count, const CieloValue *captures, size_t argc, const CieloValue *args) {{",
+            closure_adapter_name(function)
+        )
+        .expect("in-memory write");
+        writeln!(
+            out,
+            "    if (capture_count != {captures}u || argc != {arity}u) cielo_trap(\"closure arity mismatch\");"
+        )
+        .expect("in-memory write");
+        if captures == 0 {
+            out.push_str("    (void)captures;\n");
+        }
+        if arity == 0 {
+            out.push_str("    (void)args;\n");
+        }
+        // Captures belong to a closure that may be called again, and the body's
+        // parameters are sink arguments, so each capture is retained on the way
+        // in. Arguments arrive owned and pass straight through.
+        let arguments = (0..captures)
+            .map(|index| format!("cielo_arc_retained(captures[{index}])"))
+            .chain((0..arity).map(|index| format!("args[{index}]")))
+            .collect::<Vec<_>>();
+        writeln!(out, "    return {callee}({});\n}}", arguments.join(", "))
+            .expect("in-memory write");
+    }
+    if !adapters.is_empty() {
+        out.push('\n');
+    }
+}
+
+/// Capture count per lifted body, in dense id order so the emitted adapters do
+/// not move between runs.
+fn closure_capture_counts(program: &CfgProgram) -> Vec<(CfgFuncId, usize)> {
+    let mut counts: HashMap<CfgFuncId, usize> = HashMap::new();
+    for expression in program.exprs() {
+        if let CfgExpr::MakeClosure {
+            callee_fn,
+            captures,
+            ..
+        } = &expression.kind
+        {
+            counts.entry(*callee_fn).or_insert(captures.len());
+        }
+    }
+    let mut counts = counts.into_iter().collect::<Vec<_>>();
+    counts.sort_by_key(|(function, _)| function.index());
+    counts
 }
 
 /// Reachable instructions a body may hold and still be offered for inlining.
@@ -728,6 +808,46 @@ fn emit_expr(expression: CfgExprId, cx: &mut EmitCx<'_>) -> String {
             variant,
             fields,
         } => emit_ctor(*ty, *variant, fields, cx),
+        CfgExpr::MakeClosure {
+            callee,
+            callee_fn,
+            captures,
+        } => {
+            let arity = cx
+                .program
+                .functions
+                .get(callee_fn.index())
+                .map(|function| function.params.len().saturating_sub(captures.len()))
+                .unwrap_or(0);
+            let adapter = closure_adapter_name(*callee_fn);
+            let count = captures.len();
+            let captures = captures
+                .iter()
+                .map(|capture| emit_expr(*capture, cx))
+                .collect::<Vec<_>>();
+            let array = if captures.is_empty() {
+                "NULL".to_owned()
+            } else {
+                format!("(CieloValue[]){{{}}}", captures.join(", "))
+            };
+            format!(
+                "cielo_make_closure(\"{}\", {adapter}, {arity}u, {count}, {array})",
+                escape(&symbol_text(cx.interner, *callee))
+            )
+        }
+        CfgExpr::CallClosure { callee, args } => {
+            let callee = emit_expr(*callee, cx);
+            let args = args
+                .iter()
+                .map(|arg| emit_expr(*arg, cx))
+                .collect::<Vec<_>>();
+            let array = if args.is_empty() {
+                "NULL".to_owned()
+            } else {
+                format!("(CieloValue[]){{{}}}", args.join(", "))
+            };
+            format!("cielo_closure_call({callee}, {}, {array})", args.len())
+        }
         CfgExpr::Error => "cv_unit()".to_owned(),
     }
 }

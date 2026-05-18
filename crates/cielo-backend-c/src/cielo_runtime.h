@@ -17,7 +17,7 @@
 
 enum {
   CIELO_RUNTIME_ABI_VERSION_MAJOR = 2,
-  CIELO_RUNTIME_ABI_VERSION_MINOR = 0,
+  CIELO_RUNTIME_ABI_VERSION_MINOR = 1,
   CIELO_RUNTIME_ABI_VERSION_PATCH = 0,
   CIELO_RUNTIME_ABI_VERSION = (CIELO_RUNTIME_ABI_VERSION_MAJOR << 16) |
                               (CIELO_RUNTIME_ABI_VERSION_MINOR << 8) |
@@ -40,10 +40,12 @@ typedef enum {
   CV_FLOAT = 3,
   CV_CHAR = 4,
   CV_STRING = 5,
-  CV_CTOR = 6
+  CV_CTOR = 6,
+  CV_CLOSURE = 7
 } CieloTag;
 
 typedef struct CieloValue CieloValue;
+typedef struct CieloClosure CieloClosure;
 
 enum {
   CIELO_ARC_FLAG_IMMORTAL = 1u << 0
@@ -92,7 +94,31 @@ struct CieloValue {
     uint32_t c;
     CieloStr *str;
     CieloCtor *ctor;
+    CieloClosure *closure;
   } as;
+};
+
+/* One uniform signature for every closure body, so a call site needs to know
+ * nothing about the body it dispatches to. Codegen emits one adapter per lifted
+ * function to unpack these arrays into that function's own parameters. */
+typedef CieloValue (*CieloClosureFn)(size_t capture_count,
+                                     const CieloValue *captures, size_t argc,
+                                     const CieloValue *args);
+
+/* A function value: the lifted body plus the environment it owns. Captures are
+ * copies, taken when the closure is built, and live in the tail of the same
+ * block -- the same layout as CieloCtor, so destruction frees once and the ARC
+ * header sits where `cielo_arc_header` expects it.
+ *
+ * `arity` is the body's own parameter count, excluding captures. */
+struct CieloClosure {
+  CieloArcHeader arc;
+  CieloClosureFn call;
+  /* Diagnostics only; dispatch never reads it. */
+  const char *name;
+  uint32_t arity;
+  size_t capture_count;
+  CieloValue *captures;
 };
 
 typedef struct CieloEvidence CieloEvidence;
@@ -180,6 +206,9 @@ CieloValue cielo_make_str(const char *data, size_t len);
 CieloValue cielo_make_ctor(const char *ty, const char *variant,
                            uint32_t variant_tag, size_t argc,
                            const CieloValue *fields);
+CieloValue cielo_make_closure(const char *name, CieloClosureFn call,
+                              uint32_t arity, size_t capture_count,
+                              const CieloValue *captures);
 CieloValue cielo_perform(uint32_t effect, uint32_t op_symbol, const char *op,
                          size_t argc, const CieloValue *args);
 CieloValue cielo_perform_scoped(uint32_t effect,
@@ -236,6 +265,8 @@ static inline CieloArcHeader *cielo_arc_header(CieloValue value) {
     return value.as.ctor != NULL ? &value.as.ctor->arc : NULL;
   case CV_STRING:
     return value.as.str != NULL ? &value.as.str->arc : NULL;
+  case CV_CLOSURE:
+    return value.as.closure != NULL ? &value.as.closure->arc : NULL;
   default:
     return NULL;
   }
@@ -281,6 +312,34 @@ static inline void cielo_arc_release(CieloValue value) {
     return;
   CIELO_ARC_COUNT(release_last_calls);
   cielo_arc_destroy_and_dispose(value);
+}
+
+/* Hands a value on to a sink position while keeping the caller's own
+ * reference. A closure's captures outlive the call, so the lifted body -- whose
+ * parameters are sink arguments like any other function's -- gets a copy. */
+static inline CieloValue cielo_arc_retained(CieloValue value) {
+  cielo_arc_retain(value);
+  return value;
+}
+
+/* Every union read goes through a checked accessor: a wrong tag here would
+ * call an arbitrary address. */
+static inline CieloClosure *cielo_closure_of(CieloValue value) {
+  if (value.tag != CV_CLOSURE || value.as.closure == NULL)
+    cielo_trap("call of a value that is not a closure");
+  return value.as.closure;
+}
+
+/* Arguments are sink arguments, as at a direct call; the captures stay owned by
+ * the closure, which is why the adapter retains rather than moves them. */
+static inline CieloValue cielo_closure_call(CieloValue callee, size_t argc,
+                                            const CieloValue *args) {
+  CieloClosure *closure = cielo_closure_of(callee);
+  if (closure->call == NULL)
+    cielo_trap("closure has no body");
+  if (closure->arity != (uint32_t)argc)
+    cielo_trap("closure called with the wrong number of arguments");
+  return closure->call(closure->capture_count, closure->captures, argc, args);
 }
 
 static inline bool cielo_ctor_is_variant(CieloValue value,
@@ -619,9 +678,10 @@ static inline int cv_ordering(CieloValue a, CieloValue b) {
   case CV_UNIT:
     return 0;
   case CV_CTOR:
+  case CV_CLOSURE:
     break;
   }
-  cielo_trap("ordering comparison on a constructor value");
+  cielo_trap("ordering comparison on a constructor or closure value");
 }
 
 static inline CieloValue cv_lt(CieloValue a, CieloValue b) {
@@ -661,6 +721,11 @@ static inline void cv_print(CieloValue v) {
     CASE_PRINTF(CV_FLOAT, "%f", v.as.f);
     CASE_PRINTF(CV_CHAR, "%c", (int)v.as.c);
     CASE_PUTS(CV_STRING, cielo_str_data(v));
+
+  case CV_CLOSURE:
+    printf("<closure %s>\n",
+           v.as.closure ? cielo_cstr0(v.as.closure->name) : "?");
+    break;
 
   case CV_CTOR:
     if (!v.as.ctor) {
@@ -758,6 +823,29 @@ void cielo_arc_destroy_and_dispose(CieloValue value) {
       continue;
     }
 
+    /* Counted with constructors rather than in a pair of its own, so the
+     * allocation balance a test asserts covers closures too. */
+    if (dying.tag == CV_CLOSURE) {
+      CieloClosure *closure = dying.as.closure;
+      CieloValue *captures = closure->captures;
+      size_t capture_count = closure->capture_count;
+      closure->captures = NULL;
+      closure->capture_count = 0u;
+      for (size_t i = 0; i < capture_count; i++) {
+        CieloValue capture = captures[i];
+        if (!cielo_arc_is_managed(capture))
+          continue;
+        CIELO_ARC_COUNT(release_calls);
+        if (!cielo_arc_dec_is_last(capture))
+          continue;
+        CIELO_ARC_COUNT(release_last_calls);
+        cielo_drop_stack_push(&stack, capture);
+      }
+      CIELO_ARC_COUNT(ctor_frees);
+      free(closure);
+      continue;
+    }
+
     CieloCtor *ctor = dying.as.ctor;
     CieloValue *fields = ctor->fields;
     size_t argc = ctor->argc;
@@ -804,6 +892,10 @@ bool cv_equal(CieloValue a, CieloValue b) {
     return len == cielo_str_len(b) &&
            memcmp(cielo_str_data(a), cielo_str_data(b), len) == 0;
   }
+  /* Function values have no structural equality, so identity is the only
+   * answer that is not a guess. */
+  case CV_CLOSURE:
+    return a.as.closure == b.as.closure;
   case CV_CTOR:
     break;
   }
@@ -996,6 +1088,34 @@ CieloValue cielo_make_ctor(const char *ty, const char *variant,
   CIELO_ARC_COUNT(ctor_allocations);
   CieloValue out = {.tag = CV_CTOR};
   out.as.ctor = ctor;
+  return out;
+}
+
+/* Captures live in the tail of the same block, like a constructor's fields, and
+ * arrive as sink arguments: the closure takes over the references its builder
+ * held. */
+CieloValue cielo_make_closure(const char *name, CieloClosureFn call,
+                              uint32_t arity, size_t capture_count,
+                              const CieloValue *captures) {
+  CieloClosure *closure = (CieloClosure *)malloc(sizeof(CieloClosure) +
+                                                 capture_count *
+                                                     sizeof(CieloValue));
+  if (closure == NULL)
+    cielo_trap("out of memory allocating closure");
+
+  closure->arc = (CieloArcHeader)CIELO_ARC_OWNED_HEADER;
+  closure->call = call;
+  closure->name = name;
+  closure->arity = arity;
+  closure->capture_count = capture_count;
+  closure->captures =
+      capture_count > 0 ? (CieloValue *)(closure + 1) : NULL;
+  if (capture_count > 0 && captures != NULL)
+    memcpy(closure->captures, captures, sizeof(CieloValue) * capture_count);
+
+  CIELO_ARC_COUNT(ctor_allocations);
+  CieloValue out = {.tag = CV_CLOSURE};
+  out.as.closure = closure;
   return out;
 }
 

@@ -1028,6 +1028,30 @@ fn lower_expr(
                 .map(|field| lower_expr(input, field, state))
                 .collect(),
         },
+        ExprKind::MakeClosure { func, captures } => LinearExpr::MakeClosure {
+            callee: input.fn_names.get(func).copied().unwrap_or_else(|| {
+                state.diagnostics.error(
+                    "LINEARIZE_UNKNOWN_CLOSURE_BODY",
+                    "Could not resolve the function id of a closure body",
+                    expr.span,
+                );
+                SymbolId::INVALID
+            }),
+            callee_fn: input.callee_fn(func),
+            captures: captures
+                .iter()
+                .copied()
+                .map(|capture| lower_expr(input, capture, state))
+                .collect(),
+        },
+        ExprKind::CallClosure { callee, args } => LinearExpr::CallClosure {
+            callee: lower_expr(input, *callee, state),
+            args: args
+                .iter()
+                .copied()
+                .map(|arg| lower_expr(input, arg, state))
+                .collect(),
+        },
         ExprKind::Error(_) => LinearExpr::Error,
     };
 

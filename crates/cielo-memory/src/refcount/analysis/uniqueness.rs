@@ -191,10 +191,17 @@ fn record_expr_uses(
             record_expr_uses(cfg, *lhs, site, uses);
             record_expr_uses(cfg, *rhs, site, uses);
         }
+        CfgExpr::CallClosure { callee, args } => {
+            record_expr_uses(cfg, *callee, site, uses);
+            for arg in args {
+                record_expr_uses(cfg, *arg, site, uses);
+            }
+        }
         CfgExpr::PureCall { args, .. }
         | CfgExpr::BuiltinCall { args, .. }
         | CfgExpr::MakeStruct { fields: args, .. }
-        | CfgExpr::MakeEnum { fields: args, .. } => {
+        | CfgExpr::MakeEnum { fields: args, .. }
+        | CfgExpr::MakeClosure { captures: args, .. } => {
             for arg in args {
                 record_expr_uses(cfg, *arg, site, uses);
             }
@@ -347,12 +354,16 @@ fn expr_origin(
         } => ctor_origin(cfg, constants, expression, *ty, *variant, fields, pooled),
         // A builtin result is heap-fresh today, but nothing in the signature
         // says so: an interning or caching builtin would return an alias.
+        // A closure allocation is heap-fresh, but saying so here would let a
+        // match take a field out of one, and nothing yet projects a closure.
         CfgExpr::BuiltinCall { .. }
         | CfgExpr::Literal(_)
         | CfgExpr::Unary { .. }
         | CfgExpr::Binary { .. }
         | CfgExpr::PureCall { .. }
         | CfgExpr::Field { .. }
+        | CfgExpr::MakeClosure { .. }
+        | CfgExpr::CallClosure { .. }
         | CfgExpr::Error => Origin::Unknown,
     }
 }

@@ -381,6 +381,27 @@ impl<'a> Lowerer<'a> {
                     .map(|field| self.lower_owned(block, field, scope))
                     .collect(),
             },
+            Some(LinearExpr::MakeClosure {
+                callee,
+                callee_fn,
+                captures,
+            }) => CfgExpr::MakeClosure {
+                callee,
+                callee_fn: self.cfg_func_id(callee_fn),
+                captures: captures
+                    .into_iter()
+                    .map(|capture| self.lower_owned(block, capture, scope))
+                    .collect(),
+            },
+            // The callee is borrowed, so it is bound to a value of its own
+            // first: the call may not release the closure it dispatches on.
+            Some(LinearExpr::CallClosure { callee, args }) => CfgExpr::CallClosure {
+                callee: self.lower_borrowed(block, callee, scope),
+                args: args
+                    .into_iter()
+                    .map(|arg| self.lower_owned(block, arg, scope))
+                    .collect(),
+            },
             Some(LinearExpr::Error) | None => CfgExpr::Error,
         };
         let lowered = self.cfg.push_expr(kind, Some(id));
