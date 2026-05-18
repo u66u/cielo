@@ -21,6 +21,12 @@ enum OracleValue {
         variant: SymbolId,
         fields: Vec<OracleValue>,
     },
+    /// A closure: the lifted body and the environment it captured. Captures are
+    /// copies here for the same reason they are copies at run time.
+    Closure {
+        func: cielo_base::FuncId,
+        captures: Vec<OracleValue>,
+    },
 }
 
 /// Guards against a non-terminating program taking the test process with it.
@@ -404,6 +410,45 @@ fn main() -> Int {
 fn main() -> Bool {
   let x = if true { 4 } else { 9 };
   x == 4
+}
+"#,
+        },
+        DiffCase {
+            name: "closure_capture_and_indirect_call",
+            source: r#"
+fn apply(f: Fn(Int) -> Int, x: Int) -> Int {
+  f(x)
+}
+
+fn make_adder(n: Int) -> Fn(Int) -> Int {
+  |x| x + n
+}
+
+fn main() -> Int {
+  let add = make_adder(6);
+  apply(add, 5) + apply(add, 20)
+}
+"#,
+        },
+        DiffCase {
+            name: "closure_captures_constructor",
+            source: r#"
+enum Box { Wrap(Int) }
+
+fn unwrap(b: Box) -> Int {
+  match b {
+    | Wrap(v) => v
+  }
+}
+
+fn apply(f: Fn(Int) -> Int, x: Int) -> Int {
+  f(x)
+}
+
+fn main() -> Int {
+  let boxed = Wrap(7);
+  let reader = |x| x + unwrap(boxed);
+  apply(reader, 3) + apply(reader, 30)
 }
 "#,
         },
@@ -2055,6 +2100,39 @@ fn eval_expr_at(
                 depth + 1,
             )
         }
+        ExprKind::MakeClosure { func, captures } => {
+            let mut values = Vec::with_capacity(captures.len());
+            for capture in captures {
+                values.push(eval_expr_at(program, ct, sema, *capture, env, depth)?);
+            }
+            Some(OracleValue::Closure {
+                func: *func,
+                captures: values,
+            })
+        }
+        // The lifted body's leading parameters are the captures, so the call
+        // rebuilds the argument list the emitted adapter builds.
+        ExprKind::CallClosure { callee, args } => {
+            let OracleValue::Closure { func, captures } =
+                eval_expr_at(program, ct, sema, *callee, env, depth)?
+            else {
+                return None;
+            };
+            let mut values = captures;
+            for arg in args {
+                values.push(eval_expr_at(program, ct, sema, *arg, env, depth)?);
+            }
+            eval_call(
+                program,
+                ct,
+                sema,
+                func,
+                values,
+                &mut Vec::new(),
+                &mut Vec::new(),
+                depth + 1,
+            )
+        }
         // Builtins produce output rather than a value the oracle can model.
         ExprKind::BuiltinCall { .. } | ExprKind::Error(_) => None,
     }
@@ -2187,7 +2265,9 @@ fn oracle_value_to_exit_code(value: OracleValue) -> Option<i32> {
             }
         }
         OracleValue::Int(value) => value as i32,
-        OracleValue::ResumeToken(_) | OracleValue::Ctor { .. } => return None,
+        OracleValue::ResumeToken(_) | OracleValue::Ctor { .. } | OracleValue::Closure { .. } => {
+            return None;
+        }
     };
     Some((code as u8) as i32)
 }
