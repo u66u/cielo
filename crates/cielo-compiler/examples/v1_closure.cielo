@@ -1,0 +1,19 @@
+-- A closure is built in one function, passed to another, and called there.
+
+fn apply(f: Fn(Int) -> Int, x: Int) -> Int {
+  f(x)
+}
+
+fn twice(f: Fn(Int) -> Int, x: Int) -> Int {
+  apply(f, apply(f, x))
+}
+
+fn make_adder(n: Int) -> Fn(Int) -> Int {
+  |x| x + n
+}
+
+fn main() -> Int {
+  let add_five = make_adder(5);
+  let scale = |v| v * 3;
+  apply(add_five, twice(scale, 2)) + apply(scale, 1)
+}

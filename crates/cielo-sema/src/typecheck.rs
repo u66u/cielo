@@ -141,6 +141,19 @@ struct FunctionTemplate {
     inferred_param_vars: Vec<Option<InferVarId>>,
 }
 
+/// What a closure construction site pins on the lifted body: the type of each
+/// capture it passes, and the closure value's own type, which context may
+/// later resolve to a written `Fn(..) -> T`.
+///
+/// Lowering appends a lifted body after the function that builds it and
+/// inference walks functions in id order, so the site is always recorded by the
+/// time the body is inferred.
+#[derive(Clone)]
+struct ClosureSite {
+    capture_tys: Vec<InferTy>,
+    value: InferTy,
+}
+
 /// A call whose callee is generic, held until inference finishes: the
 /// instantiation variables are only meaningful once every constraint is in.
 struct PendingCallTypeArgs {
@@ -413,6 +426,7 @@ struct TypeChecker<'a> {
     variant_owners: HashMap<SymbolId, Vec<SymbolId>>,
     instances: HashMap<(SymbolId, Vec<TypeId>), TypeId>,
     function_instances: HashMap<(Vec<TypeId>, TypeId), TypeId>,
+    closure_sites: HashMap<FuncId, ClosureSite>,
     effect_signatures: EffectSignatureTable,
     function_templates: Vec<FunctionTemplate>,
     infer: InferState,
@@ -449,6 +463,7 @@ impl<'a> TypeChecker<'a> {
             variant_owners: HashMap::new(),
             instances: HashMap::new(),
             function_instances: HashMap::new(),
+            closure_sites: HashMap::new(),
             effect_signatures: EffectSignatureTable::new(),
             function_templates: Vec::new(),
             infer: InferState::default(),
@@ -1078,25 +1093,51 @@ impl<'a> TypeChecker<'a> {
         let generic_inst = self.instantiate_generics(&template.generic_names);
         self.generic_inst.clone_from(&generic_inst);
 
+        // A lifted closure body has no written signature. Its leading
+        // parameters are the captures, whose types the construction site
+        // already inferred, and the rest come from whatever `Fn(..) -> T` the
+        // closure value was checked against.
+        let site = self.closure_sites.get(&func_id).cloned();
+        let captures = site.as_ref().map_or(0, |site| site.capture_tys.len());
+        let signature = site.as_ref().and_then(|site| {
+            let id = self.infer.resolve_concrete(site.value)?;
+            match self.store.get(id) {
+                Some(TypeKind::Function(signature)) => Some(signature.clone()),
+                _ => None,
+            }
+        });
+
         let mut env = Env::new();
         for (idx, param_var) in params.iter().copied().enumerate() {
-            let param_ty = match template.inferred_param_vars.get(idx).copied().flatten() {
-                Some(var) => InferTy::Var(var),
-                None => template
-                    .params
-                    .get(idx)
-                    .map(|tpl| self.infer_type_ref(tpl, &generic_inst))
-                    .unwrap_or(InferTy::Concrete(self.error_type)),
+            let param_ty = match site.as_ref().and_then(|site| site.capture_tys.get(idx)) {
+                Some(capture) if idx < captures => *capture,
+                _ => match signature
+                    .as_ref()
+                    .and_then(|signature| signature.params.get(idx - captures))
+                {
+                    Some(param) => InferTy::Concrete(*param),
+                    None => match template.inferred_param_vars.get(idx).copied().flatten() {
+                        Some(var) => InferTy::Var(var),
+                        None => template
+                            .params
+                            .get(idx)
+                            .map(|tpl| self.infer_type_ref(tpl, &generic_inst))
+                            .unwrap_or(InferTy::Concrete(self.error_type)),
+                    },
+                },
             };
             env.insert(param_var, self.mono_scheme(param_ty));
         }
 
-        let expected_return = template
-            .ret
-            .as_ref()
-            .map(|tpl| self.infer_type_ref(tpl, &generic_inst))
-            .or_else(|| template.inferred_ret_var.map(InferTy::Var))
-            .unwrap_or(InferTy::Concrete(self.error_type));
+        let expected_return = match signature.as_ref() {
+            Some(signature) => InferTy::Concrete(signature.ret),
+            None => template
+                .ret
+                .as_ref()
+                .map(|tpl| self.infer_type_ref(tpl, &generic_inst))
+                .or_else(|| template.inferred_ret_var.map(InferTy::Var))
+                .unwrap_or(InferTy::Concrete(self.error_type)),
+        };
 
         let mut resume_ctx = ResumeCtx::new();
         let body_ty = self.infer_stmt(body, &mut env, &mut resume_ctx);
@@ -2044,11 +2085,16 @@ impl<'a> TypeChecker<'a> {
             // The lifted body's own parameter and result types are inferred
             // inside it, and inference does not cross a function boundary, so
             // the closure's type is whatever its context pins it to.
-            ExprKind::MakeClosure { captures, .. } => {
-                for capture in captures {
-                    let _ = self.infer_expr(*capture, env);
-                }
-                self.infer.fresh_ty()
+            ExprKind::MakeClosure { func, captures } => {
+                let capture_tys = captures
+                    .iter()
+                    .map(|capture| self.infer_expr(*capture, env))
+                    .collect::<Vec<_>>();
+                let value = self.infer.fresh_ty();
+                self.closure_sites
+                    .entry(*func)
+                    .or_insert(ClosureSite { capture_tys, value });
+                value
             }
             ExprKind::CallClosure { callee, args } => {
                 self.infer_call_closure(*callee, args, env, expr.span)
