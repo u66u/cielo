@@ -1053,6 +1053,28 @@ fn main() -> Int {
 }
 "#,
         ),
+        (
+            // The closure outlives the frame that built it and holds the only
+            // reference to the captured constructor, so the allocation balance
+            // only closes if destroying the closure releases its environment.
+            "closure_environment_outlives_its_frame",
+            r#"
+enum Box { Wrap(Int) }
+fn unwrap(b: Box) -> Int {
+  match b { | Wrap(v) => v }
+}
+fn apply(f: Fn(Int) -> Int, x: Int) -> Int {
+  f(x)
+}
+fn make_reader(b: Box) -> Fn(Int) -> Int {
+  |x| x + unwrap(b)
+}
+fn main() -> Int {
+  let reader = make_reader(Wrap(7));
+  apply(reader, 3) + apply(reader, 30)
+}
+"#,
+        ),
     ];
 
     let presets = [

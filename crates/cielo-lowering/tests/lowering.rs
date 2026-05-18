@@ -581,6 +581,111 @@ fn main() -> Int {
     );
 }
 
+#[test]
+fn lifts_a_lambda_into_a_function_whose_leading_params_are_its_captures() {
+    let src = r#"
+fn make_adder(n: Int) -> Fn(Int) -> Int {
+  |x| x + n
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    assert!(
+        !lowered.diagnostics.has_errors(),
+        "{:?}",
+        diagnostic_codes(&lowered)
+    );
+    assert_eq!(lowered.program.functions().len(), 2);
+
+    let closure = lowered
+        .program
+        .exprs()
+        .iter()
+        .find_map(|expr| match &expr.kind {
+            cielo_ir::core::ExprKind::MakeClosure { func, captures } => {
+                Some((*func, captures.len()))
+            }
+            _ => None,
+        })
+        .expect("closure construction");
+    let (func, captures) = closure;
+    assert_eq!(captures, 1);
+    let lifted = lowered.program.function(func).expect("lifted body");
+    assert_eq!(lifted.params.len(), 2);
+    // The outer `n` reaches the body as the closure's own first parameter, not
+    // as the enclosing function's variable.
+    let enclosing = lowered.program.functions().first().expect("make_adder");
+    assert!(!lifted.params.contains(&enclosing.params[0]));
+}
+
+#[test]
+fn rejects_a_closure_body_that_performs_an_effect() {
+    let src = r#"
+effect LocalState { fn tick() -> Int }
+fn main() -> Int {
+  let f = |x| { do LocalState.tick(); x };
+  1
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let codes = diagnostic_codes(&lowered);
+    assert!(
+        codes.contains(&"LOWER_EFFECTFUL_CLOSURE".to_owned()),
+        "got {codes:?}"
+    );
+}
+
+#[test]
+fn rejects_a_resume_captured_by_a_closure() {
+    let src = r#"
+effect LocalState { fn tick() -> Int }
+fn apply(f: Fn(Int) -> Int, x: Int) -> Int { f(x) }
+fn main() -> Int {
+  handle { do LocalState.tick(); 9 } with LocalState {
+    | tick(resume) => {
+      let escape = |x| resume(x);
+      apply(escape, 1)
+    }
+  }
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    let codes = diagnostic_codes(&lowered);
+    assert!(
+        codes.contains(&"LOWER_RESUME_VALUE_ESCAPE".to_owned()),
+        "got {codes:?}"
+    );
+}
+
+#[test]
+fn lowers_a_call_through_a_local_to_an_indirect_call() {
+    let src = r#"
+fn apply(f: Fn(Int) -> Int, x: Int) -> Int {
+  f(x)
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    assert!(
+        !lowered.diagnostics.has_errors(),
+        "{:?}",
+        diagnostic_codes(&lowered)
+    );
+    assert!(
+        lowered
+            .program
+            .exprs()
+            .iter()
+            .any(|expr| matches!(expr.kind, cielo_ir::core::ExprKind::CallClosure { .. }))
+    );
+}
+
 fn diagnostic_codes(lowered: &cielo_lowering::LowerOutput) -> Vec<String> {
     lowered
         .diagnostics
