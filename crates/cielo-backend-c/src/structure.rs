@@ -45,10 +45,14 @@ pub enum Edge {
     Fallthrough,
 }
 
-pub fn plan(program: &CfgProgram, entry: CfgBlockId) -> Layout {
+/// `tails` names blocks the emitter returns from directly instead of handing
+/// their value to a successor. They are leaves here: counting their outgoing
+/// edge would label a join nothing jumps to, and lay out a block nothing runs.
+pub fn plan(program: &CfgProgram, entry: CfgBlockId, tails: &HashSet<CfgBlockId>) -> Layout {
     let mut planner = Planner {
         program,
-        doms: Doms::compute(program, entry),
+        doms: Doms::compute(program, entry, tails),
+        tails,
         labels: HashSet::new(),
         open: HashSet::new(),
     };
@@ -59,9 +63,24 @@ pub fn plan(program: &CfgProgram, entry: CfgBlockId) -> Layout {
     }
 }
 
+fn successors(
+    program: &CfgProgram,
+    block: CfgBlockId,
+    tails: &HashSet<CfgBlockId>,
+) -> Vec<CfgBlockId> {
+    if tails.contains(&block) {
+        return Vec::new();
+    }
+    program
+        .block(block)
+        .map(|node| node.terminator.successors())
+        .unwrap_or_default()
+}
+
 struct Planner<'a> {
     program: &'a CfgProgram,
     doms: Doms,
+    tails: &'a HashSet<CfgBlockId>,
     labels: HashSet<CfgBlockId>,
     open: HashSet<CfgBlockId>,
 }
@@ -80,10 +99,7 @@ impl Planner<'_> {
             Some(CfgTerminator::Switch { .. }) => None,
             _ => joins.first().copied().or(fallthrough),
         };
-        let successors = terminator
-            .map(CfgTerminator::successors)
-            .unwrap_or_default();
-        let edges = successors
+        let edges = successors(program, block, self.tails)
             .into_iter()
             .map(|target| self.edge(target, arm_fallthrough))
             .collect();
@@ -129,8 +145,8 @@ struct Doms {
 const UNSET: usize = usize::MAX;
 
 impl Doms {
-    fn compute(program: &CfgProgram, entry: CfgBlockId) -> Self {
-        let rpo = reverse_postorder(program, entry);
+    fn compute(program: &CfgProgram, entry: CfgBlockId, tails: &HashSet<CfgBlockId>) -> Self {
+        let rpo = reverse_postorder(program, entry, tails);
         let order = rpo
             .iter()
             .enumerate()
@@ -139,10 +155,7 @@ impl Doms {
 
         let mut preds = vec![Vec::new(); rpo.len()];
         for (index, block) in rpo.iter().enumerate() {
-            let Some(node) = program.block(*block) else {
-                continue;
-            };
-            for successor in node.terminator.successors() {
+            for successor in successors(program, *block, tails) {
                 if let Some(target) = order.get(&successor) {
                     preds[*target].push(index);
                 }
@@ -216,7 +229,11 @@ fn intersect(idom: &[usize], mut left: usize, mut right: usize) -> usize {
     left
 }
 
-fn reverse_postorder(program: &CfgProgram, entry: CfgBlockId) -> Vec<CfgBlockId> {
+fn reverse_postorder(
+    program: &CfgProgram,
+    entry: CfgBlockId,
+    tails: &HashSet<CfgBlockId>,
+) -> Vec<CfgBlockId> {
     if program.block(entry).is_none() {
         return Vec::new();
     }
@@ -224,10 +241,7 @@ fn reverse_postorder(program: &CfgProgram, entry: CfgBlockId) -> Vec<CfgBlockId>
     let mut seen = HashSet::from([entry]);
     let mut stack = vec![(entry, 0usize)];
     while let Some((block, index)) = stack.pop() {
-        let successors = program
-            .block(block)
-            .map(|node| node.terminator.successors())
-            .unwrap_or_default();
+        let successors = successors(program, block, tails);
         match successors.get(index) {
             Some(successor) => {
                 stack.push((block, index + 1));

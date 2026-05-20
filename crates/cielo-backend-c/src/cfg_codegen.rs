@@ -11,8 +11,8 @@ use cielo_base::ids::{
 use cielo_base::symbols::Interner;
 use cielo_ir::builtins::Builtin;
 use cielo_ir::cfg::{
-    CfgArcOp, CfgArcOpKind, CfgCallConvention, CfgExpr, CfgFunction, CfgInstruction, CfgProgram,
-    CfgProjectionMode, CfgTerminator, ctor_literal_key,
+    CfgArcOp, CfgArcOpKind, CfgBlock, CfgCallConvention, CfgExpr, CfgFunction, CfgInstruction,
+    CfgProgram, CfgProjectionMode, CfgTerminator, ctor_literal_key,
 };
 use cielo_ir::constants::{ConstantTable, ScalarLiteralKey};
 use cielo_ir::core::Literal;
@@ -62,10 +62,17 @@ pub fn emit(
     out.push('\n');
 
     let names = function_names(program, interner);
+    let tails = tail_call_blocks(program);
+    let recursive = recursive_functions(program);
     let signatures = program
         .functions
         .iter()
-        .map(|function| (function.id, Signature::of(program, function)))
+        .map(|function| {
+            (
+                function.id,
+                Signature::of(program, function, &tails, &recursive),
+            )
+        })
         .collect::<HashMap<_, _>>();
     for function in &program.functions {
         emit_signature(
@@ -89,6 +96,7 @@ pub fn emit(
             interner,
             &pools,
             arc_trace,
+            &tails,
         );
         out.push('\n');
     }
@@ -254,6 +262,156 @@ fn closure_capture_counts(program: &CfgProgram) -> Vec<(CfgFuncId, usize)> {
     counts
 }
 
+/// Blocks whose call the emitter returns from directly, so the C compiler can
+/// reuse the frame instead of growing the stack (CIELO-60).
+///
+/// Eligible when the terminator is a call, nothing is released after it, and
+/// its result reaches a `Return` through blocks that do nothing. A release in
+/// `terminator_arc.post` is the usual disqualifier: it has to run once the call
+/// comes back, and a tail call never comes back.
+fn tail_call_blocks(program: &CfgProgram) -> HashSet<CfgBlockId> {
+    program
+        .blocks()
+        .iter()
+        .filter(|block| is_tail_call(program, block))
+        .map(|block| block.id)
+        .collect()
+}
+
+fn is_tail_call(program: &CfgProgram, block: &CfgBlock) -> bool {
+    if !block.terminator_arc.post.is_empty() {
+        return false;
+    }
+    let Some((target, value)) = call_result(program, &block.terminator) else {
+        return false;
+    };
+    forwards_to_return(program, target, value)
+}
+
+/// The successor a call terminator hands its result to, and the value that
+/// successor receives it as.
+fn call_result(
+    program: &CfgProgram,
+    terminator: &CfgTerminator,
+) -> Option<(CfgBlockId, CfgValueId)> {
+    match terminator {
+        CfgTerminator::Call { target, result, .. } => Some((*target, *result)),
+        // A call the lowering left in edge-argument position. Only the outermost
+        // node counts: in `f(x) + 1` the addition runs after `f` returns.
+        CfgTerminator::Goto { target, args } if args.len() == 1 => {
+            if !matches!(
+                program.expr(args[0]).map(|node| &node.kind),
+                Some(CfgExpr::PureCall { .. })
+            ) {
+                return None;
+            }
+            let param = *program.block(*target)?.params.first()?;
+            Some((*target, param))
+        }
+        _ => None,
+    }
+}
+
+/// Whether every path out of `block` runs nothing before returning `value`.
+///
+/// `block` is the call's continuation, so it takes the result as its one
+/// parameter; the empty-argument `Goto`s after it just relabel the same value.
+fn forwards_to_return(program: &CfgProgram, block: CfgBlockId, value: CfgValueId) -> bool {
+    let mut block = block;
+    let mut first = true;
+    // A hand-built CFG can loop through empty blocks forever.
+    let mut seen = HashSet::new();
+    while seen.insert(block) {
+        let Some(node) = program.block(block) else {
+            return false;
+        };
+        let params = if first {
+            node.params.as_slice() == [value]
+        } else {
+            node.params.is_empty()
+        };
+        if !params
+            || !node.instructions.is_empty()
+            || !node.entry_arc.is_empty()
+            || !node.terminator_arc.pre.is_empty()
+            || !node.terminator_arc.post.is_empty()
+        {
+            return false;
+        }
+        first = false;
+        match &node.terminator {
+            CfgTerminator::Return(expr) => {
+                return matches!(
+                    program.expr(*expr).map(|node| &node.kind),
+                    Some(CfgExpr::Value(returned)) if *returned == value
+                );
+            }
+            CfgTerminator::Goto { target, args } if args.is_empty() => block = *target,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Functions that can reach themselves through direct calls.
+///
+/// Indirect edges — closure bodies and residual clauses, both entered through a
+/// function pointer — are left out. GCC cannot inline through those either, so
+/// a cycle that only closes through one is not a cycle it can collapse.
+fn recursive_functions(program: &CfgProgram) -> HashSet<CfgFuncId> {
+    let callees = program
+        .functions
+        .iter()
+        .map(|function| (function.id, direct_callees(program, function)))
+        .collect::<HashMap<_, _>>();
+    let mut recursive = HashSet::new();
+    for function in &program.functions {
+        let mut seen = HashSet::new();
+        let mut stack = callees[&function.id].iter().copied().collect::<Vec<_>>();
+        while let Some(callee) = stack.pop() {
+            if callee == function.id {
+                recursive.insert(function.id);
+                break;
+            }
+            if seen.insert(callee)
+                && let Some(next) = callees.get(&callee)
+            {
+                stack.extend(next.iter().copied());
+            }
+        }
+    }
+    recursive
+}
+
+fn direct_callees(program: &CfgProgram, function: &CfgFunction) -> HashSet<CfgFuncId> {
+    let mut callees = HashSet::new();
+    for block_id in reachable_blocks(program, function.entry, &HashSet::new()) {
+        let block = program.block(block_id).expect("known block");
+        if let CfgTerminator::Call { callee_fn, .. } = &block.terminator {
+            callees.insert(*callee_fn);
+        }
+        let expressions = block
+            .terminator
+            .child_exprs()
+            .into_iter()
+            .chain(block.instructions.iter().flat_map(|instruction| {
+                program
+                    .instruction(*instruction)
+                    .map(|node| node.kind.child_exprs())
+                    .unwrap_or_default()
+            }));
+        for expression in expressions {
+            walk_exprs(program, expression, &mut |_, node| {
+                if let CfgExpr::PureCall { callee_fn, .. } = &node.kind {
+                    callees.insert(*callee_fn);
+                }
+                Walk::Descend
+            });
+        }
+    }
+    callees
+}
+
 /// Reachable instructions a body may hold and still be offered for inlining.
 /// Well under GCC's own `max-inline-insns-single`, since one CFG instruction
 /// expands to several C statements.
@@ -266,6 +424,13 @@ struct Signature {
     /// handler specialization nothing calls from tripping `-Wunused-function`.
     /// Never set on a body that opens a handler or region scope: an evidence
     /// frame is not worth duplicating at every call site.
+    ///
+    /// Never set on a recursive body that tail-calls. The raised budget is
+    /// enough for GCC to inline such a body into itself, and the copy's two
+    /// exits merge, which puts the innermost call back out of tail position and
+    /// loses the sibling call the emitted `return` was for. Recursion is what
+    /// makes that fatal rather than merely larger, and a body on a call cycle
+    /// is referenced, so dropping `inline` cannot make it look unused.
     inline: bool,
     /// Parameters nothing in the body writes back into. The CFG reuses one
     /// value namespace for parameters, block parameters and instruction
@@ -274,12 +439,19 @@ struct Signature {
 }
 
 impl Signature {
-    fn of(program: &CfgProgram, function: &CfgFunction) -> Self {
-        let blocks = reachable_blocks(program, function.entry);
+    fn of(
+        program: &CfgProgram,
+        function: &CfgFunction,
+        tails: &HashSet<CfgBlockId>,
+        recursive: &HashSet<CfgFuncId>,
+    ) -> Self {
+        let blocks = reachable_blocks(program, function.entry, tails);
         let mut instructions = 0;
         let mut opens_scope = false;
+        let mut tail_calls = false;
         let mut assigned = HashSet::new();
         for block_id in &blocks {
+            tail_calls |= tails.contains(block_id);
             let block = program.block(*block_id).expect("known block");
             // Only the writes the emitter actually performs. A block's own
             // parameters are not among them: the entry block's parameters *are*
@@ -304,7 +476,9 @@ impl Signature {
             }
         }
         Self {
-            inline: !opens_scope && instructions <= INLINE_INSTRUCTION_BUDGET,
+            inline: !opens_scope
+                && instructions <= INLINE_INSTRUCTION_BUDGET
+                && !(tail_calls && recursive.contains(&function.id)),
             const_params: function
                 .params
                 .iter()
@@ -346,18 +520,19 @@ fn emit_function(
     interner: &Interner,
     pools: &CConstantPools,
     arc_trace: bool,
+    tails: &HashSet<CfgBlockId>,
 ) {
     emit_signature(out, function, &names[&function.id], signature);
     out.push_str(" {\n");
     let params = function.params.iter().copied().collect::<HashSet<_>>();
-    for value in reachable_values(program, function.entry) {
+    for value in reachable_values(program, function.entry, tails) {
         if !params.contains(&value) {
             writeln!(out, "    CieloValue v{} = cv_unit();", value.as_u32())
                 .expect("in-memory write");
         }
     }
-    let handlers = reachable_handlers(program, function.entry);
-    let active_handlers = active_handler_states(program, function.entry);
+    let handlers = reachable_handlers(program, function.entry, tails);
+    let active_handlers = active_handler_states(program, function.entry, tails);
     let placements = evidence_placements(program);
     for handler in handlers {
         writeln!(out, "    uint32_t hcap{} = 0;", handler.as_u32()).expect("in-memory write");
@@ -372,7 +547,7 @@ fn emit_function(
             }
         }
     }
-    for region in reachable_regions(program, function.entry) {
+    for region in reachable_regions(program, function.entry, tails) {
         if program
             .region(region)
             .is_none_or(cielo_ir::region::CfgRegion::is_fully_stack)
@@ -383,10 +558,11 @@ fn emit_function(
             .expect("in-memory write");
     }
 
-    let layout = structure::plan(program, function.entry);
+    let layout = structure::plan(program, function.entry, tails);
     let mut cx = EmitCx {
         program,
         names,
+        tails,
         interner,
         pools,
         active_handlers,
@@ -561,6 +737,10 @@ fn emit_terminator(
             emit_arc_ops(out, &arc.post, indent, cx, "term-post", block.as_u32());
             writeln!(out, "{pad}return {temp};").expect("in-memory write");
         }
+        CfgTerminator::Goto { args, .. } if cx.tails.contains(&block) => {
+            let value = emit_expr(args[0], cx);
+            writeln!(out, "{pad}return {value};").expect("in-memory write");
+        }
         CfgTerminator::Goto { target, args } => {
             emit_edge_values(out, *target, args, indent, cx);
             emit_arc_ops(out, &arc.post, indent, cx, "term-post", block.as_u32());
@@ -665,9 +845,13 @@ fn emit_terminator(
                 call_wrapper(*convention),
                 args.join(", ")
             );
-            writeln!(out, "{pad}v{} = {call};", result.as_u32()).expect("in-memory write");
-            emit_arc_ops(out, &arc.post, indent, cx, "term-post", block.as_u32());
-            emit_edge(out, edge(0), layout, indent, cx);
+            if cx.tails.contains(&block) {
+                writeln!(out, "{pad}return {call};").expect("in-memory write");
+            } else {
+                writeln!(out, "{pad}v{} = {call};", result.as_u32()).expect("in-memory write");
+                emit_arc_ops(out, &arc.post, indent, cx, "term-post", block.as_u32());
+                emit_edge(out, edge(0), layout, indent, cx);
+            }
         }
         CfgTerminator::Perform {
             effect,
@@ -949,11 +1133,18 @@ fn call_wrapper(convention: CfgCallConvention) -> &'static str {
     }
 }
 
-fn reachable_blocks(program: &CfgProgram, entry: CfgBlockId) -> Vec<CfgBlockId> {
+/// A tail-call block returns instead of reaching its successor, so a block only
+/// that block reached is neither emitted nor allowed to declare locals here.
+fn reachable_blocks(
+    program: &CfgProgram,
+    entry: CfgBlockId,
+    tails: &HashSet<CfgBlockId>,
+) -> Vec<CfgBlockId> {
     let mut stack = vec![entry];
     let mut seen = HashSet::new();
     while let Some(block) = stack.pop() {
         if seen.insert(block)
+            && !tails.contains(&block)
             && let Some(block) = program.block(block)
         {
             stack.extend(block.terminator.successors());
@@ -964,9 +1155,13 @@ fn reachable_blocks(program: &CfgProgram, entry: CfgBlockId) -> Vec<CfgBlockId> 
     blocks
 }
 
-fn reachable_handlers(program: &CfgProgram, entry: CfgBlockId) -> Vec<CfgHandlerId> {
+fn reachable_handlers(
+    program: &CfgProgram,
+    entry: CfgBlockId,
+    tails: &HashSet<CfgBlockId>,
+) -> Vec<CfgHandlerId> {
     let mut handlers = HashSet::new();
-    for block in reachable_blocks(program, entry) {
+    for block in reachable_blocks(program, entry, tails) {
         for instruction in &program.block(block).expect("known block").instructions {
             match program.instruction(*instruction).map(|node| &node.kind) {
                 Some(CfgInstruction::HandlerEnter { handler, .. })
@@ -1015,9 +1210,13 @@ fn emit_region_open(
     }
 }
 
-fn reachable_regions(program: &CfgProgram, entry: CfgBlockId) -> Vec<CfgRegionId> {
+fn reachable_regions(
+    program: &CfgProgram,
+    entry: CfgBlockId,
+    tails: &HashSet<CfgBlockId>,
+) -> Vec<CfgRegionId> {
     let mut regions = HashSet::new();
-    for block in reachable_blocks(program, entry) {
+    for block in reachable_blocks(program, entry, tails) {
         for instruction in &program.block(block).expect("known block").instructions {
             match program.instruction(*instruction).map(|node| &node.kind) {
                 Some(CfgInstruction::RegionEnter { region })
@@ -1048,9 +1247,13 @@ fn evidence_placements(program: &CfgProgram) -> HashMap<CfgHandlerId, Placement>
     placements
 }
 
-fn reachable_values(program: &CfgProgram, entry: CfgBlockId) -> Vec<CfgValueId> {
+fn reachable_values(
+    program: &CfgProgram,
+    entry: CfgBlockId,
+    tails: &HashSet<CfgBlockId>,
+) -> Vec<CfgValueId> {
     let mut values = HashSet::new();
-    for block_id in reachable_blocks(program, entry) {
+    for block_id in reachable_blocks(program, entry, tails) {
         let block = program.block(block_id).expect("known block");
         values.extend(block.params.iter().copied());
         values.extend(block.entry_arc.iter().map(|op| op.value));
@@ -1093,6 +1296,7 @@ fn collect_expr_values(
 fn active_handler_states(
     program: &CfgProgram,
     entry: CfgBlockId,
+    tails: &HashSet<CfgBlockId>,
 ) -> HashMap<CfgBlockId, Vec<(CfgHandlerId, EffectLabelId)>> {
     let mut entry_states = HashMap::new();
     entry_states.insert(entry, Vec::new());
@@ -1117,6 +1321,9 @@ fn active_handler_states(
             }
         }
         terminator_states.insert(block_id, state.clone());
+        if tails.contains(&block_id) {
+            continue;
+        }
         for successor in block.terminator.successors() {
             match entry_states.get(&successor) {
                 None => {
@@ -1243,6 +1450,7 @@ fn float_literal(value: f64) -> String {
 struct EmitCx<'a> {
     program: &'a CfgProgram,
     names: &'a HashMap<CfgFuncId, String>,
+    tails: &'a HashSet<CfgBlockId>,
     interner: &'a Interner,
     pools: &'a CConstantPools,
     active_handlers: HashMap<CfgBlockId, Vec<(CfgHandlerId, EffectLabelId)>>,
