@@ -40,6 +40,7 @@ define_keywords! {
 pub enum TokenKind {
     Identifier(SymbolId),
     Integer(i64),
+    Float(f64),
     String(String),
     Keyword(Keyword),
     LParen,
@@ -173,7 +174,7 @@ impl<'a> Lexer<'a> {
                 b'-' => self.single(TokenKind::Minus),
                 b'/' => self.single(TokenKind::Slash),
                 b'"' => self.lex_string(),
-                b'0'..=b'9' => self.lex_integer(),
+                b'0'..=b'9' => self.lex_number(),
                 b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.lex_identifier_or_keyword(),
                 _ => {
                     let span = self.span(self.offset, self.offset + 1);
@@ -253,26 +254,105 @@ impl<'a> Lexer<'a> {
         );
     }
 
-    fn lex_integer(&mut self) {
+    /// Accepted: `1`, `1.5`, `1e9`, `1.5e-3`. Rejected: `1.`, `1.foo`, `.5`,
+    /// `1e`. A `.` after a digit run is only ever a float point, because an
+    /// integer has no fields for `1.foo` to project; consuming it only when a
+    /// digit follows is what keeps `p.a` field access unambiguous. `.5` never
+    /// reaches here at all -- the leading `.` would already have been taken as
+    /// a field access on whatever preceded it.
+    fn lex_number(&mut self) {
         let start = self.offset;
-        while matches!(self.peek(), Some(b'0'..=b'9')) {
+        self.eat_digits();
+        let mut is_float = false;
+
+        if self.peek() == Some(b'.') && matches!(self.peek_n(1), Some(b'0'..=b'9')) {
             self.offset += 1;
+            self.eat_digits();
+            is_float = true;
         }
-        let bytes = &self.bytes[start..self.offset];
-        let text = String::from_utf8_lossy(bytes);
+
+        if matches!(self.peek(), Some(b'e' | b'E')) && self.exponent_digits_follow() {
+            self.offset += 1;
+            if matches!(self.peek(), Some(b'+' | b'-')) {
+                self.offset += 1;
+            }
+            self.eat_digits();
+            is_float = true;
+        }
+
+        // A literal must end on a boundary. Letting `1.`, `1.foo` or `1e` split
+        // into several tokens reports the mistake somewhere unrelated, so the
+        // trailing run is swallowed and blamed on the literal itself.
+        if self.at_number_tail() {
+            while self.at_number_tail() {
+                self.offset += 1;
+            }
+            let text = String::from_utf8_lossy(&self.bytes[start..self.offset]);
+            self.diagnostics.error(
+                "LEX_BAD_NUMBER",
+                format!("Invalid numeric literal '{text}'"),
+                self.span(start, self.offset),
+            );
+            return;
+        }
+
+        let span = self.span(start, self.offset);
+        let text = String::from_utf8_lossy(&self.bytes[start..self.offset]);
+        if is_float {
+            // Overflow parses as infinity rather than failing, and every stage
+            // below treats a non-finite float as unfoldable and unpoolable, so
+            // a mistyped exponent would silently become a value nothing folds.
+            match text.parse::<f64>() {
+                Ok(value) if value.is_finite() => self.tokens.push(Token {
+                    kind: TokenKind::Float(value),
+                    span,
+                }),
+                _ => {
+                    self.diagnostics.error(
+                        "LEX_BAD_FLOAT",
+                        format!("Float literal '{text}' is not a finite number"),
+                        span,
+                    );
+                }
+            }
+            return;
+        }
+
         match text.parse::<i64>() {
             Ok(value) => self.tokens.push(Token {
                 kind: TokenKind::Integer(value),
-                span: self.span(start, self.offset),
+                span,
             }),
             Err(_) => {
                 self.diagnostics.error(
                     "LEX_BAD_INT",
                     format!("Invalid integer literal '{text}'"),
-                    self.span(start, self.offset),
+                    span,
                 );
             }
         }
+    }
+
+    fn eat_digits(&mut self) {
+        while matches!(self.peek(), Some(b'0'..=b'9')) {
+            self.offset += 1;
+        }
+    }
+
+    fn exponent_digits_follow(&self) -> bool {
+        let after_sign = if matches!(self.peek_n(1), Some(b'+' | b'-')) {
+            2
+        } else {
+            1
+        };
+        matches!(self.peek_n(after_sign), Some(b'0'..=b'9'))
+    }
+
+    fn at_number_tail(&self) -> bool {
+        matches!(
+            self.peek(),
+            Some(b'.' | b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')
+        )
     }
 
     fn lex_identifier_or_keyword(&mut self) {

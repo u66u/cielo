@@ -654,6 +654,13 @@ impl Parser {
                     span: token.span,
                 }
             }
+            TokenKind::Float(value) => {
+                self.bump();
+                Expr {
+                    kind: ExprKind::Float(value),
+                    span: token.span,
+                }
+            }
             TokenKind::String(ref value) => {
                 self.bump();
                 Expr {

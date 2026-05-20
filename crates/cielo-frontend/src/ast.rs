@@ -220,6 +220,7 @@ pub struct Expr {
 #[derive(Clone, Debug)]
 pub enum ExprKind {
     Int(i64),
+    Float(f64),
     Bool(bool),
     String(String),
     Var(SymbolId),

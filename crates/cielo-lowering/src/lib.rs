@@ -1046,6 +1046,7 @@ impl Lowerer {
                 field: *field,
             },
             AstExprKind::Int(value) => ExprKind::Literal(Literal::Int(*value)),
+            AstExprKind::Float(value) => ExprKind::Literal(Literal::Float(*value)),
             AstExprKind::Bool(value) => ExprKind::Literal(Literal::Bool(*value)),
             AstExprKind::String(value) => ExprKind::Literal(Literal::String(value.clone())),
             // Locals win over constructors, so a binding may shadow a variant name.
@@ -1519,7 +1520,10 @@ fn collect_expr_symbols(expr: &ast::Expr, out: &mut HashSet<SymbolId>) {
         AstExprKind::Var(name) => {
             out.insert(*name);
         }
-        AstExprKind::Int(_) | AstExprKind::Bool(_) | AstExprKind::String(_) => {}
+        AstExprKind::Int(_)
+        | AstExprKind::Float(_)
+        | AstExprKind::Bool(_)
+        | AstExprKind::String(_) => {}
         AstExprKind::Call { callee, args } => {
             collect_expr_symbols(callee, out);
             for arg in args {
