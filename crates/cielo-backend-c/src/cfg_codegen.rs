@@ -390,16 +390,17 @@ fn direct_callees(program: &CfgProgram, function: &CfgFunction) -> HashSet<CfgFu
         if let CfgTerminator::Call { callee_fn, .. } = &block.terminator {
             callees.insert(*callee_fn);
         }
-        let expressions = block
-            .terminator
-            .child_exprs()
-            .into_iter()
-            .chain(block.instructions.iter().flat_map(|instruction| {
-                program
-                    .instruction(*instruction)
-                    .map(|node| node.kind.child_exprs())
-                    .unwrap_or_default()
-            }));
+        let expressions =
+            block
+                .terminator
+                .child_exprs()
+                .into_iter()
+                .chain(block.instructions.iter().flat_map(|instruction| {
+                    program
+                        .instruction(*instruction)
+                        .map(|node| node.kind.child_exprs())
+                        .unwrap_or_default()
+                }));
         for expression in expressions {
             walk_exprs(program, expression, &mut |_, node| {
                 if let CfgExpr::PureCall { callee_fn, .. } = &node.kind {

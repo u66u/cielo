@@ -104,6 +104,93 @@ fn main() -> Int {
     );
 }
 
+/// One emitted definition, storage class stripped. The forward declaration of
+/// the same function is skipped: only the definition's first line ends in `{`.
+fn body_of<'a>(bodies: &'a str, name: &str) -> &'a str {
+    bodies
+        .split("\nstatic ")
+        .find(|chunk| {
+            chunk
+                .split_once('\n')
+                .is_some_and(|(head, _)| head.contains(name) && head.ends_with('{'))
+        })
+        .unwrap_or_else(|| panic!("no definition of {name} in:\n{bodies}"))
+}
+
+/// A call in tail position has to reach C as a `return` of the call itself.
+/// Binding the result first leaves nothing syntactically in tail position, GCC
+/// declines the sibling call, and the frames pile up. The language has no loop
+/// form, so this is how an ordinary million-element traversal is written.
+#[test]
+fn a_tail_recursive_call_returns_the_call_itself() {
+    let emitted = compile_to_c(
+        r#"
+fn count(n: Int, acc: Int) -> Int {
+  if n == 0 { acc } else { count(n - 1, acc + 1) }
+}
+fn main() -> Int {
+  count(1000000, 0) - 999900
+}
+"#,
+    );
+    let bodies = bodies(emitted.as_str());
+    let count = body_of(bodies, "cielo_fn_count");
+    assert!(
+        !count.contains("= CIELO_CALL_PURE(cielo_fn_count"),
+        "the recursive call must not be bound on the way to the return:\n{count}"
+    );
+    assert!(
+        count.contains("return CIELO_CALL_PURE(cielo_fn_count"),
+        "and must be returned directly:\n{count}"
+    );
+    assert!(
+        !count.starts_with("inline"),
+        "`static inline` lets GCC inline the body into itself, and the copy's \
+         merged exits put the innermost call back out of tail position:\n{count}"
+    );
+
+    let Some(code) = compile_and_run(emitted.as_str(), "tail_recursion") else {
+        return;
+    };
+    assert_eq!(
+        code,
+        Some(100),
+        "a million-deep tail recursion must not grow the stack"
+    );
+}
+
+/// The eligibility boundary. `total` takes the head out of the cons cell, so
+/// its release is scheduled after the recursive call; that release has to run
+/// once the call comes back, and a tail call never comes back.
+#[test]
+fn a_release_after_the_call_keeps_the_binding() {
+    let emitted = compile_to_c(
+        r#"
+enum List { Cons(Int, List), Nil }
+fn total(xs: List, acc: Int) -> Int {
+  match xs {
+    Cons(head, tail) => total(tail, acc + head),
+    Nil => acc,
+  }
+}
+fn main() -> Int {
+  total(Cons(3, Cons(4, Nil)), 0)
+}
+"#,
+    );
+    let bodies = bodies(emitted.as_str());
+    let total = body_of(bodies, "cielo_fn_total");
+    assert!(
+        total.contains("= CIELO_CALL_PURE(cielo_fn_total"),
+        "a call with work left after it stays bound:\n{total}"
+    );
+
+    let Some(code) = compile_and_run(emitted.as_str(), "released_after_call") else {
+        return;
+    };
+    assert_eq!(code, Some(7), "and still computes the sum");
+}
+
 /// Counts down from five and returns `n + 7`, so a fallback that dropped the
 /// back edge would return 12 instead of 7.
 fn countdown(interner: &mut Interner) -> CfgProgram {
