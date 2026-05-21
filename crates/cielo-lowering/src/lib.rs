@@ -162,6 +162,27 @@ enum LoweredValue {
     Stmt(cielo_base::StmtId),
 }
 
+#[derive(Clone, Copy)]
+enum ShortCircuit {
+    And,
+    Or,
+}
+
+impl ShortCircuit {
+    const fn from_op(op: ast::BinOp) -> Option<Self> {
+        match op {
+            ast::BinOp::And => Some(Self::And),
+            ast::BinOp::Or => Some(Self::Or),
+            _ => None,
+        }
+    }
+
+    /// The value the operator yields without consulting its right operand.
+    const fn shortcut(self) -> bool {
+        matches!(self, Self::Or)
+    }
+}
+
 #[derive(Clone, Debug)]
 struct EnumCtor {
     enum_name: SymbolId,
@@ -635,7 +656,7 @@ impl Lowerer {
             else_branch,
         } = &expr.kind
         {
-            let cond = self.lower_expr(cond, locals, None);
+            let (cond, hoisted) = self.lower_condition(cond, locals);
             let mut then_locals = locals.clone();
             let then_branch = self.lower_block(then_branch, &mut then_locals, expected);
             let else_branch = if let Some(else_block) = else_branch {
@@ -645,14 +666,21 @@ impl Lowerer {
                 let unit = self.push_expr(ExprKind::Literal(Literal::Unit), expr.span);
                 self.push_stmt(StmtKind::Return(unit), expr.span)
             };
-            return Some(self.push_stmt(
+            let branch = self.push_stmt(
                 StmtKind::If {
                     cond,
                     then_branch,
                     else_branch,
                 },
                 expr.span,
-            ));
+            );
+            return Some(self.bind_hoisted(hoisted, branch, expr.span));
+        }
+
+        if let AstExprKind::Binary { op, lhs, rhs } = &expr.kind
+            && let Some(op) = ShortCircuit::from_op(*op)
+        {
+            return Some(self.lower_short_circuit(op, lhs, rhs, locals, expr.span));
         }
 
         if let AstExprKind::Match {
@@ -786,10 +814,10 @@ impl Lowerer {
         // Emitting a handler over an unresolved effect would trip the
         // pre-staging effect assertion before these diagnostics are read.
         let Some(handler_id) = handler_id else {
-            return Some(self.lower_handle_body(body, locals, expected));
+            return Some(self.lower_expr_as_body(body, locals, expected));
         };
 
-        let body_stmt = self.lower_handle_body(body, locals, expected);
+        let body_stmt = self.lower_expr_as_body(body, locals, expected);
         let handled = self.push_stmt(
             StmtKind::Handle {
                 handler: handler_id,
@@ -801,7 +829,7 @@ impl Lowerer {
         Some(handled)
     }
 
-    fn lower_handle_body(
+    fn lower_expr_as_body(
         &mut self,
         body: &ast::Expr,
         locals: &HashMap<SymbolId, VarId>,
@@ -819,6 +847,84 @@ impl Lowerer {
                 let body_expr = self.lower_expr(body, locals, expected);
                 self.push_stmt(StmtKind::Return(body_expr), body.span)
             }
+        }
+    }
+
+    /// `a && b` becomes `if a { b } else { false }` and `a || b` becomes
+    /// `if a { true } else { b }`, so the right operand only runs when the left
+    /// does not already decide the answer.
+    ///
+    /// Core has no conditional expression, so the result is a statement and this
+    /// is reachable only where a statement is: binding, statement and tail
+    /// position, plus the operands of another short-circuit and an `if`
+    /// condition, both of which hoist. In pure operand position -- `f(a && b)`,
+    /// `(a && b) + 1` -- `lower_expr` still emits `BinaryOp::And`/`Or`, which
+    /// evaluates both sides. Hoisting a statement out of an expression tree
+    /// needs the operand hoisting from CIELO-56.
+    fn lower_short_circuit(
+        &mut self,
+        op: ShortCircuit,
+        lhs: &ast::Expr,
+        rhs: &ast::Expr,
+        locals: &HashMap<SymbolId, VarId>,
+        span: Span,
+    ) -> cielo_base::StmtId {
+        let (cond, hoisted) = self.lower_condition(lhs, locals);
+        let rhs_branch = self.lower_expr_as_body(rhs, locals, None);
+        let shortcut = self.push_expr(ExprKind::Literal(Literal::Bool(op.shortcut())), span);
+        let shortcut_branch = self.push_stmt(StmtKind::Return(shortcut), span);
+        let (then_branch, else_branch) = match op {
+            ShortCircuit::And => (rhs_branch, shortcut_branch),
+            ShortCircuit::Or => (shortcut_branch, rhs_branch),
+        };
+        let branch = self.push_stmt(
+            StmtKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            },
+            span,
+        );
+        self.bind_hoisted(hoisted, branch, span)
+    }
+
+    /// Lowers a condition to the `ExprId` a branch needs. A short-circuit
+    /// condition lowers to a statement instead, so it binds to a fresh variable
+    /// the caller must stitch in with `bind_hoisted`.
+    fn lower_condition(
+        &mut self,
+        cond: &ast::Expr,
+        locals: &HashMap<SymbolId, VarId>,
+    ) -> (cielo_base::ExprId, Option<(VarId, cielo_base::StmtId)>) {
+        if let AstExprKind::Binary { op, lhs, rhs } = &cond.kind
+            && let Some(op) = ShortCircuit::from_op(*op)
+        {
+            let value = self.lower_short_circuit(op, lhs, rhs, locals, cond.span);
+            let binding = self.fresh_var();
+            return (
+                self.push_expr(ExprKind::Var(binding), cond.span),
+                Some((binding, value)),
+            );
+        }
+        (self.lower_expr(cond, locals, None), None)
+    }
+
+    fn bind_hoisted(
+        &mut self,
+        hoisted: Option<(VarId, cielo_base::StmtId)>,
+        next: cielo_base::StmtId,
+        span: Span,
+    ) -> cielo_base::StmtId {
+        match hoisted {
+            Some((binding, value)) => self.push_stmt(
+                StmtKind::Val {
+                    binding,
+                    value,
+                    next,
+                },
+                span,
+            ),
+            None => next,
         }
     }
 
