@@ -312,12 +312,15 @@ fn call_result(
     }
 }
 
-/// Whether every path out of `block` runs nothing before returning `value`.
+/// Whether `block` runs nothing before returning the call's result.
 ///
 /// `block` is the call's continuation, so it takes the result as its one
-/// parameter; the empty-argument `Goto`s after it just relabel the same value.
+/// parameter. The `Goto`s after it only rename that value, and skipping the
+/// renames is safe precisely because the function returns next: no other read
+/// of the names passed over can happen.
 fn forwards_to_return(program: &CfgProgram, block: CfgBlockId, value: CfgValueId) -> bool {
     let mut block = block;
+    let mut value = value;
     let mut first = true;
     // A hand-built CFG can loop through empty blocks forever.
     let mut seen = HashSet::new();
@@ -325,32 +328,42 @@ fn forwards_to_return(program: &CfgProgram, block: CfgBlockId, value: CfgValueId
         let Some(node) = program.block(block) else {
             return false;
         };
-        let params = if first {
-            node.params.as_slice() == [value]
-        } else {
-            node.params.is_empty()
-        };
-        if !params
-            || !node.instructions.is_empty()
+        if first && node.params.as_slice() != [value] {
+            return false;
+        }
+        first = false;
+        if !node.instructions.is_empty()
             || !node.entry_arc.is_empty()
             || !node.terminator_arc.pre.is_empty()
             || !node.terminator_arc.post.is_empty()
         {
             return false;
         }
-        first = false;
         match &node.terminator {
-            CfgTerminator::Return(expr) => {
-                return matches!(
-                    program.expr(*expr).map(|node| &node.kind),
-                    Some(CfgExpr::Value(returned)) if *returned == value
-                );
-            }
+            CfgTerminator::Return(expr) => return is_value(program, *expr, value),
             CfgTerminator::Goto { target, args } if args.is_empty() => block = *target,
+            CfgTerminator::Goto { target, args } if args.len() == 1 => {
+                let Some(renamed) = program.block(*target).and_then(|node| node.params.first())
+                else {
+                    return false;
+                };
+                if !is_value(program, args[0], value) {
+                    return false;
+                }
+                value = *renamed;
+                block = *target;
+            }
             _ => return false,
         }
     }
     false
+}
+
+fn is_value(program: &CfgProgram, expression: CfgExprId, value: CfgValueId) -> bool {
+    matches!(
+        program.expr(expression).map(|node| &node.kind),
+        Some(CfgExpr::Value(found)) if *found == value
+    )
 }
 
 /// Functions that can reach themselves through direct calls.
@@ -1271,7 +1284,11 @@ fn reachable_values(
                 collect_expr_values(program, operand, &mut values);
             }
         }
-        values.extend(block.terminator.defined_values());
+        // A tail call returns its result instead of naming it, so declaring the
+        // name would leave an unused local behind.
+        if !tails.contains(&block_id) {
+            values.extend(block.terminator.defined_values());
+        }
         for operand in block.terminator.child_exprs() {
             collect_expr_values(program, operand, &mut values);
         }
