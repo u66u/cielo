@@ -657,6 +657,11 @@ static inline CieloValue cv_ne(CieloValue a, CieloValue b) {
   return cv_bool(!cv_equal(a, b));
 }
 
+/* IEEE comparison is not a total order: with a NaN operand all four of <, <=,
+ * >, >= are false, which no three-way result can express. Collapsing that onto
+ * 0 would make `nan <= x` and `nan >= x` both true. */
+enum { CV_UNORDERED = 2 };
+
 /* Orders values of the same tag. Mixed tags are a type error the frontend
  * should have rejected. */
 static inline int cv_ordering(CieloValue a, CieloValue b) {
@@ -666,7 +671,11 @@ static inline int cv_ordering(CieloValue a, CieloValue b) {
   case CV_INT:
     return a.as.i < b.as.i ? -1 : (a.as.i > b.as.i ? 1 : 0);
   case CV_FLOAT:
-    return a.as.f < b.as.f ? -1 : (a.as.f > b.as.f ? 1 : 0);
+    if (a.as.f < b.as.f)
+      return -1;
+    if (a.as.f > b.as.f)
+      return 1;
+    return a.as.f == b.as.f ? 0 : CV_UNORDERED;
   case CV_CHAR:
     return a.as.c < b.as.c ? -1 : (a.as.c > b.as.c ? 1 : 0);
   case CV_BOOL:
@@ -685,16 +694,18 @@ static inline int cv_ordering(CieloValue a, CieloValue b) {
 }
 
 static inline CieloValue cv_lt(CieloValue a, CieloValue b) {
-  return cv_bool(cv_ordering(a, b) < 0);
+  return cv_bool(cv_ordering(a, b) == -1);
 }
 static inline CieloValue cv_le(CieloValue a, CieloValue b) {
-  return cv_bool(cv_ordering(a, b) <= 0);
+  int r = cv_ordering(a, b);
+  return cv_bool(r == -1 || r == 0);
 }
 static inline CieloValue cv_gt(CieloValue a, CieloValue b) {
-  return cv_bool(cv_ordering(a, b) > 0);
+  return cv_bool(cv_ordering(a, b) == 1);
 }
 static inline CieloValue cv_ge(CieloValue a, CieloValue b) {
-  return cv_bool(cv_ordering(a, b) >= 0);
+  int r = cv_ordering(a, b);
+  return cv_bool(r == 1 || r == 0);
 }
 static inline CieloValue cv_and(CieloValue a, CieloValue b) {
   return cv_bool(cv_truthy(a) && cv_truthy(b));

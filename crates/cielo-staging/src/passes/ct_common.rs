@@ -314,12 +314,13 @@ fn eval_float_arith(op: BinaryOp, left: f64, right: f64) -> Option<(Literal, boo
     if !host_float_operands_supported(left, right) {
         return None;
     }
+    // No `Mod`: cv_mod traps on floats, so folding `%` here would answer a
+    // computation the compiled program never completes.
     let value = match op {
         BinaryOp::Add => left + right,
         BinaryOp::Sub => left - right,
         BinaryOp::Mul => left * right,
         BinaryOp::Div if right != 0.0 => left / right,
-        BinaryOp::Mod if right != 0.0 => left % right,
         _ => return None,
     };
     value.is_finite().then_some((Literal::Float(value), true))

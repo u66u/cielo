@@ -144,7 +144,7 @@ pub struct CtFileDep {
 /// Bump on any change to what the CT evaluator folds or to what it folds it
 /// into: a persisted cache keyed on a stale policy would be replayed as if the
 /// old semantics still held.
-pub const EVALUATOR_POLICY: &str = "v2-int-checked-litnorm";
+pub const EVALUATOR_POLICY: &str = "v3-int-checked-litnorm-no-float-mod";
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct CtCacheKey {

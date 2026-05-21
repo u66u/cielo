@@ -31,7 +31,8 @@ use cielo_base::{
     EffectLabelId, ExprId, FuncId, HandlerId, Interner, StmtId, SymbolId, TypeId, VarId,
 };
 use cielo_ir::core::{
-    CoreProgram, CoreTypeRef, ExprKind, Literal, OpCategory, PrimitiveTypeRef, StmtKind, UnaryOp,
+    BinaryOp, CoreProgram, CoreTypeRef, ExprKind, Literal, OpCategory, PrimitiveTypeRef, StmtKind,
+    UnaryOp,
 };
 use cielo_ir::effect::SortedEffectRow;
 use cielo_ir::function_graph::closure_body_functions;
@@ -1971,6 +1972,19 @@ impl<'a> TypeChecker<'a> {
                 match op.category() {
                     OpCategory::Arithmetic => {
                         let numeric_ty = self.pick_numeric_type(lhs_ty, Some(rhs_ty), expr.span);
+                        // `%` is integer-only: cv_mod traps on floats. Accepting
+                        // `Float % Float` here would ship a program that only
+                        // fails once it runs, and the CT evaluator would answer
+                        // it instead of trapping.
+                        if *op == BinaryOp::Mod
+                            && self.infer.resolve_concrete(numeric_ty) == Some(self.prim.float)
+                        {
+                            self.diagnostics.error(
+                                "TYPE_INT_REQUIRED",
+                                "`%` requires Int operands",
+                                expr.span,
+                            );
+                        }
                         let _ = self.unify_with(
                             lhs_ty,
                             numeric_ty,

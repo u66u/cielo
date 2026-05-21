@@ -633,15 +633,17 @@ fn ct_propagate_folds_float_binary_surface_and_counts_host_float_folds() {
     assert_eq!(ct.ct().ct_cache.get(&sub), Some(&Literal::Float(0.75)));
     assert_eq!(ct.ct().ct_cache.get(&mul), Some(&Literal::Float(0.625)));
     assert_eq!(ct.ct().ct_cache.get(&div), Some(&Literal::Float(2.5)));
-    assert_eq!(ct.ct().ct_cache.get(&rem), Some(&Literal::Float(0.25)));
+    // `%` is Int-only; cv_mod traps on floats, so folding it would answer a
+    // computation the compiled program never completes.
+    assert_eq!(ct.ct().ct_cache.get(&rem), None);
     assert_eq!(ct.ct().ct_cache.get(&lt), Some(&Literal::Bool(false)));
     assert_eq!(ct.ct().ct_cache.get(&ge), Some(&Literal::Bool(true)));
     assert_eq!(ct.ct().ct_cache.get(&eq), Some(&Literal::Bool(false)));
     assert_eq!(ct.ct().ct_cache.get(&ne), Some(&Literal::Bool(true)));
 
-    assert_eq!(stats.folded_binary, 9, "all float binary forms should fold");
+    assert_eq!(stats.folded_binary, 8, "every float binary form but `%`");
     assert_eq!(
-        stats.folded_float_host, 9,
+        stats.folded_float_host, 8,
         "all folded float binary forms should be tracked as host-float folds"
     );
 }
