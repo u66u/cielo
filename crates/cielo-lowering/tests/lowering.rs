@@ -1,6 +1,6 @@
 use cielo_base::{Interner, SourceId};
 use cielo_frontend::parser::parse_source;
-use cielo_ir::core::{CoreTypeRef, StmtKind};
+use cielo_ir::core::{BinaryOp, CoreTypeRef, ExprKind, Literal, StmtKind};
 use cielo_lowering::{LowerConfig, lower_program};
 
 #[test]
@@ -1007,4 +1007,124 @@ fn lowers_undeclared_type_name_as_named_not_param() {
         function.param_types[0],
         CoreTypeRef::Named(interner.intern("Itn"))
     );
+}
+
+fn lower(src: &str) -> cielo_lowering::LowerOutput {
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    lower_program(&parsed.program, LowerConfig::default())
+}
+
+fn counts_logical_binaries(lowered: &cielo_lowering::LowerOutput) -> usize {
+    lowered
+        .program
+        .exprs()
+        .iter()
+        .filter(|expr| {
+            matches!(
+                expr.kind,
+                ExprKind::Binary {
+                    op: BinaryOp::And | BinaryOp::Or,
+                    ..
+                }
+            )
+        })
+        .count()
+}
+
+/// The branch whose `Return` yields `value` without consulting the right
+/// operand: `false` for `&&`, `true` for `||`.
+fn has_short_circuit_branch(lowered: &cielo_lowering::LowerOutput, value: bool) -> bool {
+    lowered.program.stmts().iter().any(|stmt| {
+        let StmtKind::If {
+            then_branch,
+            else_branch,
+            ..
+        } = stmt.kind
+        else {
+            return false;
+        };
+        let shortcut = if value { then_branch } else { else_branch };
+        let Some(StmtKind::Return(expr)) = lowered.program.stmt(shortcut).map(|node| &node.kind)
+        else {
+            return false;
+        };
+        matches!(
+            lowered.program.expr(*expr).map(|node| &node.kind),
+            Some(ExprKind::Literal(Literal::Bool(literal))) if *literal == value
+        )
+    })
+}
+
+#[test]
+fn lowers_logical_and_in_binding_position_into_short_circuiting_if() {
+    let lowered = lower(
+        r#"
+fn main() -> Int {
+  let d = 0;
+  let safe = d != 0 && 10 / d > 1;
+  if safe { 1 } else { 2 }
+}
+"#,
+    );
+    assert!(!lowered.diagnostics.has_errors());
+    assert_eq!(counts_logical_binaries(&lowered), 0);
+    assert!(has_short_circuit_branch(&lowered, false));
+}
+
+#[test]
+fn lowers_logical_or_in_binding_position_into_short_circuiting_if() {
+    let lowered = lower(
+        r#"
+fn main() -> Int {
+  let d = 0;
+  let safe = d == 0 || 10 / d > 1;
+  if safe { 1 } else { 2 }
+}
+"#,
+    );
+    assert!(!lowered.diagnostics.has_errors());
+    assert_eq!(counts_logical_binaries(&lowered), 0);
+    assert!(has_short_circuit_branch(&lowered, true));
+}
+
+#[test]
+fn lowers_short_circuit_in_tail_and_if_condition_position() {
+    let lowered = lower(
+        r#"
+fn guard(d: Int) -> Bool {
+  d != 0 && 10 / d > 1
+}
+
+fn main() -> Int {
+  if guard(0) || guard(4) { 1 } else { 2 }
+}
+"#,
+    );
+    assert!(!lowered.diagnostics.has_errors());
+    assert_eq!(counts_logical_binaries(&lowered), 0);
+    assert!(has_short_circuit_branch(&lowered, false));
+    assert!(has_short_circuit_branch(&lowered, true));
+}
+
+/// Pins the half of CIELO-57 that is not fixed: an operand of a surrounding
+/// expression has nowhere to put a statement, so `&&` stays a strict
+/// `BinaryOp::And` there and still evaluates its right side. Operand hoisting
+/// (CIELO-56) is what unblocks it; this assertion should flip then.
+#[test]
+fn keeps_strict_logical_operator_in_pure_operand_position() {
+    let lowered = lower(
+        r#"
+fn pick(b: Bool) -> Int {
+  if b { 1 } else { 2 }
+}
+
+fn main() -> Int {
+  let d = 0;
+  pick(d != 0 && 10 / d > 1)
+}
+"#,
+    );
+    assert!(!lowered.diagnostics.has_errors());
+    assert_eq!(counts_logical_binaries(&lowered), 1);
 }
