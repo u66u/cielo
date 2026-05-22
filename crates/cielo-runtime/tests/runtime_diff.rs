@@ -11,11 +11,14 @@ use std::fs;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+/// Not `Eq`: `Float` compares the way `cv_equal` does, so two NaNs are unequal
+/// and a value is not necessarily equal to itself.
+#[derive(Clone, PartialEq, Debug)]
 enum OracleValue {
     Unit,
     Bool(bool),
     Int(i64),
+    Float(f64),
     ResumeToken(usize),
     Ctor {
         variant: SymbolId,
@@ -816,6 +819,50 @@ fn main() -> Int {
     | emit(m, resume) => resume(m + 6)
   };
   r
+}
+"#,
+        },
+        DiffCase {
+            name: "float_arithmetic",
+            source: r#"
+fn scale(x: Float, k: Float) -> Float {
+  x * k + 0.5
+}
+
+fn main() -> Int {
+  let a = 1.5;
+  let b = 2.25;
+  let sum = a + b;
+  let diff = b - a;
+  let quot = b / a;
+  let hit = if sum == 3.75 { 1 } else { 0 };
+  let ordered = if diff < quot { 2 } else { 0 };
+  let scaled = if scale(a, 4.0) == 6.5 { 4 } else { 0 };
+  hit + ordered + scaled
+}
+"#,
+        },
+        DiffCase {
+            // Every comparison against a NaN is false, including `nan == nan`
+            // and both of `<=` and `>=`. -0.0 compares equal to 0.0 while
+            // keeping its sign through division, which is how 1/-0.0 reaches
+            // negative infinity.
+            name: "float_nan_zero_and_infinity",
+            source: r#"
+fn main() -> Int {
+  let zero = 0.0;
+  let neg_zero = -0.0;
+  let nan = zero / zero;
+  let pos_inf = 1.0 / zero;
+  let neg_inf = 1.0 / neg_zero;
+  let a = if nan == nan { 1 } else { 0 };
+  let b = if nan <= 1.0 { 2 } else { 0 };
+  let c = if nan >= 1.0 { 4 } else { 0 };
+  let d = if nan != nan { 8 } else { 0 };
+  let e = if neg_zero == zero { 16 } else { 0 };
+  let f = if neg_inf < pos_inf { 32 } else { 0 };
+  let g = if pos_inf + 1.0 == pos_inf { 64 } else { 0 };
+  a + b + c + d + e + f + g
 }
 "#,
         },
@@ -2224,6 +2271,7 @@ fn eval_call(
 fn eval_unary(op: UnaryOp, value: OracleValue) -> Option<OracleValue> {
     match (op, value) {
         (UnaryOp::Neg, OracleValue::Int(value)) => Some(OracleValue::Int(value.checked_neg()?)),
+        (UnaryOp::Neg, OracleValue::Float(value)) => Some(OracleValue::Float(-value)),
         (UnaryOp::Not, OracleValue::Bool(value)) => Some(OracleValue::Bool(!value)),
         _ => None,
     }
@@ -2286,6 +2334,39 @@ fn eval_binary(op: BinaryOp, lhs: OracleValue, rhs: OracleValue) -> Option<Oracl
         (BinaryOp::Or, OracleValue::Bool(lhs), OracleValue::Bool(rhs)) => {
             Some(OracleValue::Bool(lhs || rhs))
         }
+        // Rust and C agree here operand for operand: both are IEEE 754 binary64
+        // with round-to-nearest, and every comparison is false when either side
+        // is NaN. `%` is absent because cv_mod traps on floats.
+        (BinaryOp::Add, OracleValue::Float(lhs), OracleValue::Float(rhs)) => {
+            Some(OracleValue::Float(lhs + rhs))
+        }
+        (BinaryOp::Sub, OracleValue::Float(lhs), OracleValue::Float(rhs)) => {
+            Some(OracleValue::Float(lhs - rhs))
+        }
+        (BinaryOp::Mul, OracleValue::Float(lhs), OracleValue::Float(rhs)) => {
+            Some(OracleValue::Float(lhs * rhs))
+        }
+        (BinaryOp::Div, OracleValue::Float(lhs), OracleValue::Float(rhs)) => {
+            Some(OracleValue::Float(lhs / rhs))
+        }
+        (BinaryOp::Eq, OracleValue::Float(lhs), OracleValue::Float(rhs)) => {
+            Some(OracleValue::Bool(lhs == rhs))
+        }
+        (BinaryOp::Ne, OracleValue::Float(lhs), OracleValue::Float(rhs)) => {
+            Some(OracleValue::Bool(lhs != rhs))
+        }
+        (BinaryOp::Lt, OracleValue::Float(lhs), OracleValue::Float(rhs)) => {
+            Some(OracleValue::Bool(lhs < rhs))
+        }
+        (BinaryOp::Le, OracleValue::Float(lhs), OracleValue::Float(rhs)) => {
+            Some(OracleValue::Bool(lhs <= rhs))
+        }
+        (BinaryOp::Gt, OracleValue::Float(lhs), OracleValue::Float(rhs)) => {
+            Some(OracleValue::Bool(lhs > rhs))
+        }
+        (BinaryOp::Ge, OracleValue::Float(lhs), OracleValue::Float(rhs)) => {
+            Some(OracleValue::Bool(lhs >= rhs))
+        }
         _ => None,
     }
 }
@@ -2295,7 +2376,8 @@ fn literal_to_oracle(literal: &Literal) -> Option<OracleValue> {
         Literal::Unit => Some(OracleValue::Unit),
         Literal::Bool(value) => Some(OracleValue::Bool(*value)),
         Literal::Int(value) => Some(OracleValue::Int(*value)),
-        Literal::Float(_) | Literal::Char(_) | Literal::String(_) => None,
+        Literal::Float(value) => Some(OracleValue::Float(*value)),
+        Literal::Char(_) | Literal::String(_) => None,
     }
 }
 
@@ -2310,7 +2392,14 @@ fn oracle_value_to_exit_code(value: OracleValue) -> Option<i32> {
             }
         }
         OracleValue::Int(value) => value as i32,
-        OracleValue::ResumeToken(_) | OracleValue::Ctor { .. } | OracleValue::Closure { .. } => {
+        // There is no float-to-exit-code conversion in the language, so a case
+        // that wants to observe a float has to reduce it to Int itself. The
+        // emitted `main` would exit 0 here; declining instead makes a case that
+        // returns Float fail loudly rather than pass for the wrong reason.
+        OracleValue::Float(_)
+        | OracleValue::ResumeToken(_)
+        | OracleValue::Ctor { .. }
+        | OracleValue::Closure { .. } => {
             return None;
         }
     };
