@@ -751,6 +751,8 @@ fn emit_terminator(
             emit_arc_ops(out, &arc.post, indent, cx, "term-post", block.as_u32());
             writeln!(out, "{pad}return {temp};").expect("in-memory write");
         }
+        // Membership implies the single call-valued edge argument `call_result`
+        // matched on, so the index cannot be out of range.
         CfgTerminator::Goto { args, .. } if cx.tails.contains(&block) => {
             let value = emit_expr(args[0], cx);
             writeln!(out, "{pad}return {value};").expect("in-memory write");
