@@ -175,7 +175,8 @@ per step. Size tracked on data allocation.
 Integer arithmetic uses target-width wrapping (e.g. `i64::MIN / -1`
 wraps on 64-bit targets). Byte reinterpretation uses target endianness.
 Float uses host behavior with tracking counter (`folded_float_host`).
-Non-finite float inputs/results (NaN/Inf) are left unresolved.
+Non-finite float inputs/results (NaN/Inf) are left unresolved. Float `%`
+is never folded, because `%` is Int-only and `cv_mod` traps on floats.
 
 CT cache keyed by: target spec + evaluator policy + compiler version.
 
@@ -591,8 +592,10 @@ Linearize (handler lowering, Core → Linear IR)
 - CT propagation supports persistent query-cache sidecar (`.ctquery.tsv`)
   keyed by `{CtCacheKey + normalized file deps + program fingerprint}`.
 - ComptimeReadFiles dependency content hashes use BLAKE3 digests.
-- CT fold coverage includes float arithmetic/comparison/equality and
-  non-numeric equality (Bool/Char/String/Unit).
+- CT fold coverage includes float `+ - * /`, comparison, equality, and
+  non-numeric equality (Bool/Char/String/Unit). Float `%` is not folded:
+  `%` is Int-only and `cv_mod` traps on floats.
 - Host-float folds are finite-only (NaN/Inf left unresolved).
-- Integer Div/Mod overflow edges fold with wrapping target-width behavior.
+- Integer Div/Mod overflow edges decline to fold and residualize onto the
+  runtime trap; `MIN % -1` folds to `0`, matching `cv_mod`.
 ```

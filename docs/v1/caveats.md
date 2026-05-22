@@ -21,6 +21,8 @@ restrict CT evaluation.
 - Float arithmetic: host behavior with `folded_float_host` tracking counter. Non-finite
   inputs/results (NaN/Inf) are left unresolved — the evaluator produces `Stuck` for
   expressions that would produce NaN/Inf, preventing cross-target divergence.
+  Float `%` is not folded and not accepted by the typechecker: `%` is Int-only, and
+  `cv_mod` traps on a float operand.
 - Pointer/address identity: not observable in Cielo v1 (no ptr_to_int, no address hashing).
 - Concurrency: runtime-only effect. Cannot appear in CT evaluation.
 
@@ -30,6 +32,45 @@ CT cache entries are keyed by `{target spec, evaluator policy, compiler version}
 ensures that CT results computed for one target are not reused for another, even if the
 source is identical. Changing the evaluator policy (e.g., wrapping behavior for a new
 target width) invalidates the entire cache.
+
+
+## Float literal forms
+
+`.` is overloaded: it is a float point, a field projection (`p.a`), and the separator in
+`do Effect.op`. The lexer resolves this by only reading `.` as a float point when a digit
+follows it, which makes these the accepted forms:
+
+| Form | Example | Status |
+| --- | --- | --- |
+| digits `.` digits | `1.5` | accepted |
+| digits with exponent | `1e9`, `2E+2` | accepted, and always a `Float`, never an `Int` |
+| both | `1.5e-3` | accepted |
+| trailing point | `1.` | rejected, `LEX_BAD_NUMBER` |
+| digits then a name | `1.foo`, `1e` | rejected, `LEX_BAD_NUMBER` |
+| leading point | `.5` | rejected — see below |
+| overflowing literal | `1e400` | rejected, `LEX_BAD_FLOAT` |
+
+`1.foo` is an error rather than `1` `.` `foo` because an integer has no fields, so no
+reading of it is valid; splitting it into three tokens only moves the complaint somewhere
+that does not name the mistake. The same argument covers `1.`.
+
+`.5` is not rejected by any rule of its own — a leading `.` is consumed as a field access
+on whatever preceded it long before a number is read, so `x .5` is `x.5` with a malformed
+field name. Writing `0.5` is the only spelling.
+
+An out-of-range literal is rejected rather than saturated to infinity, because every stage
+below treats a non-finite float as unfoldable and unpoolable — a mistyped exponent would
+otherwise become a value the compiler quietly refuses to reason about.
+
+Floats do not convert to an exit code. A `main` returning `Float` exits `0`; a program
+that wants to observe a float has to reduce it to `Int` itself.
+
+### NaN is not ordered
+
+`cv_ordering` returns `CV_UNORDERED` for a NaN operand, and all four of `<`, `<=`, `>`,
+`>=` are false on it. A three-way comparison that folded unordered onto "equal" would make
+`nan <= x` and `nan >= x` both true. `cv_equal` is plain `==`, so `nan == nan` is false and
+`-0.0 == 0.0` is true — both correct IEEE, both surprising.
 
 
 ## Effect handler bugs

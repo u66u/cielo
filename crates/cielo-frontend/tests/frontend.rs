@@ -1,5 +1,5 @@
 use cielo_base::{Interner, SourceId, SymbolId};
-use cielo_frontend::ast::{ExprKind, Item, Stmt, TypeExprKind};
+use cielo_frontend::ast::{BuiltinType, ExprKind, Item, Stmt, TypeExprKind};
 use cielo_frontend::lexer::{Keyword, TokenKind, lex};
 use cielo_frontend::parser::parse_source;
 
@@ -292,4 +292,83 @@ fn main() -> Int { identity[Int](1) }
             .iter()
             .any(|entry| entry.code == "PARSE_TYPE_ARGS_IN_EXPR")
     );
+}
+
+fn float_tokens(src: &str) -> (Vec<f64>, Vec<String>) {
+    let mut interner = Interner::new();
+    let output = lex(src, SourceId::from_u32(0), &mut interner);
+    let floats = output
+        .tokens
+        .iter()
+        .filter_map(|token| match token.kind {
+            TokenKind::Float(value) => Some(value),
+            _ => None,
+        })
+        .collect();
+    let codes = output
+        .diagnostics
+        .entries()
+        .iter()
+        .map(|entry| entry.code.to_owned())
+        .collect();
+    (floats, codes)
+}
+
+#[test]
+fn lexes_accepted_float_literal_forms() {
+    let (floats, codes) = float_tokens("1.5 1e9 1.5e-3 2E+2 0.0");
+    assert_eq!(floats, vec![1.5, 1e9, 1.5e-3, 2E2, 0.0]);
+    assert!(codes.is_empty(), "unexpected diagnostics: {codes:?}");
+}
+
+#[test]
+fn rejects_malformed_numeric_literals() {
+    for src in ["1.", "1.foo", "1e", "1.5.5", "1e400"] {
+        let (floats, codes) = float_tokens(src);
+        assert!(floats.is_empty(), "{src} should not lex as a float");
+        assert!(
+            codes
+                .iter()
+                .any(|code| code == "LEX_BAD_NUMBER" || code == "LEX_BAD_FLOAT"),
+            "{src} should be a lex error, got {codes:?}"
+        );
+    }
+}
+
+/// The float point rule must not eat the `.` that projects a field or names an
+/// effect operation, which is the only reason it demands a digit after it.
+#[test]
+fn field_access_and_perform_survive_the_float_rule() {
+    let src = r#"
+struct P { a: Int }
+effect St { fn tick(n: Int) -> Int }
+fn main() -> Int {
+  let p = P(3);
+  let v = do St.tick(p.a);
+  v
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    assert!(!parsed.diagnostics.has_errors());
+}
+
+#[test]
+fn parses_a_float_literal_expression() {
+    let src = "fn main() -> Float { -1.25 }";
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    assert!(!parsed.diagnostics.has_errors());
+    let Some(Item::Function(function)) = parsed.program.items.first() else {
+        panic!("expected a function item");
+    };
+    assert!(matches!(
+        function.return_type.as_ref().map(|ty| &ty.kind),
+        Some(TypeExprKind::Builtin(BuiltinType::Float))
+    ));
+    let tail = function.body.tail.as_ref().expect("expected a tail expr");
+    let ExprKind::Unary { expr, .. } = &tail.kind else {
+        panic!("expected unary negation");
+    };
+    assert!(matches!(expr.kind, ExprKind::Float(value) if value == 1.25));
 }
