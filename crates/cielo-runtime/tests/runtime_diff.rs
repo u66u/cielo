@@ -414,6 +414,29 @@ fn main() -> Bool {
 "#,
         },
         DiffCase {
+            // The guard idiom. Both sides must skip `10 / d`: the runtime traps
+            // on it and the oracle declines to fold it, and a declined oracle
+            // fails the case rather than skipping it.
+            name: "short_circuit_and_guards_division",
+            source: r#"
+fn main() -> Int {
+  let d = 0;
+  let safe = d != 0 && 10 / d > 1;
+  if safe { 1 } else { 2 }
+}
+"#,
+        },
+        DiffCase {
+            name: "short_circuit_or_guards_division",
+            source: r#"
+fn main() -> Int {
+  let d = 0;
+  let safe = d == 0 || 10 / d > 1;
+  if safe { 1 } else { 2 }
+}
+"#,
+        },
+        DiffCase {
             name: "closure_capture_and_indirect_call",
             source: r#"
 fn apply(f: Fn(Int) -> Int, x: Int) -> Int {
