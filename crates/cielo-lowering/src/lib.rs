@@ -1310,7 +1310,7 @@ impl Lowerer {
         if self.stmt_performs_effect(lowered_body) {
             let error = self.diagnostics.error_node(
                 "LOWER_EFFECTFUL_CLOSURE",
-                "A closure body may not perform an effect or call an effectful function: a call through a value carries no effect row",
+                "A closure body may not perform an effect or call an effectful function: a written `with` row on a function type is checked, not inferred from a lambda",
                 span,
             );
             return ExprKind::Error(error);
@@ -1322,10 +1322,13 @@ impl Lowerer {
         }
     }
 
-    /// True when the statement graph reaches an operation with effects. A
-    /// closure's effects would have to travel with the value, and
-    /// `CallClosure` has nowhere to carry them; a handler *inside* the body
-    /// does not help, since the perform below it is what is rejected.
+    /// True when the statement graph reaches an operation with effects.
+    ///
+    /// A function *type* can now carry a row, but nothing derives one from a
+    /// lambda body, and `CallClosure` is an expression, whose effects are
+    /// always empty under the Expr/Stmt split — so a perform inside a lifted
+    /// body would never reach the caller's row. A handler *inside* the body
+    /// does not help either: the perform below it is what is rejected.
     fn stmt_performs_effect(&self, root: cielo_base::StmtId) -> bool {
         let mut seen = HashSet::new();
         let mut stack = vec![root];
@@ -1615,15 +1618,30 @@ fn lower_type_ref(ty: &TypeExpr, type_params: &[SymbolId]) -> CoreTypeRef {
                 .map(|arg| lower_type_ref(arg, type_params))
                 .collect(),
         },
-        TypeExprKind::Func { params, ret } => CoreTypeRef::Func {
+        TypeExprKind::Func {
+            params,
+            ret,
+            effects,
+        } => CoreTypeRef::Func {
             params: params
                 .iter()
                 .map(|param| lower_type_ref(param, type_params))
                 .collect(),
             ret: Box::new(lower_type_ref(ret, type_params)),
+            effects: canonical_effect_row(effects),
         },
         TypeExprKind::Error(_) => CoreTypeRef::Unknown,
     }
+}
+
+/// Row order is not part of a type's identity, so it is normalized here rather
+/// than left for every consumer to sort. Names are not resolved to labels:
+/// `lower_type_ref` runs while effect declarations are still being registered.
+fn canonical_effect_row(names: &[SymbolId]) -> Vec<SymbolId> {
+    let mut row = names.to_vec();
+    row.sort_unstable_by_key(|name| name.as_u32());
+    row.dedup();
+    row
 }
 
 fn map_effect_property_hint(hint: EffectPropertyHint) -> EffectProperties {

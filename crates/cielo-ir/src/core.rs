@@ -193,12 +193,22 @@ pub enum CoreTypeRef {
         name: SymbolId,
         args: Vec<CoreTypeRef>,
     },
-    /// `Fn(A, B) -> R`, the type of a closure value. No effect row: a closure
-    /// whose body performs is rejected at lowering, so every function value is
-    /// pure and the row would always be empty.
+    /// `Fn(A, B) -> R with E1 + E2`, the type of a closure value.
+    ///
+    /// `effects` names the declared effects a call through the value may
+    /// perform, sorted and deduplicated by lowering so that `{A, B}` and
+    /// `{B, A}` are one type. Names, not `EffectLabelId`s, for the same reason
+    /// `Named` holds a name: lowering assigns labels while it is still walking
+    /// declarations, so a row could mention an effect declared further down the
+    /// file. Typecheck resolves it, and rejects a name no effect declares.
+    ///
+    /// Stage 1 is concrete rows only. A row never mentions a type parameter,
+    /// so `substitute` is the identity on it and monomorphization cannot make
+    /// it stale.
     Func {
         params: Vec<CoreTypeRef>,
         ret: Box<CoreTypeRef>,
+        effects: Vec<SymbolId>,
     },
     Unknown,
 }
@@ -208,7 +218,7 @@ impl CoreTypeRef {
         match self {
             Self::Param(_) => true,
             Self::Applied { args, .. } => args.iter().any(Self::mentions_param),
-            Self::Func { params, ret } => {
+            Self::Func { params, ret, .. } => {
                 params.iter().any(Self::mentions_param) || ret.mentions_param()
             }
             Self::Unit | Self::Primitive(_) | Self::Named(_) | Self::Unknown => false,
@@ -219,7 +229,7 @@ impl CoreTypeRef {
     pub fn depth(&self) -> usize {
         match self {
             Self::Applied { args, .. } => 1 + args.iter().map(Self::depth).max().unwrap_or(0),
-            Self::Func { params, ret } => {
+            Self::Func { params, ret, .. } => {
                 1 + params
                     .iter()
                     .chain(std::iter::once(ret.as_ref()))
@@ -238,9 +248,17 @@ impl CoreTypeRef {
                 name: *name,
                 args: args.iter().map(|arg| arg.substitute(bindings)).collect(),
             },
-            Self::Func { params, ret } => Self::Func {
+            // The row is carried through untouched: stage 1 has no row
+            // variables, so there is nothing in it for a type-argument
+            // substitution to rewrite.
+            Self::Func {
+                params,
+                ret,
+                effects,
+            } => Self::Func {
                 params: params.iter().map(|arg| arg.substitute(bindings)).collect(),
                 ret: Box::new(ret.substitute(bindings)),
+                effects: effects.clone(),
             },
             other => other.clone(),
         }
