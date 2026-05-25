@@ -162,10 +162,13 @@ pub enum TypeExprKind {
         name: SymbolId,
         args: Vec<TypeExpr>,
     },
-    /// `Fn(A, B) -> R`.
+    /// `Fn(A, B) -> R`, optionally `... with E1 + E2`. The row is written in
+    /// source order here; lowering canonicalizes it, since `with A + B` and
+    /// `with B + A` name the same type.
     Func {
         params: Vec<TypeExpr>,
         ret: Box<TypeExpr>,
+        effects: Vec<SymbolId>,
     },
     Unit,
     Error(ErrorNode),

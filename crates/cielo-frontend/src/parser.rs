@@ -170,7 +170,7 @@ impl Parser {
         self.expect_kind(TokenKind::RParen, "Expected `)` after function parameters");
 
         let return_type = if self.consume_kind(TokenKind::Arrow).is_some() {
-            Some(self.parse_type_expr())
+            Some(self.parse_type_expr_with_row(false))
         } else {
             None
         };
@@ -403,6 +403,15 @@ impl Parser {
     }
 
     fn parse_type_expr(&mut self) -> TypeExpr {
+        self.parse_type_expr_with_row(true)
+    }
+
+    /// `allow_row` is false only at the tail of a declaration's return type,
+    /// where a trailing `with` belongs to the declaration: `fn f() -> Fn(Int)
+    /// -> Int with St` reads `St` as `f`'s row, not the closure's. Anything
+    /// bracketed (a parameter type, a type argument) is unambiguous and allows
+    /// a row; write the closure's row there, or in a `let` annotation.
+    fn parse_type_expr_with_row(&mut self, allow_row: bool) -> TypeExpr {
         if self.consume_kind(TokenKind::LParen).is_some() {
             let left = self.prev_span();
             self.expect_kind(TokenKind::RParen, "Expected `)` for unit type");
@@ -415,7 +424,7 @@ impl Parser {
         let start = self.current_span();
         let name = self.expect_identifier("Expected type name");
         if name == self.fn_type_symbol && self.check_kind(TokenKind::LParen) {
-            return self.parse_fn_type(start);
+            return self.parse_fn_type(start, allow_row);
         }
         let mut args = Vec::new();
         if self.consume_kind(TokenKind::LBracket).is_some() {
@@ -448,8 +457,13 @@ impl Parser {
         }
     }
 
-    /// `Fn(A, B) -> R`, with `start` covering the `Fn` name already consumed.
-    fn parse_fn_type(&mut self, start: Span) -> TypeExpr {
+    /// `Fn(A, B) -> R` or `Fn(A, B) -> R with E1 + E2`, with `start` covering
+    /// the `Fn` name already consumed.
+    ///
+    /// The row separator is `+`, not the `,` a declaration's `with` uses: a
+    /// function type appears inside comma-separated parameter and argument
+    /// lists, where `Fn(Int) -> Int with St, x: Int` would not parse.
+    fn parse_fn_type(&mut self, start: Span, allow_row: bool) -> TypeExpr {
         self.expect_kind(TokenKind::LParen, "Expected `(` after `Fn`");
         let mut params = Vec::new();
         if !self.check_kind(TokenKind::RParen) {
@@ -462,12 +476,25 @@ impl Parser {
         }
         self.expect_kind(TokenKind::RParen, "Expected `)` after `Fn` parameter types");
         self.expect_kind(TokenKind::Arrow, "Expected `->` after `Fn(..)`");
-        let ret = self.parse_type_expr();
+        let ret = self.parse_type_expr_with_row(allow_row);
+
+        let mut effects = Vec::new();
+        if allow_row && self.consume_keyword(Keyword::With).is_some() {
+            loop {
+                effects.push(self.expect_identifier("Expected effect name in `with` row"));
+                self.reject_effect_type_args();
+                if self.consume_kind(TokenKind::Plus).is_none() {
+                    break;
+                }
+            }
+        }
+
         TypeExpr {
-            span: span_join(start, ret.span),
+            span: span_join(start, self.prev_span()),
             kind: TypeExprKind::Func {
                 params,
                 ret: Box::new(ret),
+                effects,
             },
         }
     }

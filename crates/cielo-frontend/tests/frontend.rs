@@ -372,3 +372,58 @@ fn parses_a_float_literal_expression() {
     };
     assert!(matches!(expr.kind, ExprKind::Float(value) if value == 1.25));
 }
+
+/// The declaration's own `with` uses `,` and a function type's uses `+`; both
+/// appear here so a change to one cannot quietly swallow the other.
+#[test]
+fn parses_an_effect_row_on_a_function_type() {
+    let src = r#"
+effect St { fn get() -> Int }
+effect Log { fn note(s: String) -> Int }
+fn apply(f: Fn(Int) -> Int with St + Log, x: Int) -> Int with St, Log {
+  f(x)
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    assert!(!parsed.diagnostics.has_errors(), "{:?}", parsed.diagnostics);
+
+    let Some(Item::Function(function)) = parsed.program.items.last() else {
+        panic!("expected `apply` to parse as a function item");
+    };
+    let st = interner.intern("St");
+    let log = interner.intern("Log");
+    assert_eq!(function.effects, vec![st, log]);
+
+    let TypeExprKind::Func { effects, .. } = &function.params[0].ty.kind else {
+        panic!("expected `f` to have a function type");
+    };
+    assert_eq!(effects, &vec![st, log]);
+}
+
+/// A trailing `with` after a declaration's return type belongs to the
+/// declaration, even when that return type is itself a function type.
+#[test]
+fn a_trailing_with_after_a_returned_function_type_binds_to_the_declaration() {
+    let src = r#"
+effect St { fn get() -> Int }
+fn make() -> Fn(Int) -> Int with St {
+  |x| x
+}
+"#;
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    assert!(!parsed.diagnostics.has_errors(), "{:?}", parsed.diagnostics);
+
+    let Some(Item::Function(function)) = parsed.program.items.last() else {
+        panic!("expected `make` to parse as a function item");
+    };
+    let st = interner.intern("St");
+    assert_eq!(function.effects, vec![st]);
+
+    let Some(TypeExprKind::Func { effects, .. }) = function.return_type.as_ref().map(|ty| &ty.kind)
+    else {
+        panic!("expected `make` to return a function type");
+    };
+    assert!(effects.is_empty());
+}
