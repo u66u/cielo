@@ -1115,6 +1115,110 @@ fn main() -> Int {
     );
 }
 
+/// A row is a set, so writing one in the other order has to produce the same
+/// type. Both occurrences must intern to a single `TypeId` or the closure never
+/// matches the parameter it is passed to.
+#[test]
+fn an_effect_row_unifies_regardless_of_the_order_it_is_written_in() {
+    let diagnostics = diagnose(
+        r#"
+effect St { fn get() -> Int }
+effect Log { fn note(s: String) -> Int }
+fn apply(f: Fn(Int) -> Int with St + Log, x: Int) -> Int with St, Log {
+  f(x)
+}
+fn main() -> Int with St, Log {
+  let g: Fn(Int) -> Int with Log + St = |n| n;
+  apply(g, 1)
+}
+"#,
+    );
+    assert!(
+        !diagnostics.has_errors(),
+        "`with St + Log` and `with Log + St` are one type: {:?}",
+        diagnostics.entries()
+    );
+}
+
+#[test]
+fn a_closure_with_a_wider_row_than_the_parameter_is_rejected() {
+    let diagnostics = diagnose(
+        r#"
+effect St { fn get() -> Int }
+fn apply(f: Fn(Int) -> Int, x: Int) -> Int {
+  f(x)
+}
+fn main() -> Int with St {
+  let g: Fn(Int) -> Int with St = |n| n;
+  apply(g, 1)
+}
+"#,
+    );
+    let mismatch = message_for(&diagnostics, "TYPE_CALL_ARG_MISMATCH");
+    assert!(
+        mismatch.ends_with("Fn(Int) -> Int with St vs Fn(Int) -> Int"),
+        "a row mismatch must print both rows, not `Function vs Function`: {mismatch}"
+    );
+}
+
+/// The row on the callee's type is the only record of what a call through a
+/// value may perform; the caller's own body row says nothing about it.
+#[test]
+fn calling_a_value_whose_row_the_caller_does_not_declare_is_rejected() {
+    let diagnostics = diagnose(
+        r#"
+effect St { fn get() -> Int }
+fn main() -> Int {
+  let g: Fn(Int) -> Int with St = |n| n;
+  g(1)
+}
+"#,
+    );
+    let message = message_for(&diagnostics, "SEMA_UNDECLARED_CALL_EFFECT");
+    assert!(
+        message.contains("St") && message.contains("main"),
+        "the diagnostic must name the effect and the function missing it: {message}"
+    );
+}
+
+#[test]
+fn an_unknown_effect_name_in_a_row_is_rejected() {
+    let diagnostics = diagnose(
+        r#"
+fn apply(f: Fn(Int) -> Int with Nope, x: Int) -> Int {
+  f(x)
+}
+"#,
+    );
+    let message = message_for(&diagnostics, "TYPE_UNKNOWN_EFFECT_IN_ROW");
+    assert!(
+        message.contains("Nope"),
+        "stage 1 has no row variables, so an unknown name is a typo and must be named: {message}"
+    );
+}
+
+#[test]
+fn a_function_type_without_a_row_still_checks() {
+    let diagnostics = diagnose(
+        r#"
+fn apply(f: Fn(Int) -> Int, x: Int) -> Int {
+  f(x)
+}
+fn make_adder(n: Int) -> Fn(Int) -> Int {
+  |x| x + n
+}
+fn main() -> Int {
+  apply(make_adder(2), 3)
+}
+"#,
+    );
+    assert!(
+        !diagnostics.has_errors(),
+        "an effect-free function type must be unaffected: {:?}",
+        diagnostics.entries()
+    );
+}
+
 fn message_for(diagnostics: &DiagnosticBag, code: &str) -> String {
     diagnostics
         .entries()

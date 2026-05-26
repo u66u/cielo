@@ -37,6 +37,7 @@ use cielo_ir::core::{
 use cielo_ir::effect::SortedEffectRow;
 use cielo_ir::function_graph::closure_body_functions;
 use cielo_ir::ownership::OwnershipClass;
+use cielo_ir::walk::{Walk, walk_exprs_from};
 
 macro_rules! define_primitive_type_ids {
     ($($field:ident => $primitive:ident),* $(,)?) => {
@@ -426,7 +427,11 @@ struct TypeChecker<'a> {
     /// only where the owning enum is not already known.
     variant_owners: HashMap<SymbolId, Vec<SymbolId>>,
     instances: HashMap<(SymbolId, Vec<TypeId>), TypeId>,
-    function_instances: HashMap<(Vec<TypeId>, TypeId), TypeId>,
+    function_instances: HashMap<(Vec<TypeId>, TypeId, SortedEffectRow), TypeId>,
+    /// Both directions of the effect-declaration table: names resolve written
+    /// rows, labels name effects in diagnostics.
+    effect_labels: HashMap<SymbolId, EffectLabelId>,
+    effect_names: HashMap<EffectLabelId, SymbolId>,
     closure_sites: HashMap<FuncId, ClosureSite>,
     effect_signatures: EffectSignatureTable,
     function_templates: Vec<FunctionTemplate>,
@@ -464,6 +469,16 @@ impl<'a> TypeChecker<'a> {
             variant_owners: HashMap::new(),
             instances: HashMap::new(),
             function_instances: HashMap::new(),
+            effect_labels: program
+                .effects()
+                .iter()
+                .map(|effect| (effect.name, effect.label))
+                .collect(),
+            effect_names: program
+                .effects()
+                .iter()
+                .map(|effect| (effect.label, effect.name))
+                .collect(),
             closure_sites: HashMap::new(),
             effect_signatures: EffectSignatureTable::new(),
             function_templates: Vec::new(),
@@ -692,13 +707,18 @@ impl<'a> TypeChecker<'a> {
                     .collect::<Option<Vec<_>>>()?;
                 self.adt_instance(*name, args, span, depth)
             }
-            CoreTypeRef::Func { params, ret } => {
+            CoreTypeRef::Func {
+                params,
+                ret,
+                effects,
+            } => {
                 let params = params
                     .iter()
                     .map(|param| self.concrete_type_ref(param, subst, span, depth))
                     .collect::<Option<Vec<_>>>()?;
                 let ret = self.concrete_type_ref(ret, subst, span, depth)?;
-                Some(self.function_instance(params, ret))
+                let effects = self.effect_row(effects)?;
+                Some(self.function_instance(params, ret, effects))
             }
             CoreTypeRef::Unknown => None,
         }
@@ -729,7 +749,11 @@ impl<'a> TypeChecker<'a> {
             // A function type has no `App` form, so an open component collapses
             // to the error type rather than staying a variable: a closure type
             // is only ever checked structurally against another written one.
-            CoreTypeRef::Func { params, ret } => {
+            CoreTypeRef::Func {
+                params,
+                ret,
+                effects,
+            } => {
                 let params = params
                     .iter()
                     .map(|param| {
@@ -739,28 +763,55 @@ impl<'a> TypeChecker<'a> {
                     .collect::<Vec<_>>();
                 let ret = self.infer_type_ref(ret, subst);
                 let ret = self.materialize_ty(ret);
-                InferTy::Concrete(self.function_instance(params, ret))
+                let Some(effects) = self.effect_row(effects) else {
+                    return InferTy::Concrete(self.error_type);
+                };
+                InferTy::Concrete(self.function_instance(params, ret, effects))
             }
             CoreTypeRef::Unknown => InferTy::Concrete(self.error_type),
         }
     }
 
-    /// Interns `Fn(params) -> ret`, deduplicated by structure. `unify` compares
-    /// concrete types by id, so two written occurrences of one function type
-    /// have to land on the same `TypeId` or a closure never matches its
-    /// parameter.
-    fn function_instance(&mut self, params: Vec<TypeId>, ret: TypeId) -> TypeId {
-        let key = (params.clone(), ret);
+    /// Interns `Fn(params) -> ret with effects`, deduplicated by structure.
+    /// `unify` compares concrete types by id, so two written occurrences of one
+    /// function type have to land on the same `TypeId` or a closure never
+    /// matches its parameter.
+    ///
+    /// The row is part of the key, and `SortedEffectRow` is a set, which is
+    /// what makes `with A + B` and `with B + A` unify: they intern to one id.
+    fn function_instance(
+        &mut self,
+        params: Vec<TypeId>,
+        ret: TypeId,
+        effects: SortedEffectRow,
+    ) -> TypeId {
+        let key = (params.clone(), ret, effects.clone());
         if let Some(existing) = self.function_instances.get(&key).copied() {
             return existing;
         }
         let id = self.store.intern(TypeKind::Function(FunctionType {
             params,
             ret,
-            effects: SortedEffectRow::empty(),
+            effects,
         }));
         self.function_instances.insert(key, id);
         id
+    }
+
+    /// A written row resolved against the effect declarations, or `None` when a
+    /// name resolves to nothing.
+    ///
+    /// Dropping the name instead would narrow the row, and a row that is too
+    /// narrow is exactly what lets `normalize` delete a perform as dead code.
+    /// Callers collapse to the error type, matching how an unknown ADT name is
+    /// handled; the diagnostic comes from `check_signature_type`, which sees a
+    /// written signature once rather than once per instantiation.
+    fn effect_row(&self, names: &[SymbolId]) -> Option<SortedEffectRow> {
+        names
+            .iter()
+            .map(|name| self.effect_labels.get(name).copied())
+            .collect::<Option<Vec<_>>>()
+            .map(SortedEffectRow::new)
     }
 
     fn primitive_type(&self, primitive: PrimitiveTypeRef) -> TypeId {
@@ -841,11 +892,30 @@ impl<'a> TypeChecker<'a> {
         let (name, args) = match ty {
             CoreTypeRef::Named(name) => (*name, [].as_slice()),
             CoreTypeRef::Applied { name, args } => (*name, args.as_slice()),
-            CoreTypeRef::Func { params, ret } => {
+            CoreTypeRef::Func {
+                params,
+                ret,
+                effects,
+            } => {
                 for param in params {
                     self.check_signature_type(param, span);
                 }
                 self.check_signature_type(ret, span);
+                // Stage 1 has no row variables, so an unresolved name is a
+                // typo, never an implicitly quantified row. Reporting it here
+                // keeps `effect_row` from silently narrowing the row.
+                for name in effects {
+                    if !self.effect_labels.contains_key(name) {
+                        let rendered = render_symbol(self.names, *name);
+                        self.diagnostics.error(
+                            "TYPE_UNKNOWN_EFFECT_IN_ROW",
+                            format!(
+                                "Unknown effect `{rendered}` in a function type's `with` row; declare it with `effect {rendered} {{ .. }}`"
+                            ),
+                            span,
+                        );
+                    }
+                }
                 return;
             }
             CoreTypeRef::Unit
@@ -955,35 +1025,113 @@ impl<'a> TypeChecker<'a> {
         if conformance == EffectConformance::Check {
             self.enforce_declared_effects(&sema);
         }
+        // Staging requires concrete rows, and monomorphization is the pass that
+        // would have to make them so. Stage 1 has no row variables, so every
+        // label here came straight from a declaration and there is nothing left
+        // to resolve; this is the check that stays honest if that changes.
+        debug_assert!(
+            self.store.kinds().iter().all(|kind| match kind {
+                TypeKind::Function(signature) => signature
+                    .effects
+                    .iter()
+                    .all(|label| self.effect_names.contains_key(&label)),
+                _ => true,
+            }),
+            "a function type carries an effect label no declaration owns"
+        );
         sema
     }
 
     /// An effect missing from the `with` row leaves the row empty, and
     /// `normalize` treats a perform with an empty row as dead code. Without
     /// this error the perform is silently deleted along with its output.
+    ///
+    /// Two rows are compared against each declaration: what its body performs
+    /// directly, and what a call through a function *value* in its body may
+    /// perform. The second is the row on the callee's type, which is written
+    /// syntax resolved during this pass and never re-derived afterwards — the
+    /// reason it cannot go stale the way a recomputed fact does (CIELO-51/52/54).
+    /// It is also why this runs only under `EffectConformance::Check`:
+    /// residualization erases `declared_effects`, so there is nothing left to
+    /// compare a call site against.
     fn enforce_declared_effects(&mut self, sema: &SemanticTables) {
         let functions = self.program.functions();
         for (idx, function) in functions.iter().enumerate() {
-            let Some(inferred) = sema.effects_of_stmt.get(function.body.index()) else {
-                continue;
-            };
-            let undeclared = inferred.subtract(&function.declared_effects);
-            if undeclared.is_empty() {
+            let name = self.resolved_name(function.name, || format!("f{idx}"));
+
+            if let Some(inferred) = sema.effects_of_stmt.get(function.body.index()) {
+                let undeclared = inferred.subtract(&function.declared_effects);
+                if !undeclared.is_empty() {
+                    let labels = self.render_effect_row(&undeclared);
+                    self.diagnostics.error(
+                        "SEMA_UNDECLARED_EFFECT",
+                        format!(
+                            "`{name}` performs undeclared effect(s) {labels}; add them to its `with` row"
+                        ),
+                        function.span,
+                    );
+                }
+            }
+
+            for (callee, span) in self.closure_calls_from(function.body) {
+                let Some(ty) = sema.type_of_expr.get(callee.index()).copied().flatten() else {
+                    continue;
+                };
+                let Some(TypeKind::Function(signature)) = self.store.get(ty) else {
+                    continue;
+                };
+                let undeclared = signature.effects.subtract(&function.declared_effects);
+                if undeclared.is_empty() {
+                    continue;
+                }
+                let callee_name = self.stored_type_name(ty);
+                let labels = self.render_effect_row(&undeclared);
+                self.diagnostics.error(
+                    "SEMA_UNDECLARED_CALL_EFFECT",
+                    format!(
+                        "calling a `{callee_name}` may perform effect(s) {labels}, which `{name}` does not declare; add them to its `with` row"
+                    ),
+                    span,
+                );
+            }
+        }
+    }
+
+    /// Every call through a function value reachable from `root`, as
+    /// `(callee expression, call span)`.
+    ///
+    /// A handler's clause and return bodies run inside the enclosing function
+    /// but are not `child_stmts` of its `Handle`, so they are pushed
+    /// explicitly. Skipping them was the shape of CIELO-54.
+    fn closure_calls_from(&self, root: StmtId) -> Vec<(ExprId, Span)> {
+        let mut out = Vec::new();
+        let mut seen_stmts = HashSet::new();
+        let mut seen_exprs = HashSet::new();
+        let mut stack = vec![root];
+        while let Some(stmt_id) = stack.pop() {
+            if !seen_stmts.insert(stmt_id) {
                 continue;
             }
-            let labels = undeclared
-                .iter()
-                .map(|effect| format!("e{}", effect.as_u32()))
-                .collect::<Vec<_>>()
-                .join(", ");
-            self.diagnostics.error(
-                "SEMA_UNDECLARED_EFFECT",
-                format!(
-                    "function f{idx} performs undeclared effect(s) {labels}; add them to its `with` row"
-                ),
-                function.span,
-            );
+            let Some(stmt) = self.program.stmt(stmt_id) else {
+                continue;
+            };
+            if let StmtKind::Handle { handler, .. } = &stmt.kind
+                && let Some(def) = self.program.handlers().get(handler.index())
+            {
+                stack.push(def.return_body);
+                stack.extend(def.clauses.iter().map(|clause| clause.body));
+            }
+            for expr_id in stmt.child_exprs() {
+                walk_exprs_from(self.program, expr_id, &mut seen_exprs, &mut |_, expr| {
+                    if let ExprKind::CallClosure { callee, .. } = &expr.kind {
+                        out.push((*callee, expr.span));
+                    }
+                    Walk::Descend
+                });
+            }
+            stack.extend(stmt.child_stmts());
         }
+        out
     }
 
     fn classify_var_ownership(&self, sema: &SemanticTables) -> DenseMap<VarId, OwnershipClass> {
@@ -2399,8 +2547,43 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Some(TypeKind::TypeParam(idx)) => format!("T{idx}"),
-            Some(TypeKind::Function(_)) => "Function".to_owned(),
+            // Rendered in full: a row mismatch between two function types is
+            // unreadable if both sides print as `Function`.
+            Some(TypeKind::Function(signature)) => {
+                let params = signature
+                    .params
+                    .iter()
+                    .map(|param| self.stored_type_name(*param))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let ret = self.stored_type_name(signature.ret);
+                let mut rendered = format!("Fn({params}) -> {ret}");
+                if !signature.effects.is_empty() {
+                    rendered.push_str(" with ");
+                    rendered.push_str(&self.render_effect_row(&signature.effects));
+                }
+                rendered
+            }
             Some(TypeKind::Error) | None => format!("t{}", ty.as_u32()),
+        }
+    }
+
+    fn render_effect_row(&self, row: &SortedEffectRow) -> String {
+        row.iter()
+            .map(|label| match self.effect_names.get(&label) {
+                Some(name) => self.resolved_name(*name, || format!("e{}", label.as_u32())),
+                None => format!("e{}", label.as_u32()),
+            })
+            .collect::<Vec<_>>()
+            .join(" + ")
+    }
+
+    /// `render_symbol` falls back to `Adt#n`, which is wrong for anything that
+    /// is not an ADT. Callers that name an effect or a function pass their own.
+    fn resolved_name(&self, symbol: SymbolId, fallback: impl FnOnce() -> String) -> String {
+        match self.names.and_then(|names| names.resolve(symbol)) {
+            Some(text) => text.to_owned(),
+            None => fallback(),
         }
     }
 }
@@ -2465,7 +2648,10 @@ fn collect_type_params(ty: &CoreTypeRef, out: &mut Vec<SymbolId>) {
                 collect_type_params(arg, out);
             }
         }
-        CoreTypeRef::Func { params, ret } => {
+        // A row holds effect names, never type parameters, so it contributes
+        // nothing here. That is also why a row survives monomorphization
+        // unchanged.
+        CoreTypeRef::Func { params, ret, .. } => {
             for param in params {
                 collect_type_params(param, out);
             }
