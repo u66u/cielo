@@ -1073,14 +1073,17 @@ impl<'a> TypeChecker<'a> {
                 }
             }
 
-            for (callee, span) in self.closure_calls_from(function.body) {
+            for (callee, span, discharged) in self.closure_calls_from(function.body) {
                 let Some(ty) = sema.type_of_expr.get(callee.index()).copied().flatten() else {
                     continue;
                 };
                 let Some(TypeKind::Function(signature)) = self.store.get(ty) else {
                     continue;
                 };
-                let undeclared = signature.effects.subtract(&function.declared_effects);
+                let undeclared = signature
+                    .effects
+                    .subtract(&discharged)
+                    .subtract(&function.declared_effects);
                 if undeclared.is_empty() {
                     continue;
                 }
@@ -1098,38 +1101,66 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Every call through a function value reachable from `root`, as
-    /// `(callee expression, call span)`.
+    /// `(callee expression, call span, effects discharged by enclosing
+    /// handlers)`.
     ///
-    /// A handler's clause and return bodies run inside the enclosing function
-    /// but are not `child_stmts` of its `Handle`, so they are pushed
-    /// explicitly. Skipping them was the shape of CIELO-54.
-    fn closure_calls_from(&self, root: StmtId) -> Vec<(ExprId, Span)> {
+    /// The discharged row is what makes `handle { f(1) } with St` legal in a
+    /// function that declares nothing: only what escapes the handler needs to
+    /// be in the caller's row. It mirrors the `Handle` arm of
+    /// `stmt_effect_row`, including that clause and return bodies are covered
+    /// by the same subtraction.
+    ///
+    /// Those bodies run inside the enclosing function but are not
+    /// `child_stmts` of the `Handle`, so they are pushed explicitly. Skipping
+    /// them was the shape of CIELO-54.
+    ///
+    /// Once a lambda body may itself perform, this row belongs in
+    /// `stmt_effect_row` instead, so that dead-handler elimination sees it too.
+    /// Today a nonempty row only ever comes from a written annotation over a
+    /// pure body, so no perform can be lost.
+    fn closure_calls_from(&self, root: StmtId) -> Vec<(ExprId, Span, SortedEffectRow)> {
         let mut out = Vec::new();
         let mut seen_stmts = HashSet::new();
         let mut seen_exprs = HashSet::new();
-        let mut stack = vec![root];
-        while let Some(stmt_id) = stack.pop() {
+        let mut stack = vec![(root, SortedEffectRow::empty())];
+        while let Some((stmt_id, discharged)) = stack.pop() {
             if !seen_stmts.insert(stmt_id) {
                 continue;
             }
             let Some(stmt) = self.program.stmt(stmt_id) else {
                 continue;
             };
-            if let StmtKind::Handle { handler, .. } = &stmt.kind
-                && let Some(def) = self.program.handlers().get(handler.index())
-            {
-                stack.push(def.return_body);
-                stack.extend(def.clauses.iter().map(|clause| clause.body));
-            }
             for expr_id in stmt.child_exprs() {
                 walk_exprs_from(self.program, expr_id, &mut seen_exprs, &mut |_, expr| {
                     if let ExprKind::CallClosure { callee, .. } = &expr.kind {
-                        out.push((*callee, expr.span));
+                        out.push((*callee, expr.span, discharged.clone()));
                     }
                     Walk::Descend
                 });
             }
-            stack.extend(stmt.child_stmts());
+
+            if let StmtKind::Handle {
+                handler,
+                body,
+                next,
+            } = &stmt.kind
+                && let Some(def) = self.program.handlers().get(handler.index())
+            {
+                let inner = discharged.union(&SortedEffectRow::singleton(def.effect));
+                stack.push((*body, inner.clone()));
+                stack.push((def.return_body, inner.clone()));
+                stack.extend(def.clauses.iter().map(|clause| (clause.body, inner.clone())));
+                if let Some(next_stmt) = next {
+                    stack.push((*next_stmt, discharged));
+                }
+                continue;
+            }
+
+            stack.extend(
+                stmt.child_stmts()
+                    .into_iter()
+                    .map(|child| (child, discharged.clone())),
+            );
         }
         out
     }

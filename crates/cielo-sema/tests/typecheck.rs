@@ -1181,6 +1181,27 @@ fn main() -> Int {
     );
 }
 
+/// A handler discharges the callee's row the same way it discharges a direct
+/// perform, so only what escapes it belongs in the caller's own row.
+#[test]
+fn calling_a_value_under_a_handler_for_its_row_is_accepted() {
+    let diagnostics = diagnose(
+        r#"
+effect St { fn get() -> Int }
+fn main() -> Int {
+  let g: Fn(Int) -> Int with St = |n| n;
+  handle { g(1) } with St {
+    | get(resume) => resume(41)
+  }
+}
+"#,
+    );
+    assert!(
+        !has_code(&diagnostics, "SEMA_UNDECLARED_CALL_EFFECT"),
+        "a call under a handler for its effect must not require the row: {diagnostics:?}"
+    );
+}
+
 #[test]
 fn an_unknown_effect_name_in_a_row_is_rejected() {
     let diagnostics = diagnose(
