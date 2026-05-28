@@ -373,6 +373,84 @@ fn parses_a_float_literal_expression() {
     assert!(matches!(expr.kind, ExprKind::Float(value) if value == 1.25));
 }
 
+/// A `Char` is one Unicode scalar value, not one byte, so `'字'` is a single
+/// literal rather than the three bytes it takes to write. The escape set is
+/// closed: exactly these six sequences, and `"` needs no escape because a
+/// character literal is quoted with `'`.
+#[test]
+fn lexes_char_literals_and_their_escape_set() {
+    let cases = [
+        ("'a'", 'a'),
+        (r"'\n'", '\n'),
+        (r"'\t'", '\t'),
+        (r"'\r'", '\r'),
+        (r"'\\'", '\\'),
+        (r"'\''", '\''),
+        (r"'\0'", '\0'),
+        ("'\"'", '"'),
+        ("'é'", 'é'),
+        ("'字'", '字'),
+    ];
+
+    for (text, expected) in cases {
+        let src = format!("fn main() -> Char {{ {text} }}");
+        let mut interner = Interner::new();
+        let parsed = parse_source(src.as_str(), SourceId::from_u32(0), &mut interner);
+        assert!(
+            !parsed.diagnostics.has_errors(),
+            "{text} should lex: {:?}",
+            parsed.diagnostics
+        );
+        let Some(Item::Function(function)) = parsed.program.items.first() else {
+            panic!("{text}: expected a function item");
+        };
+        assert!(matches!(
+            function.return_type.as_ref().map(|ty| &ty.kind),
+            Some(TypeExprKind::Builtin(BuiltinType::Char))
+        ));
+        let tail = function.body.tail.as_ref().expect("expected a tail expr");
+        assert!(
+            matches!(tail.kind, ExprKind::Char(value) if value == expected),
+            "{text} lexed as {:?}",
+            tail.kind
+        );
+    }
+}
+
+/// A literal that is not exactly one character is blamed on the literal itself.
+/// Taking the first byte and letting the rest lex as identifiers would report
+/// the mistake somewhere unrelated, or not at all for `'ab'`.
+#[test]
+fn rejects_char_literals_that_are_not_one_character() {
+    let cases = [
+        ("''", "LEX_EMPTY_CHAR"),
+        ("'ab'", "LEX_MULTI_CHAR"),
+        (r"'\n\t'", "LEX_MULTI_CHAR"),
+        (r"'\q'", "LEX_BAD_ESCAPE"),
+        ("'a", "LEX_UNTERMINATED_CHAR"),
+    ];
+
+    for (text, expected) in cases {
+        let src = format!("fn main() -> Int {{ let c = {text}; 0 }}");
+        let mut interner = Interner::new();
+        let output = lex(src.as_str(), SourceId::from_u32(0), &mut interner);
+        let codes = output
+            .diagnostics
+            .entries()
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>();
+        assert_eq!(codes, vec![expected], "{text}");
+        assert!(
+            !output
+                .tokens
+                .iter()
+                .any(|token| matches!(token.kind, TokenKind::Char(_))),
+            "{text} should not also produce a char token"
+        );
+    }
+}
+
 /// The declaration's own `with` uses `,` and a function type's uses `+`; both
 /// appear here so a change to one cannot quietly swallow the other.
 #[test]

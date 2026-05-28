@@ -41,6 +41,7 @@ pub enum TokenKind {
     Identifier(SymbolId),
     Integer(i64),
     Float(f64),
+    Char(char),
     String(String),
     Keyword(Keyword),
     LParen,
@@ -174,6 +175,7 @@ impl<'a> Lexer<'a> {
                 b'-' => self.single(TokenKind::Minus),
                 b'/' => self.single(TokenKind::Slash),
                 b'"' => self.lex_string(),
+                b'\'' => self.lex_char(),
                 b'0'..=b'9' => self.lex_number(),
                 b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.lex_identifier_or_keyword(),
                 _ => {
@@ -252,6 +254,102 @@ impl<'a> Lexer<'a> {
             "Unterminated string literal",
             self.span(start, self.offset),
         );
+    }
+
+    /// A `Char` is one Unicode scalar value, not one byte: `'é'` and `'字'` are
+    /// single characters here and reach the runtime as their code point. The
+    /// whole escape set is `\n`, `\t`, `\r`, `\\`, `\'` and `\0`; anything else
+    /// after a backslash is an error rather than the escaped byte, so a typo
+    /// cannot quietly become a different character.
+    fn lex_char(&mut self) {
+        let start = self.offset;
+        self.offset += 1;
+        let body_start = self.offset;
+
+        // A backslash always consumes the next byte, so the closing quote of
+        // `'\''` is the fourth byte and not the third. Neither `\` nor `'` can
+        // occur inside a multi-byte UTF-8 sequence, so scanning bytes cannot
+        // stop in the middle of a character.
+        let mut body_end = None;
+        while let Some(byte) = self.peek() {
+            match byte {
+                b'\\' => self.offset = (self.offset + 2).min(self.bytes.len()),
+                b'\'' => {
+                    body_end = Some(self.offset);
+                    self.offset += 1;
+                    break;
+                }
+                _ => self.offset += 1,
+            }
+        }
+
+        let Some(body_end) = body_end else {
+            self.diagnostics.error(
+                "LEX_UNTERMINATED_CHAR",
+                "Unterminated character literal",
+                self.span(start, self.offset),
+            );
+            return;
+        };
+
+        let span = self.span(start, self.offset);
+        let body = &self.bytes[body_start..body_end];
+        if body.is_empty() {
+            self.diagnostics.error(
+                "LEX_EMPTY_CHAR",
+                "Empty character literal: a character literal holds exactly one character",
+                span,
+            );
+            return;
+        }
+
+        // The source arrived as `&str`, so the body is always valid UTF-8 and
+        // the lossy decode never substitutes anything.
+        let (value, rest) = if body[0] == b'\\' {
+            let decoded = match body.get(1) {
+                Some(b'n') => '\n',
+                Some(b't') => '\t',
+                Some(b'r') => '\r',
+                Some(b'\\') => '\\',
+                Some(b'\'') => '\'',
+                Some(b'0') => '\0',
+                _ => {
+                    let text = String::from_utf8_lossy(body);
+                    self.diagnostics.error(
+                        "LEX_BAD_ESCAPE",
+                        format!(
+                            "Unknown escape '{text}' in a character literal: the escapes are \\n, \\t, \\r, \\\\, \\' and \\0"
+                        ),
+                        span,
+                    );
+                    return;
+                }
+            };
+            (decoded, &body[2..])
+        } else {
+            let text = String::from_utf8_lossy(body);
+            let mut chars = text.chars();
+            let first = chars.next().expect("a non-empty body decodes to a char");
+            let consumed = first.len_utf8();
+            (first, &body[consumed..])
+        };
+
+        if !rest.is_empty() {
+            let text = String::from_utf8_lossy(body);
+            self.diagnostics.error(
+                "LEX_MULTI_CHAR",
+                format!(
+                    "Character literal '{text}' holds more than one character: use a string literal \"{text}\" instead"
+                ),
+                span,
+            );
+            return;
+        }
+
+        self.tokens.push(Token {
+            kind: TokenKind::Char(value),
+            span,
+        });
     }
 
     /// Accepted: `1`, `1.5`, `1e9`, `1.5e-3`. Rejected: `1.`, `1.foo`, `.5`,

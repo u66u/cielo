@@ -225,6 +225,7 @@ pub enum ExprKind {
     Int(i64),
     Float(f64),
     Bool(bool),
+    Char(char),
     String(String),
     Var(SymbolId),
     Call {

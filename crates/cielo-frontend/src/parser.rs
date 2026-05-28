@@ -688,6 +688,13 @@ impl Parser {
                     span: token.span,
                 }
             }
+            TokenKind::Char(value) => {
+                self.bump();
+                Expr {
+                    kind: ExprKind::Char(value),
+                    span: token.span,
+                }
+            }
             TokenKind::String(ref value) => {
                 self.bump();
                 Expr {
