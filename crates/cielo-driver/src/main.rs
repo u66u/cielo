@@ -589,10 +589,13 @@ fn main() -> Int {
 "#,
         ),
         (
+            // Unhandled on purpose: this is the case where a perform reaches
+            // the runtime's no-handler trap. `main` still has to declare the
+            // effect, or `enforce_declared_effects` rejects it.
             "effects",
             r#"
 effect Console { fn print(s: String) -> () }
-fn main() -> Int {
+fn main() -> Int with Console {
   do Console.print("hello");
   0
 }
