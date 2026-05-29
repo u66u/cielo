@@ -1452,6 +1452,83 @@ fn integer_overflow_traps_instead_of_wrapping() {
     }
 }
 
+/// `Char` is a Unicode scalar value end to end, so `'é'` and `'字'` reach stdout
+/// as UTF-8 rather than as the one byte `%c` would have kept. Equality is the
+/// only operator the type system admits on `Char`, and it is what makes the
+/// type observable from an exit code at all.
+#[test]
+fn char_literals_reach_the_compiled_program() {
+    if !c_compiler_available() {
+        eprintln!("skipping char literal test: no C compiler found");
+        return;
+    }
+
+    let cases = [
+        (
+            "char_eq_picks_a_branch",
+            r#"
+fn main() -> Int {
+  let c = 'a';
+  if c == 'a' { 42 } else { 0 }
+}
+"#,
+            42,
+            "",
+        ),
+        (
+            "char_escapes_round_trip",
+            r#"
+fn main() -> Int {
+  print('\t');
+  print('\\');
+  print('\'');
+  0
+}
+"#,
+            0,
+            "\t\n\\\n'\n",
+        ),
+        (
+            "char_holds_a_unicode_scalar_value",
+            r#"
+fn main() -> Int {
+  let c = '字';
+  print('é');
+  print(c);
+  if c == '字' { 7 } else { 0 }
+}
+"#,
+            7,
+            "é\n字\n",
+        ),
+    ];
+
+    let compiler = PassHarness::new(PassConfig::default());
+    for (idx, (name, source, expected_exit, expected_stdout)) in cases.iter().enumerate() {
+        let mut interner = Interner::new();
+        let compiled = compiler.compile_source_to_c(
+            source,
+            SourceId::from_u32(70_000 + idx as u32),
+            &mut interner,
+        );
+        assert!(
+            !compiled.residual.diagnostics().has_errors(),
+            "case {name} should compile cleanly:\n{source}\n{:?}",
+            compiled.residual.diagnostics()
+        );
+        let (code, stderr, stdout) = compile_and_run_c(name, compiled.c_source.as_str());
+        assert_eq!(
+            code,
+            Some(*expected_exit),
+            "case {name} exited wrong:\n{stderr}"
+        );
+        assert_eq!(
+            stdout, *expected_stdout,
+            "case {name} printed the wrong bytes"
+        );
+    }
+}
+
 #[test]
 fn scoped_perform_does_not_dispatch_to_wrong_capability() {
     if !c_compiler_available() {

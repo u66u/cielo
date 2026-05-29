@@ -724,13 +724,42 @@ static inline CieloValue cv_or(CieloValue a, CieloValue b) {
     printf(FMT "\n", __VA_ARGS__);                                             \
     break
 
+/* A CV_CHAR holds a Unicode scalar value, not a byte, so printing it with "%c"
+ * would truncate everything above U+007F to one garbage byte. Codegen only ever
+ * builds one from a Rust `char`, so the substitution arm is unreachable from
+ * generated code; it is here so a value arriving over FFI prints U+FFFD instead
+ * of emitting an invalid sequence. */
+static inline const char *cielo_utf8_encode(uint32_t cp, char out[5]) {
+  size_t n = 0;
+  if (cp > 0x10FFFFu || (cp >= 0xD800u && cp <= 0xDFFFu))
+    cp = 0xFFFDu;
+  if (cp < 0x80u) {
+    out[n++] = (char)cp;
+  } else if (cp < 0x800u) {
+    out[n++] = (char)(0xC0u | (cp >> 6));
+    out[n++] = (char)(0x80u | (cp & 0x3Fu));
+  } else if (cp < 0x10000u) {
+    out[n++] = (char)(0xE0u | (cp >> 12));
+    out[n++] = (char)(0x80u | ((cp >> 6) & 0x3Fu));
+    out[n++] = (char)(0x80u | (cp & 0x3Fu));
+  } else {
+    out[n++] = (char)(0xF0u | (cp >> 18));
+    out[n++] = (char)(0x80u | ((cp >> 12) & 0x3Fu));
+    out[n++] = (char)(0x80u | ((cp >> 6) & 0x3Fu));
+    out[n++] = (char)(0x80u | (cp & 0x3Fu));
+  }
+  out[n] = '\0';
+  return out;
+}
+
 static inline void cv_print(CieloValue v) {
+  char utf8[5];
   switch (v.tag) {
     CASE_PUTS(CV_UNIT, "()");
     CASE_PUTS(CV_BOOL, v.as.b ? "true" : "false");
     CASE_PRINTF(CV_INT, "%lld", (long long)v.as.i);
     CASE_PRINTF(CV_FLOAT, "%f", v.as.f);
-    CASE_PRINTF(CV_CHAR, "%c", (int)v.as.c);
+    CASE_PUTS(CV_CHAR, cielo_utf8_encode(v.as.c, utf8));
     CASE_PUTS(CV_STRING, cielo_str_data(v));
 
   case CV_CLOSURE:
