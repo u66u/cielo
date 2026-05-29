@@ -73,6 +73,39 @@ that wants to observe a float has to reduce it to `Int` itself.
 `-0.0 == 0.0` is true — both correct IEEE, both surprising.
 
 
+## Char literal forms
+
+A `Char` is one Unicode scalar value, not one byte. `Literal::Char` is a Rust `char`,
+`cv_char` takes a `uint32_t`, and codegen emits the code point, so the width was already
+settled everywhere except the lexer and `cv_print`; the literal follows the representation
+rather than narrowing it to ASCII.
+
+| Form | Example | Status |
+| --- | --- | --- |
+| one character | `'a'`, `'é'`, `'字'` | accepted |
+| escape | `'\n'`, `'\t'`, `'\r'`, `'\\'`, `'\''`, `'\0'` | accepted — this is the whole set |
+| empty | `''` | rejected, `LEX_EMPTY_CHAR` |
+| more than one character | `'ab'`, `'\n\t'` | rejected, `LEX_MULTI_CHAR` |
+| any other escape | `'\q'`, `'\u{41}'` | rejected, `LEX_BAD_ESCAPE` |
+| no closing quote | `'a` | rejected, `LEX_UNTERMINATED_CHAR` |
+
+`'"'` needs no escape, because a character literal is quoted with `'`. An unknown escape is
+an error rather than the escaped byte, so a typo cannot quietly become a different
+character.
+
+`cv_print` encodes UTF-8 rather than using `%c`, which truncates everything above U+007F to
+one byte of a sequence. `Char` is otherwise unconnected to `String` in v1: there is no
+`ord`, `chr` or string indexing, and the builtins are `print`, `str_len` and `str_concat`.
+
+### Char ordering is folded but not typeable
+
+`cv_ordering` compares `CV_CHAR` numerically and `ct_common` folds `(Comparison, Char,
+Char)`, but the typechecker's `OpCategory::Comparison` requires `Int` or `Float`, so
+`'a' < 'b'` is `TYPE_NUMERIC_REQUIRED` and the folder's arm is unreachable from source.
+Equality is the only operator a program can apply to a `Char`, and `cv_equal` and the CT
+folder agree on it: both compare scalar values.
+
+
 ## Effect handler bugs
 
 ### Example: effect handled by the "wrong" handler
