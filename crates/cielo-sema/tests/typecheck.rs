@@ -1181,6 +1181,34 @@ fn main() -> Int {
     );
 }
 
+/// `cv_ordering` and `ct_common` both order chars by scalar value. Arithmetic
+/// stays numeric-only, and a mixed pair is still a mismatch.
+#[test]
+fn chars_are_ordered_but_not_arithmetic() {
+    let ordered = diagnose(
+        r#"
+fn main() -> Int {
+  if 'a' < 'b' { 1 } else { 0 }
+}
+"#,
+    );
+    assert!(
+        !has_code(&ordered, "TYPE_NUMERIC_REQUIRED"),
+        "char ordering must typecheck: {ordered:?}"
+    );
+
+    for source in [
+        "fn main() -> Int { let x = 'a' + 'b'; 0 }",
+        "fn main() -> Int { if 'a' < 1 { 1 } else { 0 } }",
+    ] {
+        let rejected = diagnose(source);
+        assert!(
+            has_code(&rejected, "TYPE_NUMERIC_REQUIRED"),
+            "expected a numeric-required error for `{source}`: {rejected:?}"
+        );
+    }
+}
+
 /// A handler discharges the callee's row the same way it discharges a direct
 /// perform, so only what escapes it belongs in the caller's own row.
 #[test]

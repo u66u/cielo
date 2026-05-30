@@ -97,13 +97,19 @@ character.
 one byte of a sequence. `Char` is otherwise unconnected to `String` in v1: there is no
 `ord`, `chr` or string indexing, and the builtins are `print`, `str_len` and `str_concat`.
 
-### Char ordering is folded but not typeable
+### Chars order, but do not do arithmetic
 
-`cv_ordering` compares `CV_CHAR` numerically and `ct_common` folds `(Comparison, Char,
-Char)`, but the typechecker's `OpCategory::Comparison` requires `Int` or `Float`, so
-`'a' < 'b'` is `TYPE_NUMERIC_REQUIRED` and the folder's arm is unreachable from source.
-Equality is the only operator a program can apply to a `Char`, and `cv_equal` and the CT
-folder agree on it: both compare scalar values.
+`'a' < 'b'` typechecks. `cv_ordering` compares `CV_CHAR` by scalar value and `ct_common`
+folds `(Comparison, Char, Char)` identically, so both stages agree. Equality is the same
+story via `cv_equal`.
+
+Arithmetic stays `Int`/`Float` only — `'a' + 'b'` is `TYPE_NUMERIC_REQUIRED` — and so does
+a mixed pair like `'a' < 1`.
+
+`String` is deliberately not ordered even though `cv_ordering` runs `strcmp` on it, because
+`ct_common` has no `(Comparison, Str, Str)` arm. Allowing it would mean a comparison the
+runtime answers and comptime declines, which is the same asymmetry the `%`-on-floats rule
+exists to prevent.
 
 
 ## Effect handler bugs

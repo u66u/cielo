@@ -2185,20 +2185,20 @@ impl<'a> TypeChecker<'a> {
                         numeric_ty
                     }
                     OpCategory::Comparison => {
-                        let numeric_ty = self.pick_numeric_type(lhs_ty, Some(rhs_ty), expr.span);
+                        let ordered_ty = self.pick_ordered_type(lhs_ty, Some(rhs_ty), expr.span);
                         let _ = self.unify_with(
                             lhs_ty,
-                            numeric_ty,
+                            ordered_ty,
                             expr.span,
                             "TYPE_NUMERIC_REQUIRED",
-                            "Comparison operands must be Int or Float",
+                            "Comparison operands must be Int, Float or Char",
                         );
                         let _ = self.unify_with(
                             rhs_ty,
-                            numeric_ty,
+                            ordered_ty,
                             expr.span,
                             "TYPE_NUMERIC_REQUIRED",
-                            "Comparison operands must be Int or Float",
+                            "Comparison operands must be Int, Float or Char",
                         );
                         InferTy::Concrete(self.prim.bool_)
                     }
@@ -2462,6 +2462,25 @@ impl<'a> TypeChecker<'a> {
             }
         }
         vars
+    }
+
+    /// `<` and friends, unlike arithmetic, also accept `Char`: `cv_ordering`
+    /// compares `CV_CHAR` by scalar value and `ct_common` folds
+    /// `(Comparison, Char, Char)` the same way, so both stages already agree.
+    ///
+    /// `String` is left out even though `cv_ordering` does `strcmp` on it,
+    /// because `ct_common` has no `(Comparison, Str, Str)` arm — allowing it
+    /// would mean a comparison the runtime answers and comptime declines,
+    /// which is the asymmetry the `%`-on-floats rule above exists to avoid.
+    fn pick_ordered_type(&mut self, left: InferTy, right: Option<InferTy>, span: Span) -> InferTy {
+        for candidate in [left, right.unwrap_or(left)] {
+            if let Some(ty) = self.infer.resolve_concrete(candidate)
+                && ty == self.prim.char_
+            {
+                return InferTy::Concrete(ty);
+            }
+        }
+        self.pick_numeric_type(left, right, span)
     }
 
     fn pick_numeric_type(&mut self, left: InferTy, right: Option<InferTy>, span: Span) -> InferTy {
