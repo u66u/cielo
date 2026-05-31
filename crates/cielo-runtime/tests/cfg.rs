@@ -369,8 +369,14 @@ fn main() -> Int {
             *values_per_var.entry(var).or_default() += 1;
         }
     }
+    // Two perform sites over a two-site clause, so the clause body is lowered
+    // 2^2 times and one of its variables has to show up four times over.
+    //
+    // The bound used to be higher because the handler's return parameter was
+    // re-bound at every nested `Return` in the erased body, which stacked up
+    // eleven copies of a variable the inliner never duplicated (CIELO-66).
     assert!(
-        values_per_var.values().any(|count| *count > 4),
-        "the clause body must still be re-lowered many times: {values_per_var:?}"
+        values_per_var.values().any(|count| *count >= 4),
+        "the clause body must still be re-lowered once per site per perform: {values_per_var:?}"
     );
 }

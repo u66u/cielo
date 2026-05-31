@@ -93,6 +93,49 @@ pub(super) fn core_stmt_calls_performing_effect(
     false
 }
 
+/// True when lowering `root` under `handlers` splices a continuation into it:
+/// a `Perform` one of the frames answers, or a `resume` of the clause context
+/// in force. Both are discharged by re-lowering Core at the site, which a `Val`
+/// join placed after `root` is unreachable from, so the enclosing `Val`'s tail
+/// has to be threaded in instead (CIELO-66).
+///
+/// Conservative in two directions, both of which only cost an inlining: an
+/// inner handler for the same effect shadows the frame and is not detected, and
+/// a `Handle` body is not descended into because its own return clause is what
+/// answers it.
+pub(super) fn splices_a_continuation(
+    program: &CoreProgram,
+    root: StmtId,
+    handlers: &[&HandlerDef],
+    resume_var: Option<VarId>,
+) -> bool {
+    let mut stack = vec![root];
+    let mut seen = HashSet::new();
+    while let Some(stmt_id) = stack.pop() {
+        if !seen.insert(stmt_id) {
+            continue;
+        }
+        let Some(stmt) = program.stmt(stmt_id) else {
+            continue;
+        };
+        match &stmt.kind {
+            StmtKind::Perform { effect, .. }
+                if handlers.iter().any(|frame| frame.effect == *effect) =>
+            {
+                return true;
+            }
+            StmtKind::Resume { resume, .. } if Some(*resume) == resume_var => return true,
+            StmtKind::Handle { next, .. } => {
+                stack.extend(next.iter().copied());
+                continue;
+            }
+            _ => {}
+        }
+        stack.extend(stmt.child_stmts());
+    }
+    false
+}
+
 pub(super) fn linear_stmt_contains_perform_effect(
     program: &LinearProgram,
     root: LinearStmtId,

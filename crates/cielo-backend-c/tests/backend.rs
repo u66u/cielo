@@ -1157,9 +1157,21 @@ fn main() -> Int {
         linear_stmt_graph_contains_perform_effect(&compiled.linear, main.body, 1),
         "non-handled intermediate effect in clause should be preserved on linear path"
     );
+    // Used to count identity wrappers and demand more of them than the direct
+    // path leaves. Most of what it counted was the handler's return parameter
+    // being re-bound at every nested return, which no longer happens, so the
+    // gate decision itself is what separates the two paths now (CIELO-66).
     assert!(
-        linear_stmt_graph_tail_resume_wrapper_count(&compiled.linear, main.body) >= 2,
-        "control-path resumptions should not collapse to the direct-tail wrapper shape"
+        compiled
+            .residual
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|diag| {
+                diag.code == "LINEARIZE_RESUME_LOWERING_GATE"
+                    && diag.message.contains("Control path selected")
+            }),
+        "an intermediate effect before the resume should select the control path"
     );
 }
 
@@ -1252,9 +1264,21 @@ fn main() -> Int {
         !linear_stmt_graph_contains_perform_effect(&compiled.linear, main.body, 0),
         "handled branch-exclusive resumptions should not leave residual perform dispatch"
     );
+    // Both sites resume in tail position, so they merge into one join and leave
+    // no identity wrapper of their own to count. What the count stood for --
+    // that the clause was erased on a tail-resumptive path rather than left to
+    // the dispatcher -- is the gate decision plus the assertion above (CIELO-66).
     assert!(
-        linear_stmt_graph_tail_resume_wrapper_count(&compiled.linear, main.body) >= 1,
-        "single-shot branch resumptions should still lower through tail-resumption wrappers"
+        compiled
+            .residual
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|diag| {
+                diag.code == "LINEARIZE_RESUME_LOWERING_GATE"
+                    && diag.message.contains("Direct path selected")
+            }),
+        "branch-exclusive tail resumptions should select the direct path"
     );
 }
 

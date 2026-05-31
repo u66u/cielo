@@ -10,6 +10,8 @@
 // - Variable identities are preserved
 // - Function ids are remapped densely after reachability pruning
 // - Core node sharing is preserved via memoized ID mapping
+// - An erased `resume` continues with the whole rest of the handled body, not
+//   with the rest of the block the `perform` sat in
 //
 // Diagnostics:
 // - `LINEARIZE_UNKNOWN_CALLEE` when a call target cannot be resolved

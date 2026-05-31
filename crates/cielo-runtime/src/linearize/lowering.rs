@@ -19,10 +19,11 @@ use super::analysis::{
     ResidualBlocker, analyze_clause_resume, classify_clause_convention, clause_policy,
     core_stmt_calls_performing_effect, fresh_var_base, is_identity_handler_return_clause,
     is_identity_return_of_var, linear_stmt_contains_perform_effect, resume_convention_reason,
-    stmt_effect_row_contains,
+    splices_a_continuation, stmt_effect_row_contains,
 };
 use super::types::{
-    ClauseConvention, ClausePolicy, PerformReach, ResumeContext, ResumeQualifier, ResumeStrategy,
+    Answer, ClauseConvention, ClausePolicy, PerformReach, ResumeContext, ResumeQualifier,
+    ResumeStrategy,
 };
 
 struct LoweringInput<'a> {
@@ -323,8 +324,14 @@ fn lower_stmt(
 
                 let escaped =
                     core_stmt_calls_performing_effect(input.program, *body, handler_def.effect);
-                let mut lowered_body =
-                    lower_stmt_under_handlers(input, *body, &[handler_def], state, None);
+                let mut lowered_body = lower_stmt_under_handlers(
+                    input,
+                    *body,
+                    &[handler_def],
+                    state,
+                    None,
+                    &Answer::HandlerReturn,
+                );
                 let leaked = linear_stmt_contains_perform_effect(
                     state.linear,
                     lowered_body,
@@ -414,12 +421,13 @@ fn lower_stmt(
 /// perform resolves against the innermost frame that handles it. Carrying a
 /// single handler here silently dropped the outer ones, letting a perform of a
 /// different effect escape unrewritten.
-fn lower_stmt_under_handlers(
+fn lower_stmt_under_handlers<'a>(
     input: &LoweringInput<'_>,
     stmt_id: StmtId,
     handlers: &[&HandlerDef],
     state: &mut LoweringState<'_>,
-    resume_ctx: Option<&ResumeContext<'_>>,
+    resume_ctx: Option<&'a ResumeContext<'a>>,
+    answer: &'a Answer<'a>,
 ) -> LinearStmtId {
     let Some(handler) = handlers.last().copied() else {
         return lower_stmt(input, stmt_id, state);
@@ -434,12 +442,31 @@ fn lower_stmt_under_handlers(
     match &stmt.kind {
         StmtKind::Return(expr) => {
             let ret_value = lower_expr(input, *expr, state);
-            let lowered_return = lower_stmt(input, handler.return_body, state);
-            state.linear.push_stmt(LinearStmt::Let {
-                binding: handler.return_param,
-                value: ret_value,
-                next: lowered_return,
-            })
+            match answer {
+                Answer::Yield => state.linear.push_stmt(LinearStmt::Return(ret_value)),
+                Answer::HandlerReturn => {
+                    let lowered_return = lower_stmt(input, handler.return_body, state);
+                    state.linear.push_stmt(LinearStmt::Let {
+                        binding: handler.return_param,
+                        value: ret_value,
+                        next: lowered_return,
+                    })
+                }
+                Answer::Bind {
+                    binding,
+                    next,
+                    resume_ctx: bound_ctx,
+                    outer,
+                } => {
+                    let lowered_next =
+                        lower_stmt_under_handlers(input, *next, handlers, state, *bound_ctx, outer);
+                    state.linear.push_stmt(LinearStmt::Let {
+                        binding: *binding,
+                        value: ret_value,
+                        next: lowered_next,
+                    })
+                }
+            }
         }
         StmtKind::Perform {
             result,
@@ -516,11 +543,15 @@ fn lower_stmt_under_handlers(
                     resume_var,
                     perform_result: *result,
                     continuation: *next,
+                    answer,
                     clause_convention,
                     policy,
                     resumption,
                     outer: resume_ctx,
                 });
+                // The clause's own value is the value of the handle expression:
+                // `resume` has already run the body's remainder and its return
+                // clause, so neither applies again on the way out.
                 let lowered_clause = lower_matching_clause(
                     input,
                     clause,
@@ -538,7 +569,7 @@ fn lower_stmt_under_handlers(
                     }
                     ClausePolicy::Erase(ResumeStrategy::Join) => {
                         let continuation =
-                            lower_stmt_under_handlers(input, *next, handlers, state, None);
+                            lower_stmt_under_handlers(input, *next, handlers, state, None, answer);
                         let binding = result.unwrap_or_else(|| state.fresh_var());
                         state.linear.push_stmt(LinearStmt::Val {
                             binding,
@@ -550,8 +581,9 @@ fn lower_stmt_under_handlers(
                         // Lowered under the context in force at *this* perform,
                         // exactly as each inlined copy would be: the clause's
                         // own frame is popped, everything enclosing it is live.
-                        let continuation =
-                            lower_stmt_under_handlers(input, *next, handlers, state, resume_ctx);
+                        let continuation = lower_stmt_under_handlers(
+                            input, *next, handlers, state, resume_ctx, answer,
+                        );
                         let param = result.unwrap_or_else(|| state.fresh_var());
                         state.linear.push_stmt(LinearStmt::Resumption {
                             id: resumption.expect("a defunctionalised clause reserves one"),
@@ -567,7 +599,7 @@ fn lower_stmt_under_handlers(
                     "Missing handler clause for performed operation",
                     stmt.span,
                 );
-                lower_stmt_under_handlers(input, *next, handlers, state, resume_ctx)
+                lower_stmt_under_handlers(input, *next, handlers, state, resume_ctx, answer)
             }
         }
         StmtKind::Resume {
@@ -582,7 +614,9 @@ fn lower_stmt_under_handlers(
                     "`resume` used outside the active handler clause context",
                     stmt.span,
                 );
-                return lower_stmt_under_handlers(input, *next, handlers, state, resume_ctx);
+                return lower_stmt_under_handlers(
+                    input, *next, handlers, state, resume_ctx, answer,
+                );
             };
 
             if matches!(active_ctx.policy, ClausePolicy::Erase(ResumeStrategy::Join)) {
@@ -597,7 +631,8 @@ fn lower_stmt_under_handlers(
                 // them dense; the dispatch reads them back as case indices.
                 let label = state.next_resume_label(resumption);
                 let arg_expr = lower_expr(input, *arg, state);
-                let lowered_next = lower_stmt_under_handlers(input, *next, handlers, state, None);
+                let lowered_next =
+                    lower_stmt_under_handlers(input, *next, handlers, state, None, answer);
                 return state.linear.push_stmt(LinearStmt::ResumeJump {
                     resumption,
                     label,
@@ -609,13 +644,16 @@ fn lower_stmt_under_handlers(
 
             // The continuation belongs to the perform site, so it is lowered
             // under that site's clause context -- this clause's own frame
-            // popped, everything enclosing it still live.
+            // popped, everything enclosing it still live -- and under that
+            // site's answer, which carries the handled body still to come after
+            // whatever block the perform sat in (CIELO-66).
             let continuation = lower_stmt_under_handlers(
                 input,
                 active_ctx.continuation,
                 handlers,
                 state,
                 active_ctx.outer,
+                active_ctx.answer,
             );
             let continuation = if let Some(perform_var) = active_ctx.perform_result {
                 let arg_expr = lower_expr(input, *arg, state);
@@ -628,13 +666,9 @@ fn lower_stmt_under_handlers(
                 continuation
             };
 
-            if is_identity_return_of_var(input.program, *next, *result)
-                && matches!(active_ctx.clause_convention, ClauseConvention::Direct)
+            let resumes_in_tail = is_identity_return_of_var(input.program, *next, *result);
+            if !resumes_in_tail && matches!(active_ctx.clause_convention, ClauseConvention::Direct)
             {
-                return continuation;
-            }
-
-            if matches!(active_ctx.clause_convention, ClauseConvention::Direct) {
                 // Direct clauses must resume in tail position. Preserve a conservative fallback
                 // if earlier rewrites invalidate the syntactic guarantee.
                 state.diagnostics.error(
@@ -644,7 +678,21 @@ fn lower_stmt_under_handlers(
                 );
             }
 
-            let lowered_next = lower_stmt_under_handlers(input, *next, handlers, state, None);
+            // Answering with the continuation directly drops whatever the clause
+            // still owed, which is nothing only when the `resume` was the last
+            // thing in it. A pending `Answer::Bind` is code waiting on this
+            // resumption's value, so the join below has to bind it. Tail
+            // resumption happens to make that tail an identity today; not
+            // relying on it keeps the two analyses independent.
+            if resumes_in_tail
+                && matches!(active_ctx.clause_convention, ClauseConvention::Direct)
+                && !matches!(answer, Answer::Bind { .. })
+            {
+                return continuation;
+            }
+
+            let lowered_next =
+                lower_stmt_under_handlers(input, *next, handlers, state, None, answer);
             state.linear.push_stmt(LinearStmt::Val {
                 binding: *result,
                 value: continuation,
@@ -656,7 +704,8 @@ fn lower_stmt_under_handlers(
             value,
             next,
         } => {
-            let lowered_next = lower_stmt_under_handlers(input, *next, handlers, state, resume_ctx);
+            let lowered_next =
+                lower_stmt_under_handlers(input, *next, handlers, state, resume_ctx, answer);
             let lowered_value = lower_expr(input, *value, state);
             state.linear.push_stmt(LinearStmt::Let {
                 binding: *binding,
@@ -669,9 +718,36 @@ fn lower_stmt_under_handlers(
             value,
             next,
         } => {
-            let lowered_value =
-                lower_stmt_under_handlers(input, *value, handlers, state, resume_ctx);
-            let lowered_next = lower_stmt_under_handlers(input, *next, handlers, state, resume_ctx);
+            // A `Val` whose value graph splices a continuation cannot be joined
+            // here: the splice re-lowers Core at the perform site and this join
+            // is not part of what it re-lowers, so the tail goes in as an
+            // `Answer` frame and is inlined at each of the value's returns.
+            if splices_a_continuation(
+                input.program,
+                *value,
+                handlers,
+                resume_ctx.map(|ctx| ctx.resume_var),
+            ) {
+                let bound = Answer::Bind {
+                    binding: *binding,
+                    next: *next,
+                    resume_ctx,
+                    outer: answer,
+                };
+                return lower_stmt_under_handlers(
+                    input, *value, handlers, state, resume_ctx, &bound,
+                );
+            }
+            let lowered_value = lower_stmt_under_handlers(
+                input,
+                *value,
+                handlers,
+                state,
+                resume_ctx,
+                &Answer::Yield,
+            );
+            let lowered_next =
+                lower_stmt_under_handlers(input, *next, handlers, state, resume_ctx, answer);
             state.linear.push_stmt(LinearStmt::Val {
                 binding: *binding,
                 value: lowered_value,
@@ -694,7 +770,8 @@ fn lower_stmt_under_handlers(
                 );
                 SymbolId::INVALID
             });
-            let lowered_next = lower_stmt_under_handlers(input, *next, handlers, state, resume_ctx);
+            let lowered_next =
+                lower_stmt_under_handlers(input, *next, handlers, state, resume_ctx, answer);
             let lowered_args = args
                 .iter()
                 .copied()
@@ -715,9 +792,9 @@ fn lower_stmt_under_handlers(
             else_branch,
         } => {
             let then_lowered =
-                lower_stmt_under_handlers(input, *then_branch, handlers, state, resume_ctx);
+                lower_stmt_under_handlers(input, *then_branch, handlers, state, resume_ctx, answer);
             let else_lowered =
-                lower_stmt_under_handlers(input, *else_branch, handlers, state, resume_ctx);
+                lower_stmt_under_handlers(input, *else_branch, handlers, state, resume_ctx, answer);
             let lowered_cond = lower_expr(input, *cond, state);
             state.linear.push_stmt(LinearStmt::If {
                 cond: lowered_cond,
@@ -735,11 +812,13 @@ fn lower_stmt_under_handlers(
                 .map(|arm| LinearMatchArm {
                     tag: arm.tag,
                     binders: arm.binders.clone(),
-                    body: lower_stmt_under_handlers(input, arm.body, handlers, state, resume_ctx),
+                    body: lower_stmt_under_handlers(
+                        input, arm.body, handlers, state, resume_ctx, answer,
+                    ),
                 })
                 .collect();
             let lowered_default = default.map(|default_stmt| {
-                lower_stmt_under_handlers(input, default_stmt, handlers, state, resume_ctx)
+                lower_stmt_under_handlers(input, default_stmt, handlers, state, resume_ctx, answer)
             });
             let lowered_scrutinee = lower_expr(input, *scrutinee, state);
             state.linear.push_stmt(LinearStmt::Match {
@@ -755,7 +834,8 @@ fn lower_stmt_under_handlers(
             args,
             next,
         } => {
-            let lowered_next = lower_stmt_under_handlers(input, *next, handlers, state, resume_ctx);
+            let lowered_next =
+                lower_stmt_under_handlers(input, *next, handlers, state, resume_ctx, answer);
             let lowered_args = args
                 .iter()
                 .copied()
@@ -779,12 +859,28 @@ fn lower_stmt_under_handlers(
             };
             let mut nested = handlers.to_vec();
             nested.push(inner);
-            let lowered_body = lower_stmt_under_handlers(input, *body, &nested, state, resume_ctx);
+            // Capped at its own return clause: the inner body answers the inner
+            // handler, and whatever the enclosing graph still owes is joined on
+            // afterwards rather than threaded inside.
+            let lowered_body = lower_stmt_under_handlers(
+                input,
+                *body,
+                &nested,
+                state,
+                resume_ctx,
+                &Answer::HandlerReturn,
+            );
             state.record_handler(inner.effect, stmt.span, HandlerOutcome::Inlined);
-            match next {
+            let handled = match next {
                 Some(next_stmt) => {
-                    let lowered_next =
-                        lower_stmt_under_handlers(input, *next_stmt, handlers, state, resume_ctx);
+                    let lowered_next = lower_stmt_under_handlers(
+                        input,
+                        *next_stmt,
+                        handlers,
+                        state,
+                        resume_ctx,
+                        &Answer::Yield,
+                    );
                     state.linear.push_stmt(LinearStmt::Val {
                         binding: inner.return_param,
                         value: lowered_body,
@@ -792,22 +888,68 @@ fn lower_stmt_under_handlers(
                     })
                 }
                 None => lowered_body,
-            }
+            };
+            join_answer(input, handled, handlers, state, answer)
         }
         StmtKind::Stage { stage, body, next } => {
-            let lowered_body = lower_stmt_under_handlers(input, *body, handlers, state, resume_ctx);
+            let lowered_body = lower_stmt_under_handlers(
+                input,
+                *body,
+                handlers,
+                state,
+                resume_ctx,
+                &Answer::Yield,
+            );
             let lowered_next = next.map(|next_stmt| {
-                lower_stmt_under_handlers(input, next_stmt, handlers, state, resume_ctx)
+                lower_stmt_under_handlers(
+                    input,
+                    next_stmt,
+                    handlers,
+                    state,
+                    resume_ctx,
+                    &Answer::Yield,
+                )
             });
-            state.linear.push_stmt(LinearStmt::Stage {
+            let staged = state.linear.push_stmt(LinearStmt::Stage {
                 stage: *stage,
                 body: lowered_body,
                 next: lowered_next,
-            })
+            });
+            join_answer(input, staged, handlers, state, answer)
         }
         StmtKind::Hole { .. } => state.linear.push_stmt(LinearStmt::Hole),
         StmtKind::Error(_) => state.linear.push_stmt(LinearStmt::Error),
     }
+}
+
+/// Feeds an already-lowered graph's value to `answer` by joining the pending
+/// tail after it.
+///
+/// Only for graphs lowered under a *different* answer -- a nested `Handle` body
+/// answers its own return clause -- so nothing inside has already consumed the
+/// frame and running the tail once here is right.
+fn join_answer(
+    input: &LoweringInput<'_>,
+    graph: LinearStmtId,
+    handlers: &[&HandlerDef],
+    state: &mut LoweringState<'_>,
+    answer: &Answer<'_>,
+) -> LinearStmtId {
+    let Answer::Bind {
+        binding,
+        next,
+        resume_ctx,
+        outer,
+    } = answer
+    else {
+        return graph;
+    };
+    let lowered_next = lower_stmt_under_handlers(input, *next, handlers, state, *resume_ctx, outer);
+    state.linear.push_stmt(LinearStmt::Val {
+        binding: *binding,
+        value: graph,
+        next: lowered_next,
+    })
 }
 
 /// The clause table for a handle site erasure could not fully discharge.
@@ -929,7 +1071,14 @@ fn lower_matching_clause(
     resume_ctx: Option<&ResumeContext<'_>>,
     state: &mut LoweringState<'_>,
 ) -> LinearStmtId {
-    let clause_body = lower_stmt_under_handlers(input, clause.body, handlers, state, resume_ctx);
+    let clause_body = lower_stmt_under_handlers(
+        input,
+        clause.body,
+        handlers,
+        state,
+        resume_ctx,
+        &Answer::Yield,
+    );
     let mut current = clause_body;
 
     for (param, arg) in clause

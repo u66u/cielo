@@ -1,5 +1,36 @@
 use cielo_base::ids::{ResumptionId, StmtId, VarId};
 
+/// What a Core statement graph's `Return` answers to while a handler is being
+/// erased.
+///
+/// A `Return` is not always the end of the handled body: the value graph of a
+/// `Val` returns *into* the `Val`, and the rest of the enclosing body is still
+/// to come. Naming that pending tail is what lets a `resume` under a nested
+/// block continue with the whole handled body instead of stopping at the
+/// block's edge (CIELO-66).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Answer<'a> {
+    /// The graph's value is the value of the linear statement it lowers to.
+    Yield,
+    /// End of the handled body: the handler's return clause consumes the value.
+    /// Only the outermost graph of a handled body answers this way -- the
+    /// return clause runs once, not once per nested block.
+    HandlerReturn,
+    /// The graph is a `Val`'s value and something in it splices a continuation,
+    /// so the rest of the enclosing graph is inlined at each return rather than
+    /// joined after it. A `Val` join is unreachable from a spliced `resume`,
+    /// which is the whole reason this frame exists.
+    Bind {
+        binding: VarId,
+        next: StmtId,
+        /// The clause context in force at the `Val`, which is not the one in
+        /// force at the return that lands here: a `resume` re-enters this frame
+        /// from inside a clause spliced several levels down.
+        resume_ctx: Option<&'a ResumeContext<'a>>,
+        outer: &'a Answer<'a>,
+    },
+}
+
 /// A clause context is a stack, not a single frame. A clause that performs
 /// another effect before resuming has that effect's clause spliced *inside* it,
 /// and the inner clause's `resume` splices back the code that still has to
@@ -10,6 +41,10 @@ pub(super) struct ResumeContext<'a> {
     pub(super) resume_var: VarId,
     pub(super) perform_result: Option<VarId>,
     pub(super) continuation: StmtId,
+    /// What `continuation` answers to. The continuation is the perform site's,
+    /// so it answers where the perform site did, not where the `resume` that
+    /// splices it sits (CIELO-66).
+    pub(super) answer: &'a Answer<'a>,
     pub(super) clause_convention: ClauseConvention,
     pub(super) policy: ClausePolicy,
     /// The shared resumption every `resume` in this clause enters. `Some` for
