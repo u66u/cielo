@@ -8,6 +8,7 @@ use cielo_base::{CfgFuncId, Interner, SourceId};
 use cielo_ir::cfg::{CfgExpr, CfgFunction, CfgProgram, CfgTerminator};
 use cielo_ir::constants::ConstantTable;
 use cielo_ir::core::{BinaryOp, Literal};
+use cielo_memory::MemoryPreset;
 use cielo_test_support::{PassConfig, PassHarness};
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -21,8 +22,12 @@ fn bodies(emitted: &str) -> &str {
 }
 
 fn compile_to_c(source: &str) -> String {
+    compile_to_c_with_preset(source, MemoryPreset::ArcOptimized)
+}
+
+fn compile_to_c_with_preset(source: &str, preset: MemoryPreset) -> String {
     let mut interner = Interner::new();
-    let compiler = PassHarness::new(PassConfig::default());
+    let compiler = PassHarness::new(PassConfig::default().with_memory_preset(preset));
     let compiled = compiler.compile_source_to_c(source, SourceId::from_u32(0), &mut interner);
     assert!(
         !compiled.residual.diagnostics().has_errors(),
@@ -158,6 +163,66 @@ fn main() -> Int {
         Some(100),
         "a million-deep tail recursion must not grow the stack"
     );
+}
+
+const MANAGED_TAIL_RECURSION: &str = r#"
+enum List { Nil, Cons(Int, List) }
+
+fn build(n: Int, acc: List) -> List {
+  if n == 0 { acc } else { build(n - 1, Cons(n, acc)) }
+}
+
+fn len(l: List, acc: Int) -> Int {
+  match l {
+    | Nil => acc
+    | Cons(v, rest) => len(rest, acc + 1)
+  }
+}
+
+fn main() -> Int {
+  let l = build(1000000, Nil());
+  let n = len(l, 0);
+  if n == 1000000 { 42 } else { 0 }
+}
+"#;
+
+#[test]
+fn managed_tail_calls_survive_every_public_memory_preset() {
+    let presets = [
+        ("unmanaged", MemoryPreset::Unmanaged),
+        ("arc_raw", MemoryPreset::ArcRaw),
+        ("arc_optimized", MemoryPreset::ArcOptimized),
+        ("arc_no_verify", MemoryPreset::ArcNoVerify),
+    ];
+
+    for (name, preset) in presets {
+        let emitted = compile_to_c_with_preset(MANAGED_TAIL_RECURSION, preset);
+        let bodies = bodies(emitted.as_str());
+        for function in ["build", "len"] {
+            let body = body_of(bodies, format!("cielo_fn_{function}").as_str());
+            let call = format!("CIELO_CALL_PURE(cielo_fn_{function}");
+            assert!(
+                body.contains(format!("return {call}").as_str()),
+                "{name}: recursive {function} call must be returned directly:\n{body}"
+            );
+            assert!(
+                !body.contains(format!("= {call}").as_str()),
+                "{name}: recursive {function} call must not be bound:\n{body}"
+            );
+        }
+
+        let Some(code) = compile_and_run(
+            emitted.as_str(),
+            format!("managed_tail_recursion_{name}").as_str(),
+        ) else {
+            continue;
+        };
+        assert_eq!(
+            code,
+            Some(42),
+            "{name}: million-node build and traversal must not grow the stack"
+        );
+    }
 }
 
 /// Alternates a million times, so a frame per step overflows. `is_even`
