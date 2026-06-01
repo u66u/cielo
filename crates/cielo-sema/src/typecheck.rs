@@ -1149,7 +1149,11 @@ impl<'a> TypeChecker<'a> {
                 let inner = discharged.union(&SortedEffectRow::singleton(def.effect));
                 stack.push((*body, inner.clone()));
                 stack.push((def.return_body, inner.clone()));
-                stack.extend(def.clauses.iter().map(|clause| (clause.body, inner.clone())));
+                stack.extend(
+                    def.clauses
+                        .iter()
+                        .map(|clause| (clause.body, inner.clone())),
+                );
                 if let Some(next_stmt) = next {
                     stack.push((*next_stmt, discharged));
                 }
