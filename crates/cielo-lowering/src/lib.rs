@@ -14,11 +14,12 @@ use std::sync::Arc;
 // Invariants:
 // - Expr nodes remain pure in Core
 // - Effectful constructs (`do`, `handle`) are lowered to Stmt nodes
+// - A statement-shaped operand binds to a `Val` in the statement list its own
+//   result lands in, so hoisting never crosses a branch
 // - Function declarations exist before body lowering (for call resolution)
 //
 // Diagnostics:
 // - Unknown vars/functions/effects
-// - Unsupported expression forms in v0 lowering
 //
 // Complexity:
 // - Linear in AST size (single walk + reverse statement stitching per block)
@@ -160,6 +161,33 @@ struct Lowerer {
 enum LoweredValue {
     Expr(cielo_base::ExprId),
     Stmt(cielo_base::StmtId),
+}
+
+/// One entry of a statement list under construction. A list is built forwards
+/// and stitched backwards by `stitch`, because each Core statement names its
+/// successor.
+///
+/// Statement lists are also where operand hoisting lands: `lower_expr` takes
+/// the list its result will sit in, so a statement-shaped operand can bind
+/// itself to a `Val` and leave a variable behind.
+enum Action {
+    Let {
+        span: Span,
+        binding: VarId,
+        value: cielo_base::ExprId,
+    },
+    Val {
+        span: Span,
+        binding: VarId,
+        value: cielo_base::StmtId,
+    },
+    Perform {
+        span: Span,
+        binding: Option<VarId>,
+        effect: EffectLabelId,
+        operation: SymbolId,
+        args: Vec<cielo_base::ExprId>,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -383,26 +411,6 @@ impl Lowerer {
         outer_locals: &mut HashMap<SymbolId, VarId>,
         expected: Option<SymbolId>,
     ) -> cielo_base::StmtId {
-        enum Action {
-            Let {
-                span: Span,
-                binding: VarId,
-                value: cielo_base::ExprId,
-            },
-            Val {
-                span: Span,
-                binding: VarId,
-                value: cielo_base::StmtId,
-            },
-            Perform {
-                span: Span,
-                binding: Option<VarId>,
-                effect: EffectLabelId,
-                operation: SymbolId,
-                args: Vec<cielo_base::ExprId>,
-            },
-        }
-
         let mut locals = outer_locals.clone();
         let mut actions: Vec<Action> = Vec::new();
 
@@ -420,6 +428,7 @@ impl Lowerer {
                         value,
                         &locals,
                         declared.as_ref().and_then(expected_adt),
+                        &mut actions,
                     );
                     if let Some(declared) = declared {
                         self.program.set_declared_var_type(binding, declared);
@@ -440,7 +449,7 @@ impl Lowerer {
                 }
                 AstStmt::Expr { value, span } => {
                     let temp = self.fresh_var();
-                    match self.lower_binding_value(value, &locals, None) {
+                    match self.lower_binding_value(value, &locals, None, &mut actions) {
                         LoweredValue::Expr(value) => actions.push(Action::Let {
                             span: *span,
                             binding: temp,
@@ -470,7 +479,7 @@ impl Lowerer {
                             *span,
                         );
                         for arg in args {
-                            let _ = self.lower_expr(arg, &locals, None);
+                            let _ = self.lower_expr(arg, &locals, None, &mut actions);
                         }
                         let value = self.push_expr(ExprKind::Error(error), *span);
                         let binding = match *binding {
@@ -521,9 +530,10 @@ impl Lowerer {
                                 arg,
                                 &locals,
                                 expectations.get(index).copied().flatten(),
+                                &mut actions,
                             )
                         })
-                        .collect();
+                        .collect::<Vec<_>>();
                     let result = binding.map(|name| {
                         let var = self.fresh_var();
                         locals.insert(name, var);
@@ -549,8 +559,11 @@ impl Lowerer {
             }
         }
 
-        let mut next = if let Some(tail) = &block.tail {
-            match self.lower_binding_value(tail, &locals, expected) {
+        // The tail hoists into the same list as the statements above it: the
+        // list is stitched positionally, so appending here still places the
+        // hoisted bindings ahead of the tail they feed.
+        let next = if let Some(tail) = &block.tail {
+            match self.lower_binding_value(tail, &locals, expected, &mut actions) {
                 LoweredValue::Expr(value) => self.push_stmt(StmtKind::Return(value), block.span),
                 LoweredValue::Stmt(value) => {
                     let binding = self.fresh_var();
@@ -571,6 +584,12 @@ impl Lowerer {
             self.push_stmt(StmtKind::Return(unit), block.span)
         };
 
+        self.stitch(actions, next)
+    }
+
+    /// Threads `next` back through `actions`, so the first action runs first.
+    fn stitch(&mut self, actions: Vec<Action>, next: cielo_base::StmtId) -> cielo_base::StmtId {
+        let mut next = next;
         for action in actions.into_iter().rev() {
             next = match action {
                 Action::Let {
@@ -618,16 +637,40 @@ impl Lowerer {
         next
     }
 
+    /// Binds a statement-shaped operand to a fresh variable in `hoist` and
+    /// yields that variable, which is the only thing a pure `ExprKind` can hold.
+    ///
+    /// `hoist` always belongs to the statement list the operand's own result
+    /// lands in, never an enclosing one. That is what keeps a hoist from
+    /// crossing a branch: an `if`/`match` arm is lowered as its own list, so an
+    /// effectful operand inside an arm binds inside that arm and only runs when
+    /// the arm does.
+    fn hoist_stmt(
+        &mut self,
+        value: cielo_base::StmtId,
+        hoist: &mut Vec<Action>,
+        span: Span,
+    ) -> cielo_base::ExprId {
+        let binding = self.fresh_var();
+        hoist.push(Action::Val {
+            span,
+            binding,
+            value,
+        });
+        self.push_expr(ExprKind::Var(binding), span)
+    }
+
     fn lower_binding_value(
         &mut self,
         value: &ast::Expr,
         locals: &HashMap<SymbolId, VarId>,
         expected: Option<SymbolId>,
+        hoist: &mut Vec<Action>,
     ) -> LoweredValue {
         if let Some(stmt) = self.lower_effectful_expr(value, locals, expected) {
             LoweredValue::Stmt(stmt)
         } else {
-            LoweredValue::Expr(self.lower_expr(value, locals, expected))
+            LoweredValue::Expr(self.lower_expr(value, locals, expected, hoist))
         }
     }
 
@@ -656,7 +699,10 @@ impl Lowerer {
             else_branch,
         } = &expr.kind
         {
-            let (cond, hoisted) = self.lower_condition(cond, locals);
+            // The condition runs unconditionally, so its hoists sit outside the
+            // branch. Each arm is a block of its own and hoists into itself.
+            let mut hoisted = Vec::new();
+            let cond = self.lower_expr(cond, locals, None, &mut hoisted);
             let mut then_locals = locals.clone();
             let then_branch = self.lower_block(then_branch, &mut then_locals, expected);
             let else_branch = if let Some(else_block) = else_branch {
@@ -674,7 +720,7 @@ impl Lowerer {
                 },
                 expr.span,
             );
-            return Some(self.bind_hoisted(hoisted, branch, expr.span));
+            return Some(self.stitch(hoisted, branch));
         }
 
         if let AstExprKind::Binary { op, lhs, rhs } = &expr.kind
@@ -689,7 +735,10 @@ impl Lowerer {
             default,
         } = &expr.kind
         {
-            let scrutinee = self.lower_expr(scrutinee, locals, None);
+            // As for `If`: the scrutinee is unconditional, each arm is its own
+            // block.
+            let mut hoisted = Vec::new();
+            let scrutinee = self.lower_expr(scrutinee, locals, None, &mut hoisted);
             let mut arms = Vec::with_capacity(clauses.len());
             for clause in clauses {
                 let mut clause_locals = locals.clone();
@@ -711,14 +760,15 @@ impl Lowerer {
                 let mut default_locals = locals.clone();
                 self.lower_block(block, &mut default_locals, expected)
             });
-            return Some(self.push_stmt(
+            let matched = self.push_stmt(
                 StmtKind::Match {
                     scrutinee,
                     arms,
                     default,
                 },
                 expr.span,
-            ));
+            );
+            return Some(self.stitch(hoisted, matched));
         }
 
         if let AstExprKind::Call { callee, args } = &expr.kind
@@ -730,8 +780,9 @@ impl Lowerer {
                 .filter(|var| self.active_resume_vars.contains(var))
             {
                 let result = self.fresh_var();
+                let mut hoisted = Vec::new();
                 let arg = if args.len() == 1 {
-                    self.lower_expr(&args[0], locals, None)
+                    self.lower_expr(&args[0], locals, None, &mut hoisted)
                 } else {
                     self.diagnostics.error(
                         "LOWER_RESUME_ARITY",
@@ -750,7 +801,7 @@ impl Lowerer {
                 };
                 let return_expr = self.push_expr(ExprKind::Var(result), expr.span);
                 let return_stmt = self.push_stmt(StmtKind::Return(return_expr), expr.span);
-                return Some(self.push_stmt(
+                let resumed = self.push_stmt(
                     StmtKind::Resume {
                         result,
                         resume: resume_var,
@@ -758,7 +809,8 @@ impl Lowerer {
                         next: return_stmt,
                     },
                     expr.span,
-                ));
+                );
+                return Some(self.stitch(hoisted, resumed));
             }
 
             if let Some(&func_id) = self.functions_by_name.get(&symbol) {
@@ -769,10 +821,11 @@ impl Lowerer {
                     .filter(|row| !row.is_empty());
                 let effects = effects?;
                 let result = self.fresh_var();
-                let arg_ids = self.lower_call_args(func_id, args, locals);
+                let mut hoisted = Vec::new();
+                let arg_ids = self.lower_call_args(func_id, args, locals, &mut hoisted);
                 let return_expr = self.push_expr(ExprKind::Var(result), expr.span);
                 let return_stmt = self.push_stmt(StmtKind::Return(return_expr), expr.span);
-                return Some(self.push_stmt(
+                let called = self.push_stmt(
                     StmtKind::Call {
                         result,
                         callee: func_id,
@@ -781,7 +834,8 @@ impl Lowerer {
                         next: return_stmt,
                     },
                     expr.span,
-                ));
+                );
+                return Some(self.stitch(hoisted, called));
             }
         }
 
@@ -844,8 +898,10 @@ impl Lowerer {
                 self.lower_block(block, &mut block_locals, expected)
             }
             _ => {
-                let body_expr = self.lower_expr(body, locals, expected);
-                self.push_stmt(StmtKind::Return(body_expr), body.span)
+                let mut hoisted = Vec::new();
+                let body_expr = self.lower_expr(body, locals, expected, &mut hoisted);
+                let returned = self.push_stmt(StmtKind::Return(body_expr), body.span);
+                self.stitch(hoisted, returned)
             }
         }
     }
@@ -854,13 +910,10 @@ impl Lowerer {
     /// `if a { true } else { b }`, so the right operand only runs when the left
     /// does not already decide the answer.
     ///
-    /// Core has no conditional expression, so the result is a statement and this
-    /// is reachable only where a statement is: binding, statement and tail
-    /// position, plus the operands of another short-circuit and an `if`
-    /// condition, both of which hoist. In pure operand position -- `f(a && b)`,
-    /// `(a && b) + 1` -- `lower_expr` still emits `BinaryOp::And`/`Or`, which
-    /// evaluates both sides. Hoisting a statement out of an expression tree
-    /// needs the operand hoisting from CIELO-56.
+    /// Core has no conditional expression, so the result is a statement. Every
+    /// position reaches it: statement lists take it directly, and an operand
+    /// hoists it into the list its own result lands in, so `BinaryOp::And`/`Or`
+    /// no longer survive lowering.
     fn lower_short_circuit(
         &mut self,
         op: ShortCircuit,
@@ -869,7 +922,10 @@ impl Lowerer {
         locals: &HashMap<SymbolId, VarId>,
         span: Span,
     ) -> cielo_base::StmtId {
-        let (cond, hoisted) = self.lower_condition(lhs, locals);
+        let mut hoisted = Vec::new();
+        let cond = self.lower_expr(lhs, locals, None, &mut hoisted);
+        // The right operand only runs on one side, so it is lowered as a branch
+        // body and hoists into that body rather than into `hoisted`.
         let rhs_branch = self.lower_expr_as_body(rhs, locals, None);
         let shortcut = self.push_expr(ExprKind::Literal(Literal::Bool(op.shortcut())), span);
         let shortcut_branch = self.push_stmt(StmtKind::Return(shortcut), span);
@@ -885,47 +941,7 @@ impl Lowerer {
             },
             span,
         );
-        self.bind_hoisted(hoisted, branch, span)
-    }
-
-    /// Lowers a condition to the `ExprId` a branch needs. A short-circuit
-    /// condition lowers to a statement instead, so it binds to a fresh variable
-    /// the caller must stitch in with `bind_hoisted`.
-    fn lower_condition(
-        &mut self,
-        cond: &ast::Expr,
-        locals: &HashMap<SymbolId, VarId>,
-    ) -> (cielo_base::ExprId, Option<(VarId, cielo_base::StmtId)>) {
-        if let AstExprKind::Binary { op, lhs, rhs } = &cond.kind
-            && let Some(op) = ShortCircuit::from_op(*op)
-        {
-            let value = self.lower_short_circuit(op, lhs, rhs, locals, cond.span);
-            let binding = self.fresh_var();
-            return (
-                self.push_expr(ExprKind::Var(binding), cond.span),
-                Some((binding, value)),
-            );
-        }
-        (self.lower_expr(cond, locals, None), None)
-    }
-
-    fn bind_hoisted(
-        &mut self,
-        hoisted: Option<(VarId, cielo_base::StmtId)>,
-        next: cielo_base::StmtId,
-        span: Span,
-    ) -> cielo_base::StmtId {
-        match hoisted {
-            Some((binding, value)) => self.push_stmt(
-                StmtKind::Val {
-                    binding,
-                    value,
-                    next,
-                },
-                span,
-            ),
-            None => next,
-        }
+        self.stitch(hoisted, branch)
     }
 
     fn resolve_handler_effect(&mut self, effect: SymbolId, span: Span) -> Option<EffectLabelId> {
@@ -1034,15 +1050,23 @@ impl Lowerer {
         })
     }
 
+    /// Lowers to a pure Core expression, pushing anything statement-shaped it
+    /// meets onto `hoist` as a `Val` and reading the result back as a variable.
+    ///
+    /// Operands are lowered left to right and `hoist` is appended in that order,
+    /// so that is the order performs run in. It is observable now that an
+    /// operand can perform, so it is fixed here rather than left to fall out of
+    /// field-initializer order.
     fn lower_expr(
         &mut self,
         expr: &ast::Expr,
         locals: &HashMap<SymbolId, VarId>,
         expected: Option<SymbolId>,
+        hoist: &mut Vec<Action>,
     ) -> cielo_base::ExprId {
         let kind = match &expr.kind {
             AstExprKind::Field { base, field } => ExprKind::Field {
-                base: self.lower_expr(base, locals, None),
+                base: self.lower_expr(base, locals, None, hoist),
                 field: *field,
             },
             AstExprKind::Int(value) => ExprKind::Literal(Literal::Int(*value)),
@@ -1093,28 +1117,30 @@ impl Lowerer {
             }
             AstExprKind::Unary { op, expr: inner } => ExprKind::Unary {
                 op: map_unary_op(*op),
-                expr: self.lower_expr(inner, locals, None),
+                expr: self.lower_expr(inner, locals, None, hoist),
             },
-            AstExprKind::Binary { op, lhs, rhs } => ExprKind::Binary {
-                op: map_binary_op(*op),
-                lhs: self.lower_expr(lhs, locals, None),
-                rhs: self.lower_expr(rhs, locals, None),
-            },
+            AstExprKind::Binary { op, lhs, rhs } => {
+                if let Some(op) = ShortCircuit::from_op(*op) {
+                    let value = self.lower_short_circuit(op, lhs, rhs, locals, expr.span);
+                    return self.hoist_stmt(value, hoist, expr.span);
+                }
+                let lhs = self.lower_expr(lhs, locals, None, hoist);
+                let rhs = self.lower_expr(rhs, locals, None, hoist);
+                ExprKind::Binary {
+                    op: map_binary_op(*op),
+                    lhs,
+                    rhs,
+                }
+            }
             AstExprKind::Call { callee, args } => {
+                // `resume(..)` and a call to an effectful function are both
+                // statements in Core; hoisting them is what lets them appear
+                // under an operator or as another call's argument.
+                if let Some(value) = self.lower_effectful_expr(expr, locals, expected) {
+                    return self.hoist_stmt(value, hoist, expr.span);
+                }
                 if let AstExprKind::Var(symbol) = callee.kind {
-                    if locals
-                        .get(&symbol)
-                        .copied()
-                        .filter(|var| self.active_resume_vars.contains(var))
-                        .is_some()
-                    {
-                        let error = self.diagnostics.error_node(
-                            "LOWER_RESUME_PURE_CTX",
-                            "`resume(...)` is effectful and must appear in statement/binding position",
-                            expr.span,
-                        );
-                        ExprKind::Error(error)
-                    } else if let Some(var) = locals.get(&symbol).copied() {
+                    if let Some(var) = locals.get(&symbol).copied() {
                         // A local wins over a function of the same name here for
                         // the same reason it does in `Var` position.
                         let callee = self.push_expr(ExprKind::Var(var), callee.span);
@@ -1122,26 +1148,15 @@ impl Lowerer {
                             callee,
                             args: args
                                 .iter()
-                                .map(|arg| self.lower_expr(arg, locals, None))
+                                .map(|arg| self.lower_expr(arg, locals, None, hoist))
                                 .collect(),
                         }
-                    } else if let Some(func_id) = self.functions_by_name.get(&symbol) {
-                        let is_effectful = self
-                            .program
-                            .function(*func_id)
-                            .is_some_and(|f| !f.declared_effects.is_empty());
-                        if is_effectful {
-                            let error = self.diagnostics.error_node(
-                                "LOWER_EFFECTFUL_CALL_PURE_CTX",
-                                "Effectful call used where a pure expression is required in v0",
-                                expr.span,
-                            );
-                            return self.push_expr(ExprKind::Error(error), expr.span);
-                        }
-                        let func_id = *func_id;
+                    } else if let Some(&func_id) = self.functions_by_name.get(&symbol) {
+                        // Only a pure callee reaches here: an effectful one was
+                        // hoisted above.
                         ExprKind::PureCall {
                             callee: func_id,
-                            args: self.lower_call_args(func_id, args, locals),
+                            args: self.lower_call_args(func_id, args, locals, hoist),
                         }
                     } else if self.enum_ctors.contains_key(&symbol) {
                         match self.resolve_enum_ctor(symbol, expected) {
@@ -1160,7 +1175,12 @@ impl Lowerer {
                                 ExprKind::MakeEnum {
                                     ty: ctor.enum_name,
                                     variant: symbol,
-                                    fields: self.lower_field_args(&ctor.fields, args, locals),
+                                    fields: self.lower_field_args(
+                                        &ctor.fields,
+                                        args,
+                                        locals,
+                                        hoist,
+                                    ),
                                 }
                             }
                             None => ExprKind::Error(self.ambiguous_ctor_error(symbol, expr.span)),
@@ -1179,10 +1199,10 @@ impl Lowerer {
                         }
                         ExprKind::MakeStruct {
                             ty: symbol,
-                            fields: self.lower_field_args(&field_types, args, locals),
+                            fields: self.lower_field_args(&field_types, args, locals, hoist),
                         }
                     } else if let Some(target_builtin) =
-                        self.lower_target_builtin_call(symbol, args, locals, expr.span)
+                        self.lower_target_builtin_call(symbol, args, locals, expr.span, hoist)
                     {
                         target_builtin
                     } else if let Some(builtin) = self.config.builtins.lookup(symbol) {
@@ -1192,7 +1212,7 @@ impl Lowerer {
                             builtin,
                             args: args
                                 .iter()
-                                .map(|arg| self.lower_expr(arg, locals, None))
+                                .map(|arg| self.lower_expr(arg, locals, None, hoist))
                                 .collect(),
                         }
                     } else {
@@ -1204,12 +1224,12 @@ impl Lowerer {
                         ExprKind::Error(error)
                     }
                 } else {
-                    let callee = self.lower_expr(callee, locals, None);
+                    let callee = self.lower_expr(callee, locals, None, hoist);
                     ExprKind::CallClosure {
                         callee,
                         args: args
                             .iter()
-                            .map(|arg| self.lower_expr(arg, locals, None))
+                            .map(|arg| self.lower_expr(arg, locals, None, hoist))
                             .collect(),
                     }
                 }
@@ -1222,12 +1242,8 @@ impl Lowerer {
             | AstExprKind::Block(_)
             | AstExprKind::StageBlock { .. }
             | AstExprKind::Handle { .. } => {
-                let error = self.diagnostics.error_node(
-                    "LOWER_EXPR_UNSUPPORTED",
-                    "This expression form is parsed but not lowered yet in v0",
-                    expr.span,
-                );
-                ExprKind::Error(error)
+                let value = self.lower_expr_as_body(expr, locals, expected);
+                return self.hoist_stmt(value, hoist, expr.span);
             }
             AstExprKind::Error(error) => ExprKind::Error(error.clone()),
         };
@@ -1412,13 +1428,14 @@ impl Lowerer {
         callee: FuncId,
         args: &[ast::Expr],
         locals: &HashMap<SymbolId, VarId>,
+        hoist: &mut Vec<Action>,
     ) -> Vec<cielo_base::ExprId> {
         let param_types = self
             .program
             .function(callee)
             .map(|function| function.param_types.clone())
             .unwrap_or_default();
-        self.lower_field_args(&param_types, args, locals)
+        self.lower_field_args(&param_types, args, locals, hoist)
     }
 
     fn lower_field_args(
@@ -1426,12 +1443,13 @@ impl Lowerer {
         declared: &[CoreTypeRef],
         args: &[ast::Expr],
         locals: &HashMap<SymbolId, VarId>,
+        hoist: &mut Vec<Action>,
     ) -> Vec<cielo_base::ExprId> {
         args.iter()
             .enumerate()
             .map(|(index, arg)| {
                 let expected = declared.get(index).and_then(expected_adt);
-                self.lower_expr(arg, locals, expected)
+                self.lower_expr(arg, locals, expected, hoist)
             })
             .collect()
     }
@@ -1442,6 +1460,7 @@ impl Lowerer {
         args: &[ast::Expr],
         locals: &HashMap<SymbolId, VarId>,
         span: Span,
+        hoist: &mut Vec<Action>,
     ) -> Option<ExprKind> {
         let target_spec = self.config.target_spec?;
         let target_builtins = self.config.target_builtins?;
@@ -1461,7 +1480,7 @@ impl Lowerer {
         }
 
         for arg in args {
-            let _ = self.lower_expr(arg, locals, None);
+            let _ = self.lower_expr(arg, locals, None, hoist);
         }
         let error = self.diagnostics.error_node(
             "LOWER_TARGET_BUILTIN_ARITY",
