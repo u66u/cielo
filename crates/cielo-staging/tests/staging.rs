@@ -369,6 +369,34 @@ fn main() -> Int {
 }
 
 #[test]
+fn comptime_block_rejects_runtime_data_in_resumptive_handler_clause() {
+    let message = comptime_block_diagnostic(
+        r#"
+effect St { fn get() -> Int }
+
+fn main() -> Int {
+  let r = @runtime { 41 };
+  let c = @comptime {
+    handle {
+      let v = do St.get();
+      v
+    } with St {
+      | get(resume) => resume(r)
+    }
+  };
+  c
+}
+"#,
+    )
+    .expect("runtime data in a resumptive handler clause must be rejected");
+
+    assert!(
+        message.contains("explicitly marked @runtime"),
+        "message should name the resume argument's runtime root cause, got `{message}`"
+    );
+}
+
+#[test]
 fn comptime_block_accepts_foldable_handler_clause() {
     let src = r#"
 effect St { fn get() -> Int }
