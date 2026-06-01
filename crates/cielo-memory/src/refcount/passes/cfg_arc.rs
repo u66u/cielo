@@ -86,8 +86,14 @@ pub fn run(
             for (operand, role) in instruction.operands() {
                 collect_expr_uses(cfg, operand, role, &mut counts);
             }
-            let (pre, mut post) =
-                plan_uses(&counts, &live_after, managed, optimize_moves, &mut stats);
+            let (pre, mut post) = plan_uses(
+                &counts,
+                &live_after,
+                managed,
+                optimize_moves,
+                false,
+                &mut stats,
+            );
             if let CfgInstruction::Let { result, .. } = instruction {
                 if is_managed(managed, result) && !live_after.contains(&result) {
                     post.push(release(result));
@@ -111,7 +117,14 @@ pub fn run(
         let live_after = liveness.live_after(site).cloned().unwrap_or_default();
         let mut counts = HashMap::new();
         collect_terminator_uses(cfg, &block.terminator, &mut counts);
-        let (pre, post) = plan_uses(&counts, &live_after, managed, optimize_moves, &mut stats);
+        let (pre, post) = plan_uses(
+            &counts,
+            &live_after,
+            managed,
+            optimize_moves,
+            true,
+            &mut stats,
+        );
         let target = cfg.block_mut(block.id).expect("known CFG block");
         target.terminator_arc.pre = pre;
         target.terminator_arc.post = post;
@@ -209,6 +222,14 @@ fn collect_terminator_uses(
     terminator: &CfgTerminator,
     counts: &mut HashMap<CfgValueId, UseCount>,
 ) {
+    // Returning a named value transfers its existing owned reference. A raw
+    // retain/release pair would only normalize that move, and its post-release
+    // would keep a preceding call out of tail position.
+    if let CfgTerminator::Return(expression) = terminator
+        && direct_value(cfg, *expression).is_some()
+    {
+        return;
+    }
     for (operand, role) in terminator.operands() {
         collect_expr_uses(cfg, operand, role, counts);
     }
@@ -241,6 +262,7 @@ fn plan_uses(
     live_after: &BTreeSet<CfgValueId>,
     managed: &[bool],
     optimize_moves: bool,
+    release_consumed_before: bool,
     stats: &mut ArcStats,
 ) -> (Vec<CfgArcOp>, Vec<CfgArcOp>) {
     let mut values = counts.keys().copied().collect::<Vec<_>>();
@@ -273,7 +295,15 @@ fn plan_uses(
             if !is_live && optimize_moves {
                 record_move(stats);
             } else if !is_live {
-                post.push(release(value));
+                // A retained sink copy keeps the operand alive while the
+                // terminator evaluates. Releasing the dead source first leaves
+                // no cleanup after a consuming call, so tail position survives
+                // even when move-pair elision is disabled.
+                if release_consumed_before {
+                    pre.push(release(value));
+                } else {
+                    post.push(release(value));
+                }
                 bump_release(stats);
             }
         } else if count.borrows > 0 && !live_after.contains(&value) {

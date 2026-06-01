@@ -1,7 +1,8 @@
 use cielo_base::Interner;
-use cielo_base::{SourceId, SymbolId};
+use cielo_base::{CfgFuncId, SourceId, SymbolId};
 use cielo_ir::cfg::{
-    CfgArcOpKind, CfgExpr, CfgInstruction, CfgProgram, CfgProjectionMode, CfgTerminator,
+    CfgArcOpKind, CfgCallConvention, CfgExpr, CfgInstruction, CfgProgram, CfgProjectionMode,
+    CfgTerminator,
 };
 use cielo_ir::constants::ConstantTable;
 use cielo_ir::core::Literal;
@@ -134,6 +135,66 @@ fn main() -> Int { let value = Wrap(1); consume(value) }
         .expect("optimized profile must select reference counting")
         .arc;
     assert!(optimized_stats.eliminated_move_pairs > raw_stats.eliminated_move_pairs);
+}
+
+#[test]
+fn cfg_arc_raw_finishes_consuming_call_cleanup_before_the_terminator() {
+    let mut cfg = CfgProgram::default();
+    let source = cfg.push_value(None);
+    let result = cfg.push_value(None);
+    let argument = cfg.push_expr(CfgExpr::Value(source), None);
+    let returned = cfg.push_expr(CfgExpr::Value(result), None);
+
+    let continuation = cfg.push_block(vec![result], None);
+    cfg.set_terminator(continuation, CfgTerminator::Return(returned));
+    let entry = cfg.push_block(vec![source], None);
+    cfg.set_terminator(
+        entry,
+        CfgTerminator::Call {
+            convention: CfgCallConvention::Pure,
+            callee: SymbolId::from_u32(1),
+            callee_fn: CfgFuncId::new(0),
+            args: vec![argument],
+            result,
+            target: continuation,
+        },
+    );
+
+    cielo_memory::refcount::passes::cfg_arc::run(
+        &mut cfg,
+        &[true, true],
+        &ConstantTable::default(),
+        &ArcConfig {
+            features: ArcFeatures::INSERTION,
+        },
+    );
+
+    let call_arc = &cfg.block(entry).expect("entry block").terminator_arc;
+    assert_eq!(
+        call_arc
+            .pre
+            .iter()
+            .map(|op| (op.kind, op.value))
+            .collect::<Vec<_>>(),
+        vec![
+            (CfgArcOpKind::Retain, source),
+            (CfgArcOpKind::Release, source),
+        ],
+        "raw ARC should keep its copy pair but finish it before the call"
+    );
+    assert!(
+        call_arc.post.is_empty(),
+        "a consuming call must have no source cleanup after it"
+    );
+
+    let return_arc = &cfg
+        .block(continuation)
+        .expect("continuation block")
+        .terminator_arc;
+    assert!(
+        return_arc.pre.is_empty() && return_arc.post.is_empty(),
+        "returning the call result should sink it without a normalization pair"
+    );
 }
 
 #[test]
@@ -336,16 +397,15 @@ fn cfg_arc_retains_a_value_nested_below_a_constructor() {
             .iter()
             .map(|op| (op.kind, op.value))
             .collect::<Vec<_>>(),
-        vec![(CfgArcOpKind::Retain, boxed)],
-        "the nested constructor field is consumed and must be retained"
+        vec![
+            (CfgArcOpKind::Retain, boxed),
+            (CfgArcOpKind::Release, boxed),
+        ],
+        "the nested constructor field is retained, then its source is released"
     );
-    assert_eq!(
-        terminator_arc
-            .post
-            .iter()
-            .map(|op| (op.kind, op.value))
-            .collect::<Vec<_>>(),
-        vec![(CfgArcOpKind::Release, boxed)]
+    assert!(
+        terminator_arc.post.is_empty(),
+        "consuming terminators finish source cleanup before evaluation"
     );
     let define = cfg.instruction(define).expect("defining instruction");
     assert!(
