@@ -1002,6 +1002,106 @@ fn main() -> Int {{
     }
 }
 
+/// `resume` continues with the rest of the handled body, not with the rest of
+/// the block the `perform` happened to sit in (CIELO-66).
+///
+/// Not diffed against the evaluator oracle on purpose. The oracle stopped at
+/// the same block edge the emitted C did, so the two agreed on 102 for the
+/// second case and the diff saw nothing. Every code below is worked out by hand
+/// from the handler's own semantics and written as a literal.
+#[test]
+fn resume_continues_past_the_block_the_perform_sits_in() {
+    if !c_compiler_available() {
+        eprintln!("skipping deep resume test: no C compiler found");
+        return;
+    }
+
+    const DOUBLING_HANDLER: &str = "| tick(n, resume) => { let y = resume(n); y * 2 }";
+
+    let cases = [
+        (
+            // No nested block, so nothing can be truncated. This one answered
+            // correctly before the fix and is here to keep it that way.
+            "no_enclosing_block",
+            format!(
+                r#"
+effect St {{ fn tick(n: Int) -> Int }}
+
+fn main() -> Int {{
+  handle {{
+    let a = do St.tick(1);
+    a + 100
+  }} with St {{
+    {DOUBLING_HANDLER}
+  }}
+}}
+"#
+            ),
+            // resume(1) runs `a + 100` = 101, the clause doubles it.
+            202,
+        ),
+        (
+            // Same program with the perform moved one block in. Answered 102
+            // before the fix: `resume` returned the block's value, 1, and the
+            // clause doubled that instead.
+            "perform_under_a_block",
+            format!(
+                r#"
+effect St {{ fn tick(n: Int) -> Int }}
+
+fn main() -> Int {{
+  handle {{
+    let x = {{ let a = do St.tick(1); a }};
+    x + 100
+  }} with St {{
+    {DOUBLING_HANDLER}
+  }}
+}}
+"#
+            ),
+            202,
+        ),
+        (
+            // Two truncations, and the clause reads its operand, so the two
+            // clause bodies have to nest rather than sum. Answered 9 before the
+            // fix -- (1*2+1) + (2*2+2), each clause cut off at its own block.
+            "two_blocks_as_operands",
+            r#"
+effect St { fn tick(n: Int) -> Int }
+
+fn main() -> Int {
+  handle {
+    { let a = do St.tick(1); a } + { let b = do St.tick(2); b }
+  } with St {
+    | tick(n, resume) => { let y = resume(n); y * 2 + n }
+  }
+}
+"#
+            .to_owned(),
+            // Inner: resume(2) answers 1 + 2 = 3, clause gives 3*2+2 = 8.
+            // Outer: resume(1) answers that 8, clause gives 8*2+1 = 17.
+            17,
+        ),
+    ];
+
+    let compiler = PassHarness::new(PassConfig::default());
+    for (idx, (name, source, expected)) in cases.iter().enumerate() {
+        let mut interner = Interner::new();
+        let compiled = compiler.compile_source_to_c(
+            source.as_str(),
+            SourceId::from_u32(61_000 + idx as u32),
+            &mut interner,
+        );
+        assert!(
+            !compiled.residual.diagnostics().has_errors(),
+            "case {name} should compile cleanly:\n{source}\n{:?}",
+            compiled.residual.diagnostics()
+        );
+        let actual = compile_and_run_c_exit_code(name, &compiled.c_source);
+        assert_eq!(actual, *expected, "compiled runtime for case {name}");
+    }
+}
+
 /// The memory strategy must not change what a program computes. This is the
 /// check that catches an ARC pass which moves a value it does not own: the
 /// refcounts stay balanced and ASan stays quiet, only the answer differs.
