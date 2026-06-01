@@ -1015,6 +1015,164 @@ fn lower(src: &str) -> cielo_lowering::LowerOutput {
     lower_program(&parsed.program, LowerConfig::default())
 }
 
+/// The literal first argument of every `Call` the list runs, in run order: a
+/// `Val`'s body runs before the statement that follows it.
+///
+/// Branch arms are deliberately not entered, so an empty result over a list
+/// containing a branch means nothing was hoisted out of that branch's arms.
+fn unconditional_call_args(
+    lowered: &cielo_lowering::LowerOutput,
+    root: cielo_base::StmtId,
+    out: &mut Vec<i64>,
+) {
+    let Some(stmt) = lowered.program.stmt(root) else {
+        return;
+    };
+    match &stmt.kind {
+        StmtKind::Call { args, next, .. } => {
+            if let Some(&arg) = args.first()
+                && let Some(ExprKind::Literal(Literal::Int(value))) =
+                    lowered.program.expr(arg).map(|node| &node.kind)
+            {
+                out.push(*value);
+            }
+            unconditional_call_args(lowered, *next, out);
+        }
+        StmtKind::Val { value, next, .. } => {
+            unconditional_call_args(lowered, *value, out);
+            unconditional_call_args(lowered, *next, out);
+        }
+        StmtKind::Let { next, .. }
+        | StmtKind::Perform { next, .. }
+        | StmtKind::Resume { next, .. } => unconditional_call_args(lowered, *next, out),
+        StmtKind::Handle { body, next, .. } | StmtKind::Stage { body, next, .. } => {
+            unconditional_call_args(lowered, *body, out);
+            if let Some(next) = next {
+                unconditional_call_args(lowered, *next, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn lower_with_names(src: &str) -> (cielo_lowering::LowerOutput, Interner) {
+    let mut interner = Interner::new();
+    let parsed = parse_source(src, SourceId::from_u32(0), &mut interner);
+    let lowered = lower_program(&parsed.program, LowerConfig::default());
+    (lowered, interner)
+}
+
+fn call_args_in_run_order(lowered: &cielo_lowering::LowerOutput, interner: &Interner) -> Vec<i64> {
+    let main = lowered
+        .program
+        .functions()
+        .iter()
+        .find(|function| interner.resolve(function.name) == Some("main"))
+        .expect("main");
+    let mut out = Vec::new();
+    unconditional_call_args(lowered, main.body, &mut out);
+    out
+}
+
+fn sole_branch(lowered: &cielo_lowering::LowerOutput) -> (cielo_base::StmtId, cielo_base::StmtId) {
+    let mut branches = lowered
+        .program
+        .stmts()
+        .iter()
+        .filter_map(|stmt| match stmt.kind {
+            StmtKind::If {
+                then_branch,
+                else_branch,
+                ..
+            } => Some((then_branch, else_branch)),
+            _ => None,
+        });
+    let branch = branches.next().expect("one branch");
+    assert!(branches.next().is_none(), "expected a single branch");
+    branch
+}
+
+const EFFECTFUL_HELPER: &str = r#"
+effect St { fn tick(n: Int) -> Int }
+
+fn note(x: Int) -> Int with St {
+  let v = do St.tick(x);
+  v
+}
+"#;
+
+#[test]
+fn hoists_statement_shaped_operand_out_of_a_pure_expression() {
+    let lowered = lower(
+        r#"
+fn main() -> Int {
+  let a = (if true { 1 } else { 2 }) + 5;
+  a
+}
+"#,
+    );
+    assert!(!lowered.diagnostics.has_errors());
+    let (then_branch, _) = sole_branch(&lowered);
+    assert!(matches!(
+        lowered.program.stmt(then_branch).map(|node| &node.kind),
+        Some(StmtKind::Return(_))
+    ));
+    // The `+` survives as a pure expression over the hoisted variable.
+    assert!(lowered.program.exprs().iter().any(|expr| matches!(
+        expr.kind,
+        ExprKind::Binary {
+            op: BinaryOp::Add,
+            ..
+        }
+    )));
+}
+
+/// Operands may perform now, so the order they are hoisted in is observable.
+#[test]
+fn hoists_operands_left_to_right() {
+    let (lowered, interner) = lower_with_names(&format!(
+        r#"{EFFECTFUL_HELPER}
+fn main() -> Int {{
+  handle {{ note(1) + note(2) }} with St {{
+    | tick(n, resume) => resume(n)
+  }}
+}}
+"#
+    ));
+    assert!(!lowered.diagnostics.has_errors());
+    assert_eq!(call_args_in_run_order(&lowered, &interner), vec![1, 2]);
+}
+
+/// Hoisting an operand out of a branch arm would run the other arm's effects
+/// too, so an arm is the boundary a hoist stops at.
+#[test]
+fn does_not_hoist_operands_across_a_branch() {
+    let (lowered, interner) = lower_with_names(&format!(
+        r#"{EFFECTFUL_HELPER}
+fn main() -> Int {{
+  let c = 0;
+  handle {{
+    if c > 0 {{ note(1) + 300 }} else {{ note(2) + 400 }}
+  }} with St {{
+    | tick(n, resume) => resume(n)
+  }}
+}}
+"#
+    ));
+    assert!(!lowered.diagnostics.has_errors());
+    assert!(
+        call_args_in_run_order(&lowered, &interner).is_empty(),
+        "neither arm's call may run before the branch"
+    );
+    let (then_branch, else_branch) = sole_branch(&lowered);
+    let mut then_calls = Vec::new();
+    unconditional_call_args(&lowered, then_branch, &mut then_calls);
+    let mut else_calls = Vec::new();
+    unconditional_call_args(&lowered, else_branch, &mut else_calls);
+    assert_eq!(then_calls, vec![1]);
+    assert_eq!(else_calls, vec![2]);
+}
+
 fn counts_logical_binaries(lowered: &cielo_lowering::LowerOutput) -> usize {
     lowered
         .program
@@ -1107,12 +1265,8 @@ fn main() -> Int {
     assert!(has_short_circuit_branch(&lowered, true));
 }
 
-/// Pins the half of CIELO-57 that is not fixed: an operand of a surrounding
-/// expression has nowhere to put a statement, so `&&` stays a strict
-/// `BinaryOp::And` there and still evaluates its right side. Operand hoisting
-/// (CIELO-56) is what unblocks it; this assertion should flip then.
 #[test]
-fn keeps_strict_logical_operator_in_pure_operand_position() {
+fn short_circuits_logical_operator_in_pure_operand_position() {
     let lowered = lower(
         r#"
 fn pick(b: Bool) -> Int {
@@ -1126,5 +1280,6 @@ fn main() -> Int {
 "#,
     );
     assert!(!lowered.diagnostics.has_errors());
-    assert_eq!(counts_logical_binaries(&lowered), 1);
+    assert_eq!(counts_logical_binaries(&lowered), 0);
+    assert!(has_short_circuit_branch(&lowered, false));
 }
