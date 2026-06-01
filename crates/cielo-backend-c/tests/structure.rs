@@ -10,6 +10,7 @@ use cielo_ir::constants::ConstantTable;
 use cielo_ir::core::{BinaryOp, Literal};
 use cielo_test_support::{PassConfig, PassHarness};
 use std::ffi::OsString;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 fn bodies(emitted: &str) -> &str {
@@ -159,6 +160,80 @@ fn main() -> Int {
     );
 }
 
+/// Alternates a million times, so a frame per step overflows. `is_even`
+/// returns 100 and `is_odd` returns 0, which tells the two apart in the exit
+/// code if the dispatch ever entered the wrong member.
+const MUTUAL: &str = r#"
+fn is_even(n: Int) -> Int { if n == 0 { 100 } else { is_odd(n - 1) } }
+fn is_odd(n: Int) -> Int { if n == 0 { 0 } else { is_even(n - 1) } }
+
+fn main() -> Int { is_even(1000000) }
+"#;
+
+/// CIELO-62. Two functions in one tail-call cycle are both in tail position and
+/// neither is `static inline`, and GCC still inlines one into the other, merges
+/// the copy's exits and leaves the surviving call off the sibling-call path. So
+/// the cycle stops being calls at all: its members become blocks of one
+/// dispatch function that reaches them by `switch` and back edge.
+#[test]
+fn a_mutual_tail_call_cycle_becomes_one_function() {
+    let emitted = compile_to_c(MUTUAL);
+    let bodies = bodies(emitted.as_str());
+    let cycle = body_of(bodies, "cielo_cycle_is_even");
+    assert!(
+        !cycle.contains("cielo_fn_is_even") && !cycle.contains("cielo_fn_is_odd"),
+        "no member of the cycle may still be called from inside it:\n{cycle}"
+    );
+    assert!(
+        cycle.contains("switch (cv_switch_index(") && cycle.contains("goto b"),
+        "the members are entered by dispatch and re-entered by back edge:\n{cycle}"
+    );
+    assert!(
+        body_of(bodies, "cielo_fn_is_odd").contains("return CIELO_CALL_PURE(cielo_cycle_is_even"),
+        "and each keeps a wrapper, so callers outside the cycle are unchanged"
+    );
+
+    let Some(code) = compile_and_run(emitted.as_str(), "mutual_tail_recursion") else {
+        return;
+    };
+    assert_eq!(
+        code,
+        Some(100),
+        "a million-deep alternation must not grow the stack"
+    );
+}
+
+/// The exit code above would pass on its own on a machine whose stack happened
+/// to be large enough for the depth. This is the property that actually holds:
+/// in the machine code there is no call left that reaches a cycle member.
+#[test]
+fn no_call_to_a_cycle_member_survives() {
+    let emitted = compile_to_c(MUTUAL);
+    let Some(dump) = disassemble(emitted.as_str(), "mutual_no_calls") else {
+        return;
+    };
+    let calls = dump
+        .lines()
+        .filter(|line| line.contains("call"))
+        .collect::<Vec<_>>();
+    // Not a claim about the program, but about this test: if objdump's format
+    // ever stops matching, every filter below silently finds nothing.
+    assert!(
+        !calls.is_empty(),
+        "no call instruction at all, so the filter is not reading disassembly"
+    );
+    let into_cycle = calls
+        .iter()
+        .filter(|line| line.contains("cielo_fn_is_") || line.contains("cielo_cycle_is_"))
+        .copied()
+        .collect::<Vec<_>>();
+    assert!(
+        into_cycle.is_empty(),
+        "the cycle must be reached by jump only:\n{}",
+        into_cycle.join("\n")
+    );
+}
+
 /// The eligibility boundary. `total` takes the head out of the cons cell, so
 /// its release is scheduled after the recursive call; that release has to run
 /// once the call comes back, and a tail call never comes back.
@@ -298,7 +373,8 @@ fn c_compiler_command() -> OsString {
 }
 
 /// `None` when no C compiler is installed, so callers skip rather than fail.
-fn compile_and_run(c_source: &str, name: &str) -> Option<Option<i32>> {
+/// The caller owns the directory it returns and has to remove it.
+fn compile_to_binary(c_source: &str, name: &str) -> Option<(PathBuf, PathBuf)> {
     if Command::new(c_compiler_command())
         .arg("--version")
         .stdout(Stdio::null())
@@ -331,8 +407,35 @@ fn compile_and_run(c_source: &str, name: &str) -> Option<Option<i32>> {
         "emitted C for {name} does not compile:\n{}",
         String::from_utf8_lossy(build.stderr.as_slice())
     );
+    Some((dir, binary))
+}
 
+fn compile_and_run(c_source: &str, name: &str) -> Option<Option<i32>> {
+    let (dir, binary) = compile_to_binary(c_source, name)?;
     let run = Command::new(binary.as_path()).output().expect("run binary");
     let _ = std::fs::remove_dir_all(dir.as_path());
     Some(run.status.code())
+}
+
+/// `None` when either tool is missing, so callers skip rather than fail.
+fn disassemble(c_source: &str, name: &str) -> Option<String> {
+    if Command::new("objdump")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_err()
+    {
+        eprintln!("skipping {name} disassembly check: no objdump found");
+        return None;
+    }
+    let (dir, binary) = compile_to_binary(c_source, name)?;
+    let dump = Command::new("objdump")
+        .arg("-d")
+        .arg(binary.as_path())
+        .output()
+        .expect("invoke objdump");
+    let _ = std::fs::remove_dir_all(dir.as_path());
+    assert!(dump.status.success(), "objdump failed on {name}");
+    Some(String::from_utf8_lossy(dump.stdout.as_slice()).into_owned())
 }
