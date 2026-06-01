@@ -146,6 +146,14 @@ impl ExprGen<'_> {
                 let op = ["/", "%"][self.rng.next_bounded_u64(2) as usize];
                 format!("({lhs} {op} (({rhs} % 7) + 8))")
             }
+            // `if` as an operand, not only as a binding's value. It yields an
+            // arm, so it cannot widen the range the arms already sit in.
+            4 => {
+                let cond = self.bool_expr(depth - 1);
+                let then_branch = self.int_expr(depth - 1);
+                let else_branch = self.int_expr(depth - 1);
+                format!("(if {cond} {{ {then_branch} }} else {{ {else_branch} }})")
+            }
             _ => self.int_leaf(),
         }
     }
@@ -901,6 +909,96 @@ fn main() -> Int {
             "runtime/evaluator mismatch for case {}",
             case.name
         );
+    }
+}
+
+/// Statement-shaped constructs as operands of a pure expression (CIELO-56).
+/// The expected codes are written out rather than only diffed against the
+/// oracle, because the last case pins a choice both sides could agree on and
+/// still get wrong.
+#[test]
+fn statement_shaped_operands_run_correctly() {
+    if !c_compiler_available() {
+        eprintln!("skipping operand hoisting test: no C compiler found");
+        return;
+    }
+
+    const EFFECTFUL_HELPER: &str = r#"
+effect St { fn tick(n: Int) -> Int }
+
+fn note(x: Int) -> Int with St {
+  let v = do St.tick(x);
+  v
+}
+"#;
+
+    let cases = [
+        (
+            "if_as_operand",
+            r#"
+fn main() -> Int {
+  let a = (if true { 1 } else { 2 }) + 5;
+  a
+}
+"#
+            .to_owned(),
+            6,
+        ),
+        (
+            "effectful_calls_as_operands",
+            format!(
+                r#"{EFFECTFUL_HELPER}
+fn main() -> Int {{
+  handle {{ note(1) + note(2) }} with St {{
+    | tick(n, resume) => resume(n + 10)
+  }}
+}}
+"#
+            ),
+            23,
+        ),
+        (
+            // Both arms hold an effectful call in operand position, and the arm
+            // that is not taken divides by zero. `c` and `d` come from
+            // `@runtime`, so nothing is folded away before the branch runs:
+            // hoisting the untaken arm's call above the branch traps instead of
+            // answering 42.
+            "branch_runs_exactly_one_arm",
+            format!(
+                r#"{EFFECTFUL_HELPER}
+fn main() -> Int {{
+  let c = @runtime {{ 0 }};
+  let d = @runtime {{ 0 }};
+  handle {{
+    if c > 0 {{ note(1 / d) + 30 }} else {{ note(2) + 40 }}
+  }} with St {{
+    | tick(n, resume) => resume(n)
+  }}
+}}
+"#
+            ),
+            42,
+        ),
+    ];
+
+    let compiler = PassHarness::new(PassConfig::default());
+    for (idx, (name, source, expected)) in cases.iter().enumerate() {
+        let mut interner = Interner::new();
+        let compiled = compiler.compile_source_to_c(
+            source.as_str(),
+            SourceId::from_u32(60_000 + idx as u32),
+            &mut interner,
+        );
+        assert!(
+            !compiled.residual.diagnostics().has_errors(),
+            "case {name} should compile cleanly:\n{source}\n{:?}",
+            compiled.residual.diagnostics()
+        );
+        let oracle = evaluator_oracle_exit_code(&compiled, &interner)
+            .unwrap_or_else(|| panic!("failed to compute evaluator oracle for case {name}"));
+        assert_eq!(oracle, *expected, "evaluator oracle for case {name}");
+        let actual = compile_and_run_c_exit_code(name, &compiled.c_source);
+        assert_eq!(actual, *expected, "compiled runtime for case {name}");
     }
 }
 
