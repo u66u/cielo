@@ -1187,6 +1187,25 @@ fn main() -> Int {
 }
 "#,
         ),
+        (
+            "handled_call_reassociated_outside",
+            r#"
+effect St { fn tick(n: Int) -> Int }
+
+fn main() -> Int {
+  let out = {
+    let handled = handle {
+      let a = do St.tick(1);
+      a + 100
+    } with St {
+      | tick(n, resume) => { let y = resume(n); y * 2 }
+    };
+    handled
+  };
+  out
+}
+"#,
+        ),
     ];
 
     let compiler = PassHarness::new(PassConfig::default());
@@ -1214,6 +1233,7 @@ fn main() -> Int {
         exits[0], exits[1],
         "pure wrapper reassociation changed handled-call behavior"
     );
+    assert_eq!(exits[1], exits[2]);
 }
 
 /// The memory strategy must not change what a program computes. This is the
@@ -2563,6 +2583,7 @@ struct PerformSite<'a> {
     next: StmtId,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn eval_perform(
     program: &CoreProgram,
     ct: &CtPropagationTables,
