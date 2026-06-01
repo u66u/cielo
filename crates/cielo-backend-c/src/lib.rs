@@ -3,6 +3,7 @@
 pub mod c_constants;
 pub mod cfg_codegen;
 mod structure;
+mod trampoline;
 
 pub use cfg_codegen::{EMITTED_BODIES_MARKER, emit};
 

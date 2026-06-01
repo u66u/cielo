@@ -20,6 +20,7 @@ use cielo_ir::region::{Placement, RegionOwner, RegionSlotKind};
 use cielo_ir::walk::{Walk, walk_exprs};
 
 use crate::structure::{self, Edge, Layout, Region};
+use crate::trampoline;
 
 const C_RUNTIME_HEADER: &str = include_str!("cielo_runtime.h");
 
@@ -36,6 +37,17 @@ pub fn emit(
     constants: &ConstantTable,
     arc_trace: bool,
 ) -> String {
+    // Before anything reads the program: a cycle of mutually tail-recursive
+    // functions is replaced by one dispatcher plus wrappers, so no call in the
+    // cycle survives to depend on the C compiler collapsing it (CIELO-62).
+    let collapsed = trampoline::collapse_tail_call_cycles(program);
+    let dispatchers = collapsed
+        .as_ref()
+        .map(|collapsed| collapsed.dispatchers.clone())
+        .unwrap_or_default();
+    let program = collapsed
+        .as_ref()
+        .map_or(program, |collapsed| &collapsed.program);
     let mut out = String::new();
     // The generated unit owns the runtime's mutable state and out-of-line
     // functions; anything else that includes the header links against it.
@@ -61,7 +73,7 @@ pub fn emit(
     out.push_str(EMITTED_BODIES_MARKER);
     out.push('\n');
 
-    let names = function_names(program, interner);
+    let names = function_names(program, interner, &dispatchers);
     let tails = tail_call_blocks(program);
     let recursive = recursive_functions(program);
     let signatures = program
@@ -106,15 +118,24 @@ pub fn emit(
 
 /// Keyed by id, not name: handler specialization clones a function without
 /// renaming it, so several functions share one name symbol.
-fn function_names(program: &CfgProgram, interner: &Interner) -> HashMap<CfgFuncId, String> {
+fn function_names(
+    program: &CfgProgram,
+    interner: &Interner,
+    dispatchers: &HashSet<CfgFuncId>,
+) -> HashMap<CfgFuncId, String> {
     program
         .functions
         .iter()
         .map(|function| {
+            let prefix = if dispatchers.contains(&function.id) {
+                "cielo_cycle"
+            } else {
+                "cielo_fn"
+            };
             (
                 function.id,
                 format!(
-                    "cielo_fn_{}_{}",
+                    "{prefix}_{}_{}",
                     sanitize(symbol_text(interner, function.name)),
                     function.id.as_u32()
                 ),
@@ -269,7 +290,7 @@ fn closure_capture_counts(program: &CfgProgram) -> Vec<(CfgFuncId, usize)> {
 /// its result reaches a `Return` through blocks that do nothing. A release in
 /// `terminator_arc.post` is the usual disqualifier: it has to run once the call
 /// comes back, and a tail call never comes back.
-fn tail_call_blocks(program: &CfgProgram) -> HashSet<CfgBlockId> {
+pub(crate) fn tail_call_blocks(program: &CfgProgram) -> HashSet<CfgBlockId> {
     program
         .blocks()
         .iter()
@@ -1151,7 +1172,7 @@ fn call_wrapper(convention: CfgCallConvention) -> &'static str {
 
 /// A tail-call block returns instead of reaching its successor, so a block only
 /// that block reached is neither emitted nor allowed to declare locals here.
-fn reachable_blocks(
+pub(crate) fn reachable_blocks(
     program: &CfgProgram,
     entry: CfgBlockId,
     tails: &HashSet<CfgBlockId>,
