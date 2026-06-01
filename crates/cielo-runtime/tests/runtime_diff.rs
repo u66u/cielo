@@ -39,6 +39,43 @@ const ORACLE_MAX_CALL_DEPTH: usize = 256;
 struct HandlerFrame {
     handler: HandlerId,
     captured_env: HashMap<VarId, OracleValue>,
+    answer: OracleAnswer,
+}
+
+#[derive(Clone, Debug)]
+struct OracleAnswerContext {
+    env: HashMap<VarId, OracleValue>,
+    handler_stack: Vec<HandlerFrame>,
+    outer: Box<OracleAnswer>,
+    depth: usize,
+}
+
+/// What a Core statement graph's `Return` answers to.
+///
+/// `Bind` carries the value/tail context of a `Val`. `HandlerReturn` delimits a
+/// handled body and runs its return clause exactly once. `Yield` hands a graph's
+/// value back to the evaluator operation that entered it.
+#[derive(Clone, Debug)]
+enum OracleAnswer {
+    Yield,
+    /// Delimits a resumed continuation without hiding enclosing handlers.
+    ResumeBoundary {
+        outer: Box<OracleAnswer>,
+    },
+    HandlerReturn {
+        handler: HandlerId,
+        context: Box<OracleAnswerContext>,
+    },
+    Bind {
+        binding: VarId,
+        next: StmtId,
+        context: Box<OracleAnswerContext>,
+    },
+    /// `Stage` has a tail but no result binding.
+    Then {
+        next: StmtId,
+        context: Box<OracleAnswerContext>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -47,6 +84,8 @@ struct Continuation {
     handler_stack: Vec<HandlerFrame>,
     next: StmtId,
     result: Option<VarId>,
+    answer: OracleAnswer,
+    depth: usize,
     used: bool,
 }
 
@@ -1005,10 +1044,9 @@ fn main() -> Int {{
 /// `resume` continues with the rest of the handled body, not with the rest of
 /// the block the `perform` happened to sit in (CIELO-66).
 ///
-/// Not diffed against the evaluator oracle on purpose. The oracle stopped at
-/// the same block edge the emitted C did, so the two agreed on 102 for the
-/// second case and the diff saw nothing. Every code below is worked out by hand
-/// from the handler's own semantics and written as a literal.
+/// Every expected code below is worked out by hand from handler semantics and
+/// written as a literal. The first two cases also pin the repaired evaluator
+/// oracle: before this fix it returned 102 for `perform_under_a_block`.
 #[test]
 fn resume_continues_past_the_block_the_perform_sits_in() {
     if !c_compiler_available() {
@@ -1097,9 +1135,85 @@ fn main() -> Int {
             "case {name} should compile cleanly:\n{source}\n{:?}",
             compiled.residual.diagnostics()
         );
+        let oracle = evaluator_oracle_exit_code(&compiled, &interner)
+            .unwrap_or_else(|| panic!("failed to compute evaluator oracle for case {name}"));
+        assert_eq!(oracle, *expected, "evaluator oracle for case {name}");
         let actual = compile_and_run_c_exit_code(name, &compiled.c_source);
         assert_eq!(actual, *expected, "compiled runtime for case {name}");
     }
+}
+
+/// Reassociating pure `let`/`Val` wrappers around a handled call preserves
+/// behavior (docs/effect-formalism-oracle.md:152). The wrapped variant is the
+/// CIELO-66 shape that used to make the oracle and runtime agree on 102.
+#[test]
+fn pure_wrappers_preserve_handled_call_behavior() {
+    if !c_compiler_available() {
+        eprintln!("skipping handled-call metamorphic test: no C compiler found");
+        return;
+    }
+
+    let variants = [
+        (
+            "handled_call_without_wrapper",
+            r#"
+effect St { fn tick(n: Int) -> Int }
+
+fn main() -> Int {
+  handle {
+    let a = do St.tick(1);
+    a + 100
+  } with St {
+    | tick(n, resume) => { let y = resume(n); y * 2 }
+  }
+}
+"#,
+        ),
+        (
+            "handled_call_with_pure_wrappers",
+            r#"
+effect St { fn tick(n: Int) -> Int }
+
+fn main() -> Int {
+  handle {
+    let x = {
+      let a = do St.tick(1);
+      a
+    };
+    x + 100
+  } with St {
+    | tick(n, resume) => { let y = resume(n); y * 2 }
+  }
+}
+"#,
+        ),
+    ];
+
+    let compiler = PassHarness::new(PassConfig::default());
+    let mut exits = Vec::new();
+    for (idx, (name, source)) in variants.iter().enumerate() {
+        let mut interner = Interner::new();
+        let compiled = compiler.compile_source_to_c(
+            source,
+            SourceId::from_u32(62_000 + idx as u32),
+            &mut interner,
+        );
+        assert!(
+            !compiled.residual.diagnostics().has_errors(),
+            "case {name} should compile cleanly:\n{source}\n{:?}",
+            compiled.residual.diagnostics()
+        );
+        let oracle = evaluator_oracle_exit_code(&compiled, &interner)
+            .unwrap_or_else(|| panic!("failed to compute evaluator oracle for case {name}"));
+        assert_eq!(oracle, 202, "evaluator oracle for case {name}");
+        let actual = compile_and_run_c_exit_code(name, &compiled.c_source);
+        assert_eq!(actual, 202, "compiled runtime for case {name}");
+        exits.push(actual);
+    }
+    assert_eq!(
+        exits[0], exits[1],
+        "pure wrapper reassociation changed handled-call behavior"
+    );
 }
 
 /// The memory strategy must not change what a program computes. This is the
@@ -2036,8 +2150,140 @@ fn eval_stmt(
         env,
         handler_stack,
         continuations,
+        &OracleAnswer::Yield,
         0,
     )
+}
+
+fn answer_context(
+    env: &HashMap<VarId, OracleValue>,
+    handler_stack: &[HandlerFrame],
+    outer: &OracleAnswer,
+    depth: usize,
+) -> Box<OracleAnswerContext> {
+    Box::new(OracleAnswerContext {
+        env: env.clone(),
+        handler_stack: handler_stack.to_vec(),
+        outer: Box::new(outer.clone()),
+        depth,
+    })
+}
+
+/// Keep the pending targets through the selected handler, then make that
+/// handler yield to the `resume` call. Anything outside the handler belongs
+/// after the clause has produced the handle expression's value.
+fn continuation_answer(answer: &OracleAnswer, handler: HandlerId) -> Option<OracleAnswer> {
+    match answer {
+        OracleAnswer::Yield => None,
+        OracleAnswer::ResumeBoundary { outer } => Some(OracleAnswer::ResumeBoundary {
+            outer: Box::new(continuation_answer(outer, handler)?),
+        }),
+        OracleAnswer::HandlerReturn {
+            handler: found,
+            context,
+        } => {
+            let mut captured = context.as_ref().clone();
+            if *found == handler {
+                captured.outer = Box::new(OracleAnswer::ResumeBoundary {
+                    outer: context.outer.clone(),
+                });
+            } else {
+                captured.outer = Box::new(continuation_answer(&context.outer, handler)?);
+            }
+            Some(OracleAnswer::HandlerReturn {
+                handler: *found,
+                context: Box::new(captured),
+            })
+        }
+        OracleAnswer::Bind {
+            binding,
+            next,
+            context,
+        } => {
+            let mut captured = context.as_ref().clone();
+            captured.outer = Box::new(continuation_answer(&context.outer, handler)?);
+            Some(OracleAnswer::Bind {
+                binding: *binding,
+                next: *next,
+                context: Box::new(captured),
+            })
+        }
+        OracleAnswer::Then { next, context } => {
+            let mut captured = context.as_ref().clone();
+            captured.outer = Box::new(continuation_answer(&context.outer, handler)?);
+            Some(OracleAnswer::Then {
+                next: *next,
+                context: Box::new(captured),
+            })
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn answer_value(
+    program: &CoreProgram,
+    ct: &CtPropagationTables,
+    sema: &SemanticTables,
+    value: OracleValue,
+    answer: &OracleAnswer,
+    continuations: &mut Vec<Continuation>,
+) -> Option<OracleValue> {
+    match answer {
+        OracleAnswer::Yield => Some(value),
+        OracleAnswer::ResumeBoundary { .. } => Some(value),
+        OracleAnswer::HandlerReturn { handler, context } => {
+            let handler_def = program.handlers().get(handler.index())?;
+            let mut env = context.env.clone();
+            env.insert(handler_def.return_param, value);
+            let mut handler_stack = context.handler_stack.clone();
+            eval_stmt_at(
+                program,
+                ct,
+                sema,
+                handler_def.return_body,
+                &mut env,
+                &mut handler_stack,
+                continuations,
+                &context.outer,
+                context.depth,
+            )
+        }
+        OracleAnswer::Bind {
+            binding,
+            next,
+            context,
+        } => {
+            let mut env = context.env.clone();
+            env.insert(*binding, value);
+            let mut handler_stack = context.handler_stack.clone();
+            eval_stmt_at(
+                program,
+                ct,
+                sema,
+                *next,
+                &mut env,
+                &mut handler_stack,
+                continuations,
+                &context.outer,
+                context.depth,
+            )
+        }
+        OracleAnswer::Then { next, context } => {
+            let mut env = context.env.clone();
+            let mut handler_stack = context.handler_stack.clone();
+            eval_stmt_at(
+                program,
+                ct,
+                sema,
+                *next,
+                &mut env,
+                &mut handler_stack,
+                continuations,
+                &context.outer,
+                context.depth,
+            )
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2049,6 +2295,7 @@ fn eval_stmt_at(
     env: &mut HashMap<VarId, OracleValue>,
     handler_stack: &mut Vec<HandlerFrame>,
     continuations: &mut Vec<Continuation>,
+    answer: &OracleAnswer,
     depth: usize,
 ) -> Option<OracleValue> {
     if depth > ORACLE_MAX_CALL_DEPTH {
@@ -2056,15 +2303,28 @@ fn eval_stmt_at(
     }
     let stmt = program.stmt(stmt_id)?;
     match &stmt.kind {
-        StmtKind::Return(expr) => eval_expr(program, ct, sema, *expr, env),
+        StmtKind::Return(expr) => {
+            let value = eval_expr_at(program, ct, sema, *expr, env, depth)?;
+            answer_value(program, ct, sema, value, answer, continuations)
+        }
         StmtKind::Let {
             binding,
             value,
             next,
         } => {
-            let value = eval_expr(program, ct, sema, *value, env)?;
+            let value = eval_expr_at(program, ct, sema, *value, env, depth)?;
             env.insert(*binding, value);
-            eval_stmt(program, ct, sema, *next, env, handler_stack, continuations)
+            eval_stmt_at(
+                program,
+                ct,
+                sema,
+                *next,
+                env,
+                handler_stack,
+                continuations,
+                answer,
+                depth,
+            )
         }
         StmtKind::Val {
             binding,
@@ -2072,7 +2332,12 @@ fn eval_stmt_at(
             next,
         } => {
             let mut value_env = env.clone();
-            let value = eval_stmt(
+            let bound = OracleAnswer::Bind {
+                binding: *binding,
+                next: *next,
+                context: answer_context(env, handler_stack, answer, depth),
+            };
+            eval_stmt_at(
                 program,
                 ct,
                 sema,
@@ -2080,18 +2345,18 @@ fn eval_stmt_at(
                 &mut value_env,
                 handler_stack,
                 continuations,
-            )?;
-            env.insert(*binding, value);
-            eval_stmt(program, ct, sema, *next, env, handler_stack, continuations)
+                &bound,
+                depth,
+            )
         }
         StmtKind::If {
             cond,
             then_branch,
             else_branch,
-        } => match eval_expr(program, ct, sema, *cond, env)? {
+        } => match eval_expr_at(program, ct, sema, *cond, env, depth)? {
             OracleValue::Bool(true) => {
                 let mut then_env = env.clone();
-                eval_stmt(
+                eval_stmt_at(
                     program,
                     ct,
                     sema,
@@ -2099,11 +2364,13 @@ fn eval_stmt_at(
                     &mut then_env,
                     handler_stack,
                     continuations,
+                    answer,
+                    depth,
                 )
             }
             OracleValue::Bool(false) => {
                 let mut else_env = env.clone();
-                eval_stmt(
+                eval_stmt_at(
                     program,
                     ct,
                     sema,
@@ -2111,6 +2378,8 @@ fn eval_stmt_at(
                     &mut else_env,
                     handler_stack,
                     continuations,
+                    answer,
+                    depth,
                 )
             }
             _ => None,
@@ -2135,6 +2404,8 @@ fn eval_stmt_at(
             env,
             handler_stack,
             continuations,
+            answer,
+            depth,
         ),
         StmtKind::Resume {
             result,
@@ -2142,7 +2413,7 @@ fn eval_stmt_at(
             arg,
             next,
         } => {
-            let arg_value = eval_expr(program, ct, sema, *arg, env)?;
+            let arg_value = eval_expr_at(program, ct, sema, *arg, env, depth)?;
             let resume_id = match env.get(resume).cloned()? {
                 OracleValue::ResumeToken(id) => id,
                 _ => return None,
@@ -2150,63 +2421,73 @@ fn eval_stmt_at(
             let resumed =
                 resume_continuation(program, ct, sema, continuations, resume_id, arg_value)?;
             env.insert(*result, resumed);
-            eval_stmt(program, ct, sema, *next, env, handler_stack, continuations)
+            eval_stmt_at(
+                program,
+                ct,
+                sema,
+                *next,
+                env,
+                handler_stack,
+                continuations,
+                answer,
+                depth,
+            )
         }
         StmtKind::Handle {
             handler,
             body,
             next,
         } => {
-            handler_stack.push(HandlerFrame {
+            let handler_def = program.handlers().get(handler.index())?;
+            let handle_answer = match next {
+                Some(next_stmt) => OracleAnswer::Bind {
+                    binding: handler_def.return_param,
+                    next: *next_stmt,
+                    context: answer_context(env, handler_stack, answer, depth),
+                },
+                None => answer.clone(),
+            };
+            let body_answer = OracleAnswer::HandlerReturn {
+                handler: *handler,
+                context: answer_context(env, handler_stack, &handle_answer, depth),
+            };
+            let mut body_stack = handler_stack.clone();
+            body_stack.push(HandlerFrame {
                 handler: *handler,
                 captured_env: env.clone(),
+                answer: handle_answer,
             });
-            let body_value =
-                eval_stmt(program, ct, sema, *body, env, handler_stack, continuations)?;
-            handler_stack.pop();
-
-            let handler_def = program.handlers().get(handler.index())?;
-            let mut return_env = env.clone();
-            return_env.insert(handler_def.return_param, body_value);
-            let handled_value = eval_stmt(
+            eval_stmt_at(
                 program,
                 ct,
                 sema,
-                handler_def.return_body,
-                &mut return_env,
-                handler_stack,
+                *body,
+                env,
+                &mut body_stack,
                 continuations,
-            )?;
-            if let Some(next_stmt) = next {
-                eval_stmt(
-                    program,
-                    ct,
-                    sema,
-                    *next_stmt,
-                    env,
-                    handler_stack,
-                    continuations,
-                )
-            } else {
-                Some(handled_value)
-            }
+                &body_answer,
+                depth,
+            )
         }
         StmtKind::Stage { body, next, .. } => {
-            let body_value =
-                eval_stmt(program, ct, sema, *body, env, handler_stack, continuations)?;
-            if let Some(next_stmt) = next {
-                eval_stmt(
-                    program,
-                    ct,
-                    sema,
-                    *next_stmt,
-                    env,
-                    handler_stack,
-                    continuations,
-                )
-            } else {
-                Some(body_value)
-            }
+            let stage_answer = match next {
+                Some(next_stmt) => OracleAnswer::Then {
+                    next: *next_stmt,
+                    context: answer_context(env, handler_stack, answer, depth),
+                },
+                None => answer.clone(),
+            };
+            eval_stmt_at(
+                program,
+                ct,
+                sema,
+                *body,
+                env,
+                handler_stack,
+                continuations,
+                &stage_answer,
+                depth,
+            )
         }
         StmtKind::Call {
             result,
@@ -2219,7 +2500,12 @@ fn eval_stmt_at(
             for arg in args {
                 values.push(eval_expr_at(program, ct, sema, *arg, env, depth)?);
             }
-            let returned = eval_call(
+            let call_answer = OracleAnswer::Bind {
+                binding: *result,
+                next: *next,
+                context: answer_context(env, handler_stack, answer, depth),
+            };
+            eval_call(
                 program,
                 ct,
                 sema,
@@ -2227,18 +2513,8 @@ fn eval_stmt_at(
                 values,
                 handler_stack,
                 continuations,
+                &call_answer,
                 depth + 1,
-            )?;
-            env.insert(*result, returned);
-            eval_stmt_at(
-                program,
-                ct,
-                sema,
-                *next,
-                env,
-                handler_stack,
-                continuations,
-                depth,
             )
         }
         StmtKind::Match {
@@ -2271,6 +2547,7 @@ fn eval_stmt_at(
                 env,
                 handler_stack,
                 continuations,
+                answer,
                 depth,
             )
         }
@@ -2294,10 +2571,12 @@ fn eval_perform(
     env: &mut HashMap<VarId, OracleValue>,
     handler_stack: &mut [HandlerFrame],
     continuations: &mut Vec<Continuation>,
+    answer: &OracleAnswer,
+    depth: usize,
 ) -> Option<OracleValue> {
     let mut arg_values = Vec::with_capacity(site.args.len());
     for arg in site.args {
-        arg_values.push(eval_expr(program, ct, sema, *arg, env)?);
+        arg_values.push(eval_expr_at(program, ct, sema, *arg, env, depth)?);
     }
 
     let mut selected = None;
@@ -2322,6 +2601,7 @@ fn eval_perform(
     if clause.params.len() != arg_values.len() {
         return None;
     }
+    let captured_answer = continuation_answer(answer, frame.handler)?;
 
     let continuation_id = continuations.len();
     continuations.push(Continuation {
@@ -2329,6 +2609,8 @@ fn eval_perform(
         handler_stack: handler_stack.to_vec(),
         next: site.next,
         result: site.result,
+        answer: captured_answer,
+        depth,
         used: false,
     });
 
@@ -2341,7 +2623,7 @@ fn eval_perform(
     }
 
     let mut clause_stack = handler_stack[..frame_index].to_vec();
-    eval_stmt(
+    eval_stmt_at(
         program,
         ct,
         sema,
@@ -2349,6 +2631,8 @@ fn eval_perform(
         &mut clause_env,
         &mut clause_stack,
         continuations,
+        &frame.answer,
+        depth,
     )
 }
 
@@ -2360,7 +2644,7 @@ fn resume_continuation(
     continuation_id: usize,
     arg: OracleValue,
 ) -> Option<OracleValue> {
-    let (next, result, mut env, mut handler_stack) = {
+    let (next, result, mut env, mut handler_stack, answer, depth) = {
         let continuation = continuations.get_mut(continuation_id)?;
         if continuation.used {
             return None;
@@ -2371,12 +2655,14 @@ fn resume_continuation(
             continuation.result,
             continuation.env.clone(),
             continuation.handler_stack.clone(),
+            continuation.answer.clone(),
+            continuation.depth,
         )
     };
     if let Some(result_var) = result {
         env.insert(result_var, arg);
     }
-    eval_stmt(
+    eval_stmt_at(
         program,
         ct,
         sema,
@@ -2384,17 +2670,9 @@ fn resume_continuation(
         &mut env,
         &mut handler_stack,
         continuations,
+        &answer,
+        depth,
     )
-}
-
-fn eval_expr(
-    program: &CoreProgram,
-    ct: &CtPropagationTables,
-    sema: &SemanticTables,
-    expr_id: ExprId,
-    env: &HashMap<VarId, OracleValue>,
-) -> Option<OracleValue> {
-    eval_expr_at(program, ct, sema, expr_id, env, 0)
 }
 
 fn eval_expr_at(
@@ -2464,6 +2742,7 @@ fn eval_expr_at(
                 values,
                 &mut Vec::new(),
                 &mut Vec::new(),
+                &OracleAnswer::Yield,
                 depth + 1,
             )
         }
@@ -2497,6 +2776,7 @@ fn eval_expr_at(
                 values,
                 &mut Vec::new(),
                 &mut Vec::new(),
+                &OracleAnswer::Yield,
                 depth + 1,
             )
         }
@@ -2518,6 +2798,7 @@ fn eval_call(
     args: Vec<OracleValue>,
     handler_stack: &mut Vec<HandlerFrame>,
     continuations: &mut Vec<Continuation>,
+    answer: &OracleAnswer,
     depth: usize,
 ) -> Option<OracleValue> {
     if depth > ORACLE_MAX_CALL_DEPTH {
@@ -2539,6 +2820,7 @@ fn eval_call(
         &mut env,
         handler_stack,
         continuations,
+        answer,
         depth,
     )
 }
