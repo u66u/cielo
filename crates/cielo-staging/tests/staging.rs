@@ -276,6 +276,142 @@ fn main() -> Int {
     );
 }
 
+/// `@comptime` is an assertion: a block that has to run at runtime is an error,
+/// not a silent downgrade.
+fn comptime_block_diagnostic(src: &str) -> Option<String> {
+    let mut interner = Interner::new();
+    let compiler = PassHarness::new(PassConfig::default());
+    let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
+    residual
+        .diagnostics()
+        .entries()
+        .iter()
+        .find(|diag| diag.code == "BTA_COMPTIME_NOT_FOLDABLE")
+        .map(|diag| diag.message.clone())
+}
+
+#[test]
+fn comptime_block_rejects_perform_and_names_the_escaping_effect() {
+    let message = comptime_block_diagnostic(
+        r#"
+effect St { fn get() -> Int }
+
+fn body() -> Int with St {
+  let c = @comptime {
+    let v = do St.get();
+    v + 1
+  };
+  c
+}
+
+fn main() -> Int {
+  handle { body() } with St {
+    | get(resume) => resume(41)
+  }
+}
+"#,
+    )
+    .expect("perform inside @comptime must be rejected");
+
+    // The handler is outside the block, so the effect can only be discharged at
+    // runtime. There is exactly one effect in the fixture, so it is e0.
+    assert!(
+        message.contains("effect e0 escapes the block"),
+        "message should name the effect that keeps the block runtime, got `{message}`"
+    );
+}
+
+#[test]
+fn comptime_block_rejects_runtime_tainted_operand_and_names_the_root_cause() {
+    let message = comptime_block_diagnostic(
+        r#"
+fn main() -> Int {
+  let r = @runtime { 7 };
+  let c = @comptime { r + 1 };
+  c
+}
+"#,
+    )
+    .expect("@comptime over a @runtime operand must be rejected");
+
+    assert!(
+        message.contains("explicitly marked @runtime"),
+        "message should chase past `depends on v..` to the root cause, got `{message}`"
+    );
+}
+
+#[test]
+fn comptime_block_rejects_nested_runtime_block() {
+    let message = comptime_block_diagnostic(
+        r#"
+fn main() -> Int {
+  let c = @comptime { @runtime { 7 } };
+  c
+}
+"#,
+    )
+    .expect("@runtime nested in @comptime is a contradiction, not an exemption");
+
+    assert!(
+        message.contains("explicitly marked @runtime"),
+        "message should blame the nested @runtime block, got `{message}`"
+    );
+}
+
+#[test]
+fn comptime_block_that_folds_leaves_no_arithmetic_in_emitted_c() {
+    let src = r#"
+fn main() -> Int {
+  let c = @comptime { 2 + 3 };
+  c
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = PassHarness::new(PassConfig::default());
+    let compiled = compiler.compile_source_to_c(src, SourceId::from_u32(0), &mut interner);
+
+    assert!(
+        !compiled.residual.diagnostics().has_errors(),
+        "a foldable @comptime block must still compile, got {:?}",
+        compiled.residual.diagnostics().entries()
+    );
+    let main_body =
+        c_function_body(&compiled.c_source, "cielo_fn_main_0").expect("emitted main body");
+    assert!(
+        main_body.contains("/* stage Comptime enter */"),
+        "fixture should still emit the staging marker it is asserting about, got `{main_body}`"
+    );
+    assert!(
+        !main_body.contains("cv_add("),
+        "folded @comptime block should leave no arithmetic behind, got `{main_body}`"
+    );
+    assert!(
+        main_body.contains("cv_int(5)"),
+        "folded @comptime block should emit its constant, got `{main_body}`"
+    );
+}
+
+/// The runtime header the backend pastes in defines `cv_add` itself, so
+/// scanning the whole translation unit for arithmetic proves nothing.
+fn c_function_body<'a>(c_source: &'a str, name: &str) -> Option<&'a str> {
+    let open = c_source.find(&format!("{name}() {{"))?;
+    let open = c_source[open..].find('{')? + open;
+    let mut depth = 0usize;
+    for (offset, ch) in c_source[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&c_source[open..open + offset + 1]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 #[test]
 fn ct_only_function_rejects_runtime_arguments() {
     let src = r#"

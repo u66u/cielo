@@ -626,8 +626,8 @@ fn main() -> Int {
             r#"
 fn main() -> Int {
   let a = @runtime { 1 + 2 };
-  let b = @comptime { a };
-  b
+  let b = @comptime { 4 + 5 };
+  a + b
 }
 "#,
         ),

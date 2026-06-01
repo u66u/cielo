@@ -12,6 +12,7 @@
 //
 // Diagnostics:
 // - `BTA_CT_ONLY_RUNTIME_ARG` errors when ct-only calls receive runtime args
+// - `BTA_COMPTIME_NOT_FOLDABLE` errors when a `@comptime` block stays runtime
 //
 // Complexity:
 // - O(expr_count + stmt_count)
@@ -48,12 +49,14 @@ pub fn run(ct: CtPropagated) -> BtaClassified {
     for function in program.functions() {
         apply_stage_directives(&program, function.body, None, &mut bta, &mut visited);
     }
-    // putting it all together
     enforce_persistability_boundaries(&program, &sema, &mut bta, &mut diagnostics);
     propagate_runtime_reasons(&program, &mut bta);
     classify_non_thunkable_effects(&program, &sema, &mut bta);
     classify_handler_discharge(&program, &sema, &mut bta);
     enforce_ct_only_calls(&program, &sema, &mut bta, &mut diagnostics);
+    // Last of the enforcement passes: it reports the stage a `@comptime` block
+    // actually ended up with, so every demotion above has to be recorded first.
+    enforce_comptime_blocks(&program, &sema, &bta, &mut diagnostics);
     classify_knownness(&sema, &ct_tables, &mut bta);
 
     BtaClassified::new(program, diagnostics, sema, mono, ct_tables, bta)
@@ -65,7 +68,7 @@ fn enforce_persistability_boundaries(
     bta: &mut BtaTables,
     diagnostics: &mut cielo_base::diagnostics::DiagnosticBag,
 ) {
-    let uses = ExprUseIndex::build(program);
+    let uses = ExprUseIndex::build(program, BoundaryPolicy::SkipForcedComptime);
     for (idx, expr) in program.exprs().iter().enumerate() {
         let expr_id = ExprId::new(idx);
         if !matches!(bta.stage_of_expr.get(&expr_id), Some(Stage::Ct)) {
@@ -120,7 +123,7 @@ struct ExprUseIndex {
 }
 
 impl ExprUseIndex {
-    fn build(program: &CoreProgram) -> Self {
+    fn build(program: &CoreProgram, policy: BoundaryPolicy) -> Self {
         let expr_count = program.exprs().len();
         let mut expr_parents = vec![Vec::new(); expr_count];
         for (parent_idx, expr) in program.exprs().iter().enumerate() {
@@ -132,42 +135,26 @@ impl ExprUseIndex {
             }
         }
 
-        let mut stmt_uses = vec![Vec::new(); expr_count];
-        let mut visited = HashSet::new();
+        let mut collector = UseCollector {
+            program,
+            policy,
+            visited: HashSet::new(),
+            stmt_uses: vec![Vec::new(); expr_count],
+            expr_count,
+        };
         for function in program.functions() {
-            collect_stmt_uses(
-                program,
-                function.body,
-                UseContext::Unknown,
-                &mut visited,
-                &mut stmt_uses,
-                expr_count,
-            );
+            collector.collect(function.body, UseContext::Unknown);
         }
         for handler in program.handlers() {
-            collect_stmt_uses(
-                program,
-                handler.return_body,
-                UseContext::Unknown,
-                &mut visited,
-                &mut stmt_uses,
-                expr_count,
-            );
+            collector.collect(handler.return_body, UseContext::Unknown);
             for clause in &handler.clauses {
-                collect_stmt_uses(
-                    program,
-                    clause.body,
-                    UseContext::Unknown,
-                    &mut visited,
-                    &mut stmt_uses,
-                    expr_count,
-                );
+                collector.collect(clause.body, UseContext::Unknown);
             }
         }
 
         Self {
             expr_parents,
-            stmt_uses,
+            stmt_uses: collector.stmt_uses,
         }
     }
 
@@ -200,6 +187,17 @@ struct BoundaryUse {
     kind: BoundaryUseKind,
 }
 
+/// Whether uses inside a `@comptime` block count as CT/RT boundary crossings.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BoundaryPolicy {
+    /// A `@comptime` block never reaches runtime -- `enforce_comptime_blocks`
+    /// rejects it otherwise -- so its uses cross no boundary.
+    SkipForcedComptime,
+    /// Every use, including the ones above. `enforce_comptime_blocks` needs to
+    /// point at exactly the uses the persistability check is allowed to ignore.
+    IncludeForcedComptime,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum UseContext {
     Unknown,
@@ -216,8 +214,8 @@ impl UseContext {
         }
     }
 
-    fn boundary_enabled(self) -> bool {
-        !matches!(self, Self::ForcedComptime)
+    fn boundary_enabled(self, policy: BoundaryPolicy) -> bool {
+        policy == BoundaryPolicy::IncludeForcedComptime || self != Self::ForcedComptime
     }
 
     fn from_stage(stage: StageDirective) -> Self {
@@ -253,175 +251,102 @@ impl BoundaryUseKind {
     }
 }
 
-fn push_stmt_use(
-    stmt_uses: &mut [Vec<BoundaryUse>],
+struct UseCollector<'a> {
+    program: &'a CoreProgram,
+    policy: BoundaryPolicy,
+    visited: HashSet<(StmtId, u8)>,
+    stmt_uses: Vec<Vec<BoundaryUse>>,
     expr_count: usize,
-    expr: ExprId,
-    stmt_id: StmtId,
-    context: UseContext,
-    kind: BoundaryUseKind,
-) {
-    if !context.boundary_enabled() {
-        return;
-    }
-    if expr.index() < expr_count {
-        stmt_uses[expr.index()].push(BoundaryUse { stmt_id, kind });
-    }
 }
 
-fn collect_stmt_uses(
-    program: &CoreProgram,
-    stmt_id: StmtId,
-    context: UseContext,
-    visited: &mut HashSet<(StmtId, u8)>,
-    stmt_uses: &mut [Vec<BoundaryUse>],
-    expr_count: usize,
-) {
-    if !visited.insert((stmt_id, context.encode())) {
-        return;
+impl UseCollector<'_> {
+    fn push(&mut self, expr: ExprId, stmt_id: StmtId, context: UseContext, kind: BoundaryUseKind) {
+        if !context.boundary_enabled(self.policy) || expr.index() >= self.expr_count {
+            return;
+        }
+        self.stmt_uses[expr.index()].push(BoundaryUse { stmt_id, kind });
     }
-    let Some(stmt) = program.stmt(stmt_id) else {
-        return;
-    };
 
-    match &stmt.kind {
-        StmtKind::Return(expr) => {
-            push_stmt_use(
-                stmt_uses,
-                expr_count,
-                *expr,
-                stmt_id,
-                context,
-                BoundaryUseKind::ReturnValue,
-            );
+    fn collect(&mut self, stmt_id: StmtId, context: UseContext) {
+        if !self.visited.insert((stmt_id, context.encode())) {
+            return;
         }
-        StmtKind::Let { value, next, .. } => {
-            push_stmt_use(
-                stmt_uses,
-                expr_count,
-                *value,
-                stmt_id,
-                context,
-                BoundaryUseKind::LetValue,
-            );
-            collect_stmt_uses(program, *next, context, visited, stmt_uses, expr_count);
-        }
-        StmtKind::Val { value, next, .. } => {
-            collect_stmt_uses(program, *value, context, visited, stmt_uses, expr_count);
-            collect_stmt_uses(program, *next, context, visited, stmt_uses, expr_count);
-        }
-        StmtKind::Call { args, next, .. } => {
-            for (arg_idx, arg) in args.iter().copied().enumerate() {
-                push_stmt_use(
-                    stmt_uses,
-                    expr_count,
-                    arg,
+        // Copied out so the borrow of the statement below is on the program,
+        // not on `self`, leaving the recursive calls free to take `&mut self`.
+        let program = self.program;
+        let Some(stmt) = program.stmt(stmt_id) else {
+            return;
+        };
+
+        match &stmt.kind {
+            StmtKind::Return(expr) => {
+                self.push(*expr, stmt_id, context, BoundaryUseKind::ReturnValue);
+            }
+            StmtKind::Let { value, next, .. } => {
+                self.push(*value, stmt_id, context, BoundaryUseKind::LetValue);
+                self.collect(*next, context);
+            }
+            StmtKind::Val { value, next, .. } => {
+                self.collect(*value, context);
+                self.collect(*next, context);
+            }
+            StmtKind::Call { args, next, .. } => {
+                for (arg_idx, arg) in args.iter().copied().enumerate() {
+                    self.push(arg, stmt_id, context, BoundaryUseKind::CallArg(arg_idx));
+                }
+                self.collect(*next, context);
+            }
+            StmtKind::Resume { arg, next, .. } => {
+                self.push(*arg, stmt_id, context, BoundaryUseKind::ResumeArg);
+                self.collect(*next, context);
+            }
+            StmtKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                self.push(*cond, stmt_id, context, BoundaryUseKind::IfCondition);
+                self.collect(*then_branch, context);
+                self.collect(*else_branch, context);
+            }
+            StmtKind::Match {
+                scrutinee,
+                arms,
+                default,
+            } => {
+                self.push(
+                    *scrutinee,
                     stmt_id,
                     context,
-                    BoundaryUseKind::CallArg(arg_idx),
+                    BoundaryUseKind::MatchScrutinee,
                 );
+                for arm in arms {
+                    self.collect(arm.body, context);
+                }
+                if let Some(default_stmt) = default {
+                    self.collect(*default_stmt, context);
+                }
             }
-            collect_stmt_uses(program, *next, context, visited, stmt_uses, expr_count);
-        }
-        StmtKind::Resume { arg, next, .. } => {
-            push_stmt_use(
-                stmt_uses,
-                expr_count,
-                *arg,
-                stmt_id,
-                context,
-                BoundaryUseKind::ResumeArg,
-            );
-            collect_stmt_uses(program, *next, context, visited, stmt_uses, expr_count);
-        }
-        StmtKind::If {
-            cond,
-            then_branch,
-            else_branch,
-        } => {
-            push_stmt_use(
-                stmt_uses,
-                expr_count,
-                *cond,
-                stmt_id,
-                context,
-                BoundaryUseKind::IfCondition,
-            );
-            collect_stmt_uses(
-                program,
-                *then_branch,
-                context,
-                visited,
-                stmt_uses,
-                expr_count,
-            );
-            collect_stmt_uses(
-                program,
-                *else_branch,
-                context,
-                visited,
-                stmt_uses,
-                expr_count,
-            );
-        }
-        StmtKind::Match {
-            scrutinee,
-            arms,
-            default,
-        } => {
-            push_stmt_use(
-                stmt_uses,
-                expr_count,
-                *scrutinee,
-                stmt_id,
-                context,
-                BoundaryUseKind::MatchScrutinee,
-            );
-            for arm in arms {
-                collect_stmt_uses(program, arm.body, context, visited, stmt_uses, expr_count);
+            StmtKind::Perform { args, next, .. } => {
+                for (arg_idx, arg) in args.iter().copied().enumerate() {
+                    self.push(arg, stmt_id, context, BoundaryUseKind::PerformArg(arg_idx));
+                }
+                self.collect(*next, context);
             }
-            if let Some(default_stmt) = default {
-                collect_stmt_uses(
-                    program,
-                    *default_stmt,
-                    context,
-                    visited,
-                    stmt_uses,
-                    expr_count,
-                );
+            StmtKind::Handle { body, next, .. } => {
+                self.collect(*body, context);
+                if let Some(next_stmt) = next {
+                    self.collect(*next_stmt, context);
+                }
             }
-        }
-        StmtKind::Perform { args, next, .. } => {
-            for (arg_idx, arg) in args.iter().copied().enumerate() {
-                push_stmt_use(
-                    stmt_uses,
-                    expr_count,
-                    arg,
-                    stmt_id,
-                    context,
-                    BoundaryUseKind::PerformArg(arg_idx),
-                );
+            StmtKind::Stage { stage, body, next } => {
+                self.collect(*body, UseContext::from_stage(*stage));
+                if let Some(next_stmt) = next {
+                    self.collect(*next_stmt, context);
+                }
             }
-            collect_stmt_uses(program, *next, context, visited, stmt_uses, expr_count);
+            StmtKind::Hole { .. } | StmtKind::Error(_) => {}
         }
-        StmtKind::Handle {
-            handler: _,
-            body,
-            next,
-        } => {
-            collect_stmt_uses(program, *body, context, visited, stmt_uses, expr_count);
-            if let Some(next_stmt) = next {
-                collect_stmt_uses(program, *next_stmt, context, visited, stmt_uses, expr_count);
-            }
-        }
-        StmtKind::Stage { stage, body, next } => {
-            let inner = UseContext::from_stage(*stage);
-            collect_stmt_uses(program, *body, inner, visited, stmt_uses, expr_count);
-            if let Some(next_stmt) = next {
-                collect_stmt_uses(program, *next_stmt, context, visited, stmt_uses, expr_count);
-            }
-        }
-        StmtKind::Hole { .. } | StmtKind::Error(_) => {}
     }
 }
 
@@ -769,7 +694,7 @@ fn enforce_ct_only_calls(
     bta: &mut BtaTables,
     diagnostics: &mut cielo_base::diagnostics::DiagnosticBag,
 ) {
-    let uses = ExprUseIndex::build(program);
+    let uses = ExprUseIndex::build(program, BoundaryPolicy::SkipForcedComptime);
 
     for (idx, expr) in program.exprs().iter().enumerate() {
         let ExprKind::PureCall { callee, args } = &expr.kind else {
@@ -842,6 +767,245 @@ fn enforce_ct_only_calls(
             stmt.span,
         );
     }
+}
+
+/// Why a `@comptime` block failed to fold. The effect case is checked first
+/// and separately: a `perform` whose result is discarded leaves no expression
+/// to blame at all, and where it does leave one the expression only says
+/// "runtime", not which effect the block is stuck on.
+enum ComptimeFailure {
+    EscapingEffect(EffectLabelId),
+    RuntimeExpr(ExprId, Reason),
+}
+
+/// `@comptime` is an assertion, not a preference. A block that cannot be
+/// evaluated at compile time is an error, not a silent downgrade to runtime
+/// code -- otherwise the annotation is unverifiable and `boundary_enabled`
+/// skipping persistability checks inside it has nothing backing it.
+fn enforce_comptime_blocks(
+    program: &CoreProgram,
+    sema: &SemanticTables,
+    bta: &BtaTables,
+    diagnostics: &mut cielo_base::diagnostics::DiagnosticBag,
+) {
+    let uses = ExprUseIndex::build(program, BoundaryPolicy::IncludeForcedComptime);
+    // Monomorphization and handler specialization clone a block once per
+    // instantiation. The user wrote it once, so report it once.
+    let mut reported = HashSet::new();
+
+    for stmt in program.stmts() {
+        let StmtKind::Stage {
+            stage: StageDirective::Comptime,
+            body,
+            ..
+        } = &stmt.kind
+        else {
+            continue;
+        };
+        let Some(failure) = comptime_block_failure(program, sema, bta, *body) else {
+            continue;
+        };
+        if !reported.insert(stmt.span) {
+            continue;
+        }
+
+        let cause = match failure {
+            ComptimeFailure::EscapingEffect(effect) => format!(
+                "effect e{} escapes the block and needs a runtime handler",
+                effect.as_u32()
+            ),
+            ComptimeFailure::RuntimeExpr(expr_id, reason) => {
+                let role_hint = uses
+                    .first_boundary_use(expr_id)
+                    .map(|u| {
+                        format!(
+                            " at statement s{} via {}",
+                            u.stmt_id.as_u32(),
+                            u.kind.describe()
+                        )
+                    })
+                    .unwrap_or_default();
+                format!(
+                    "expression e{}{} is runtime because {}",
+                    expr_id.as_u32(),
+                    role_hint,
+                    reason.describe_runtime()
+                )
+            }
+        };
+
+        diagnostics.error(
+            "BTA_COMPTIME_NOT_FOLDABLE",
+            format!("@comptime block cannot be evaluated at compile time: {cause}"),
+            stmt.span,
+        );
+    }
+}
+
+fn comptime_block_failure(
+    program: &CoreProgram,
+    sema: &SemanticTables,
+    bta: &BtaTables,
+    body: StmtId,
+) -> Option<ComptimeFailure> {
+    if let Some(effect) = escaping_runtime_effect(sema, body) {
+        return Some(ComptimeFailure::EscapingEffect(effect));
+    }
+    first_runtime_expr(program, bta, body)
+        .map(|(expr_id, reason)| ComptimeFailure::RuntimeExpr(expr_id, reason))
+}
+
+/// A ct-only effect is discharged during staging, so it is the one kind of
+/// effect a `@comptime` block exists to perform. Any other effect still in the
+/// block's row escaped every handler written inside it.
+fn escaping_runtime_effect(sema: &SemanticTables, body: StmtId) -> Option<EffectLabelId> {
+    sema.effects_of_stmt
+        .get(body.index())?
+        .iter()
+        .find(|effect| {
+            !sema
+                .effect_properties
+                .get(effect)
+                .is_some_and(|props| props.flags.contains(EffectFlags::CT_ONLY))
+        })
+}
+
+/// Lowest-numbered expression in the block that did not reach the compile-time
+/// stage, subexpressions included.
+fn first_runtime_expr(
+    program: &CoreProgram,
+    bta: &BtaTables,
+    body: StmtId,
+) -> Option<(ExprId, Reason)> {
+    let mut stack = Vec::new();
+    collect_region_exprs(program, body, &mut stack, &mut HashSet::new());
+
+    let mut best: Option<(ExprId, Reason)> = None;
+    let mut seen = HashSet::new();
+    while let Some(expr_id) = stack.pop() {
+        if !seen.insert(expr_id) {
+            continue;
+        }
+        if let Some(reason) = comptime_expr_failure(program, bta, expr_id)
+            && best.is_none_or(|(current, _)| expr_id.index() < current.index())
+        {
+            best = Some((expr_id, reason));
+        }
+        if let Some(expr) = program.expr(expr_id) {
+            stack.extend(expr.kind.child_exprs());
+        }
+    }
+    best
+}
+
+/// Why an expression failed to stage `Ct`, `None` if it did not fail. Two
+/// paths, because `apply_forced_expr` stamps `Ct` over every statement-level
+/// slot in the block and so destroys the evidence for the second:
+///
+/// - a `Rt` stage of its own, which is how a runtime operand shows up: the
+///   stamp does not reach subexpressions, so it survives under a `Ct` parent
+/// - reading a runtime variable, which is how a stamped slot shows up.
+///   `stage_of_var` is never stamped, so it still says what the stage would
+///   have been.
+fn comptime_expr_failure(
+    program: &CoreProgram,
+    bta: &BtaTables,
+    expr_id: ExprId,
+) -> Option<Reason> {
+    if let Some(ExprKind::Var(var)) = program.expr(expr_id).map(|node| &node.kind)
+        && let Some(Stage::Rt(reason)) = bta.stage_of_var.get(var).copied()
+    {
+        return Some(root_reason(bta, reason));
+    }
+    stage_reason_of_expr(bta, expr_id).map(|reason| root_reason(bta, reason))
+}
+
+/// Everything lexically inside the block, a nested `@runtime` block included:
+/// `@comptime` asserts the whole block folds, so an inner `@runtime` is a
+/// contradiction rather than an exemption. Handler clause bodies hang off
+/// `program.handlers()` rather than off the `Handle` statement and are staged
+/// on their own, so they are not part of any block.
+fn collect_region_exprs(
+    program: &CoreProgram,
+    stmt_id: StmtId,
+    out: &mut Vec<ExprId>,
+    visited: &mut HashSet<StmtId>,
+) {
+    if !visited.insert(stmt_id) {
+        return;
+    }
+    let Some(stmt) = program.stmt(stmt_id) else {
+        return;
+    };
+
+    match &stmt.kind {
+        StmtKind::Return(expr) => out.push(*expr),
+        StmtKind::Let { value, next, .. } => {
+            out.push(*value);
+            collect_region_exprs(program, *next, out, visited);
+        }
+        StmtKind::Val { value, next, .. } => {
+            collect_region_exprs(program, *value, out, visited);
+            collect_region_exprs(program, *next, out, visited);
+        }
+        StmtKind::Call { args, next, .. } | StmtKind::Perform { args, next, .. } => {
+            out.extend(args.iter().copied());
+            collect_region_exprs(program, *next, out, visited);
+        }
+        StmtKind::Resume { arg, next, .. } => {
+            out.push(*arg);
+            collect_region_exprs(program, *next, out, visited);
+        }
+        StmtKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            out.push(*cond);
+            collect_region_exprs(program, *then_branch, out, visited);
+            collect_region_exprs(program, *else_branch, out, visited);
+        }
+        StmtKind::Match {
+            scrutinee,
+            arms,
+            default,
+        } => {
+            out.push(*scrutinee);
+            for arm in arms {
+                collect_region_exprs(program, arm.body, out, visited);
+            }
+            if let Some(default_stmt) = default {
+                collect_region_exprs(program, *default_stmt, out, visited);
+            }
+        }
+        StmtKind::Handle { body, next, .. } | StmtKind::Stage { body, next, .. } => {
+            collect_region_exprs(program, *body, out, visited);
+            if let Some(next_stmt) = next {
+                collect_region_exprs(program, *next_stmt, out, visited);
+            }
+        }
+        StmtKind::Hole { .. } | StmtKind::Error(_) => {}
+    }
+}
+
+/// `DependsOnVar` names a variable, not a cause. Follow the variable's own
+/// stage so the message says why the variable is runtime rather than only that
+/// it is -- the same move `provenance::find_terminal_reason` makes for the
+/// staging report's root-cause table, minus its walk back to variable
+/// definitions, which the report needs and a single diagnostic does not.
+fn root_reason(bta: &BtaTables, reason: Reason) -> Reason {
+    let mut current = reason;
+    let mut seen = HashSet::new();
+    while let Reason::DependsOnVar(var) = current {
+        if !seen.insert(var) {
+            break;
+        }
+        match bta.stage_of_var.get(&var).copied() {
+            Some(Stage::Rt(next)) if next != Reason::UnclassifiedRuntime => current = next,
+            _ => break,
+        }
+    }
+    current
 }
 
 fn is_ct_only_function(function: &cielo_ir::core::FunctionDecl, sema: &SemanticTables) -> bool {
