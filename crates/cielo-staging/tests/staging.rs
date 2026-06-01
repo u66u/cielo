@@ -341,6 +341,62 @@ fn main() -> Int {
 }
 
 #[test]
+fn comptime_block_rejects_runtime_data_in_abortive_handler_clause() {
+    let message = comptime_block_diagnostic(
+        r#"
+effect St { fn get() -> Int }
+
+fn main() -> Int {
+  let r = @runtime { 41 };
+  let c = @comptime {
+    handle {
+      do St.get();
+      1
+    } with St {
+      | get() => r
+    }
+  };
+  c
+}
+"#,
+    )
+    .expect("runtime data in an abortive handler clause must be rejected");
+
+    assert!(
+        message.contains("explicitly marked @runtime"),
+        "message should name the clause's runtime root cause, got `{message}`"
+    );
+}
+
+#[test]
+fn comptime_block_accepts_foldable_handler_clause() {
+    let src = r#"
+effect St { fn get() -> Int }
+
+fn main() -> Int {
+  let c = @comptime {
+    handle {
+      do St.get();
+      1
+    } with St {
+      | get() => 42
+    }
+  };
+  c
+}
+"#;
+    let mut interner = Interner::new();
+    let compiler = PassHarness::new(PassConfig::default());
+    let residual = compiler.compile_source(src, SourceId::from_u32(0), &mut interner);
+
+    assert!(
+        !residual.diagnostics().has_errors(),
+        "foldable handler inside @comptime must remain accepted, got {:?}",
+        residual.diagnostics().entries()
+    );
+}
+
+#[test]
 fn comptime_block_rejects_nested_runtime_block() {
     let message = comptime_block_diagnostic(
         r#"

@@ -46,8 +46,16 @@ pub fn run(ct: CtPropagated) -> BtaClassified {
     }
 
     let mut visited = HashSet::new();
+    let mut visited_handlers = HashSet::new();
     for function in program.functions() {
-        apply_stage_directives(&program, function.body, None, &mut bta, &mut visited);
+        apply_stage_directives(
+            &program,
+            function.body,
+            None,
+            &mut bta,
+            &mut visited,
+            &mut visited_handlers,
+        );
     }
     enforce_persistability_boundaries(&program, &sema, &mut bta, &mut diagnostics);
     propagate_runtime_reasons(&program, &mut bta);
@@ -144,12 +152,6 @@ impl ExprUseIndex {
         };
         for function in program.functions() {
             collector.collect(function.body, UseContext::Unknown);
-        }
-        for handler in program.handlers() {
-            collector.collect(handler.return_body, UseContext::Unknown);
-            for clause in &handler.clauses {
-                collector.collect(clause.body, UseContext::Unknown);
-            }
         }
 
         Self {
@@ -333,8 +335,18 @@ impl UseCollector<'_> {
                 }
                 self.collect(*next, context);
             }
-            StmtKind::Handle { body, next, .. } => {
+            StmtKind::Handle {
+                handler,
+                body,
+                next,
+            } => {
                 self.collect(*body, context);
+                if let Some(def) = program.handlers().get(handler.index()) {
+                    self.collect(def.return_body, context);
+                    for clause in &def.clauses {
+                        self.collect(clause.body, context);
+                    }
+                }
                 if let Some(next_stmt) = next {
                     self.collect(*next_stmt, context);
                 }
@@ -362,15 +374,14 @@ fn apply_stage_directives(
     forced: Option<ForcedStage>,
     bta: &mut BtaTables,
     visited: &mut HashSet<(StmtId, u8)>,
+    visited_handlers: &mut HashSet<(HandlerId, u8)>,
 ) {
-    let key = (
-        stmt_id,
-        match forced {
-            None => 0,
-            Some(ForcedStage::Ct) => 1,
-            Some(ForcedStage::Rt) => 2,
-        },
-    );
+    let context = match forced {
+        None => 0,
+        Some(ForcedStage::Ct) => 1,
+        Some(ForcedStage::Rt) => 2,
+    };
+    let key = (stmt_id, context);
     if !visited.insert(key) {
         return;
     }
@@ -383,21 +394,21 @@ fn apply_stage_directives(
         StmtKind::Return(expr) => apply_forced_expr(*expr, forced, bta),
         StmtKind::Let { value, next, .. } => {
             apply_forced_expr(*value, forced, bta);
-            apply_stage_directives(program, *next, forced, bta, visited);
+            apply_stage_directives(program, *next, forced, bta, visited, visited_handlers);
         }
         StmtKind::Val { value, next, .. } => {
-            apply_stage_directives(program, *value, forced, bta, visited);
-            apply_stage_directives(program, *next, forced, bta, visited);
+            apply_stage_directives(program, *value, forced, bta, visited, visited_handlers);
+            apply_stage_directives(program, *next, forced, bta, visited, visited_handlers);
         }
         StmtKind::Call { args, next, .. } => {
             for arg in args {
                 apply_forced_expr(*arg, forced, bta);
             }
-            apply_stage_directives(program, *next, forced, bta, visited);
+            apply_stage_directives(program, *next, forced, bta, visited, visited_handlers);
         }
         StmtKind::Resume { arg, next, .. } => {
             apply_forced_expr(*arg, forced, bta);
-            apply_stage_directives(program, *next, forced, bta, visited);
+            apply_stage_directives(program, *next, forced, bta, visited, visited_handlers);
         }
         StmtKind::If {
             cond,
@@ -405,8 +416,22 @@ fn apply_stage_directives(
             else_branch,
         } => {
             apply_forced_expr(*cond, forced, bta);
-            apply_stage_directives(program, *then_branch, forced, bta, visited);
-            apply_stage_directives(program, *else_branch, forced, bta, visited);
+            apply_stage_directives(
+                program,
+                *then_branch,
+                forced,
+                bta,
+                visited,
+                visited_handlers,
+            );
+            apply_stage_directives(
+                program,
+                *else_branch,
+                forced,
+                bta,
+                visited,
+                visited_handlers,
+            );
         }
         StmtKind::Match {
             scrutinee,
@@ -415,22 +440,55 @@ fn apply_stage_directives(
         } => {
             apply_forced_expr(*scrutinee, forced, bta);
             for arm in arms {
-                apply_stage_directives(program, arm.body, forced, bta, visited);
+                apply_stage_directives(program, arm.body, forced, bta, visited, visited_handlers);
             }
             if let Some(default_stmt) = default {
-                apply_stage_directives(program, *default_stmt, forced, bta, visited);
+                apply_stage_directives(
+                    program,
+                    *default_stmt,
+                    forced,
+                    bta,
+                    visited,
+                    visited_handlers,
+                );
             }
         }
         StmtKind::Perform { args, next, .. } => {
             for arg in args {
                 apply_forced_expr(*arg, forced, bta);
             }
-            apply_stage_directives(program, *next, forced, bta, visited);
+            apply_stage_directives(program, *next, forced, bta, visited, visited_handlers);
         }
-        StmtKind::Handle { body, next, .. } => {
-            apply_stage_directives(program, *body, forced, bta, visited);
+        StmtKind::Handle {
+            handler,
+            body,
+            next,
+        } => {
+            apply_stage_directives(program, *body, forced, bta, visited, visited_handlers);
+            if visited_handlers.insert((*handler, context))
+                && let Some(def) = program.handlers().get(handler.index())
+            {
+                apply_stage_directives(
+                    program,
+                    def.return_body,
+                    forced,
+                    bta,
+                    visited,
+                    visited_handlers,
+                );
+                for clause in &def.clauses {
+                    apply_stage_directives(
+                        program,
+                        clause.body,
+                        forced,
+                        bta,
+                        visited,
+                        visited_handlers,
+                    );
+                }
+            }
             if let Some(next_stmt) = next {
-                apply_stage_directives(program, *next_stmt, forced, bta, visited);
+                apply_stage_directives(program, *next_stmt, forced, bta, visited, visited_handlers);
             }
         }
         StmtKind::Stage { stage, body, next } => {
@@ -438,9 +496,9 @@ fn apply_stage_directives(
                 StageDirective::Comptime => ForcedStage::Ct,
                 StageDirective::Runtime => ForcedStage::Rt,
             });
-            apply_stage_directives(program, *body, inner, bta, visited);
+            apply_stage_directives(program, *body, inner, bta, visited, visited_handlers);
             if let Some(next_stmt) = next {
-                apply_stage_directives(program, *next_stmt, forced, bta, visited);
+                apply_stage_directives(program, *next_stmt, forced, bta, visited, visited_handlers);
             }
         }
         StmtKind::Hole { .. } | StmtKind::Error(_) => {}
@@ -878,7 +936,13 @@ fn first_runtime_expr(
     body: StmtId,
 ) -> Option<(ExprId, Reason)> {
     let mut stack = Vec::new();
-    collect_region_exprs(program, body, &mut stack, &mut HashSet::new());
+    collect_region_exprs(
+        program,
+        body,
+        &mut stack,
+        &mut HashSet::new(),
+        &mut HashSet::new(),
+    );
 
     let mut best: Option<(ExprId, Reason)> = None;
     let mut seen = HashSet::new();
@@ -920,16 +984,16 @@ fn comptime_expr_failure(
     stage_reason_of_expr(bta, expr_id).map(|reason| root_reason(bta, reason))
 }
 
-/// Everything lexically inside the block, a nested `@runtime` block included:
+/// Everything executed inside the block, a nested `@runtime` block included:
 /// `@comptime` asserts the whole block folds, so an inner `@runtime` is a
-/// contradiction rather than an exemption. Handler clause bodies hang off
-/// `program.handlers()` rather than off the `Handle` statement and are staged
-/// on their own, so they are not part of any block.
+/// contradiction rather than an exemption. A `Handle` owns its handler through
+/// `HandlerId`, so its return and clause bodies belong to this region too.
 fn collect_region_exprs(
     program: &CoreProgram,
     stmt_id: StmtId,
     out: &mut Vec<ExprId>,
     visited: &mut HashSet<StmtId>,
+    visited_handlers: &mut HashSet<HandlerId>,
 ) {
     if !visited.insert(stmt_id) {
         return;
@@ -942,19 +1006,19 @@ fn collect_region_exprs(
         StmtKind::Return(expr) => out.push(*expr),
         StmtKind::Let { value, next, .. } => {
             out.push(*value);
-            collect_region_exprs(program, *next, out, visited);
+            collect_region_exprs(program, *next, out, visited, visited_handlers);
         }
         StmtKind::Val { value, next, .. } => {
-            collect_region_exprs(program, *value, out, visited);
-            collect_region_exprs(program, *next, out, visited);
+            collect_region_exprs(program, *value, out, visited, visited_handlers);
+            collect_region_exprs(program, *next, out, visited, visited_handlers);
         }
         StmtKind::Call { args, next, .. } | StmtKind::Perform { args, next, .. } => {
             out.extend(args.iter().copied());
-            collect_region_exprs(program, *next, out, visited);
+            collect_region_exprs(program, *next, out, visited, visited_handlers);
         }
         StmtKind::Resume { arg, next, .. } => {
             out.push(*arg);
-            collect_region_exprs(program, *next, out, visited);
+            collect_region_exprs(program, *next, out, visited, visited_handlers);
         }
         StmtKind::If {
             cond,
@@ -962,8 +1026,8 @@ fn collect_region_exprs(
             else_branch,
         } => {
             out.push(*cond);
-            collect_region_exprs(program, *then_branch, out, visited);
-            collect_region_exprs(program, *else_branch, out, visited);
+            collect_region_exprs(program, *then_branch, out, visited, visited_handlers);
+            collect_region_exprs(program, *else_branch, out, visited, visited_handlers);
         }
         StmtKind::Match {
             scrutinee,
@@ -972,16 +1036,34 @@ fn collect_region_exprs(
         } => {
             out.push(*scrutinee);
             for arm in arms {
-                collect_region_exprs(program, arm.body, out, visited);
+                collect_region_exprs(program, arm.body, out, visited, visited_handlers);
             }
             if let Some(default_stmt) = default {
-                collect_region_exprs(program, *default_stmt, out, visited);
+                collect_region_exprs(program, *default_stmt, out, visited, visited_handlers);
             }
         }
-        StmtKind::Handle { body, next, .. } | StmtKind::Stage { body, next, .. } => {
-            collect_region_exprs(program, *body, out, visited);
+        StmtKind::Handle {
+            handler,
+            body,
+            next,
+        } => {
+            collect_region_exprs(program, *body, out, visited, visited_handlers);
+            if visited_handlers.insert(*handler)
+                && let Some(def) = program.handlers().get(handler.index())
+            {
+                collect_region_exprs(program, def.return_body, out, visited, visited_handlers);
+                for clause in &def.clauses {
+                    collect_region_exprs(program, clause.body, out, visited, visited_handlers);
+                }
+            }
             if let Some(next_stmt) = next {
-                collect_region_exprs(program, *next_stmt, out, visited);
+                collect_region_exprs(program, *next_stmt, out, visited, visited_handlers);
+            }
+        }
+        StmtKind::Stage { body, next, .. } => {
+            collect_region_exprs(program, *body, out, visited, visited_handlers);
+            if let Some(next_stmt) = next {
+                collect_region_exprs(program, *next_stmt, out, visited, visited_handlers);
             }
         }
         StmtKind::Hole { .. } | StmtKind::Error(_) => {}
